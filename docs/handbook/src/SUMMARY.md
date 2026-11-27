@@ -25,6 +25,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
   - [Checking the network](checking-the-network.md)
 - [Sound](sound.md)
 - [Screens](screens.md)
+- [Keyboards and mice](input.md)
 - [The screen reader](screen-reader.md)
 - [Text size and keys](text-size-and-keys.md)
 - [Braille displays](braille-displays.md)

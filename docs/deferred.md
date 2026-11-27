@@ -308,6 +308,10 @@ These come from finished work; the releases themselves are in the
 | Drivers for the other virtual video cards: a VGA card whose mode can be changed, VMware's, VirtualBox's and Hyper-V's (ADR 0705) | Each keeps the firmware's picture in 1.1, and is a small driver on the display layer when its turn comes | A need |
 | A graphics card with no device behind it, for a desktop on a machine with no screen (ADR 0700) | Belongs with remote desktop | Remote desktop |
 | Turning a screen off after a time (ADR 0700) | Power management with the desktop | Release 1.3 |
+| A consoled that starts again while a program it had lent the screens to still has them: it finds the front taken and ends, so the secure key raises nobody until that program ends (ADRs 0702, 0708) | The attention holder must be able to wait behind the front and be raised from there; until the window server there is no program that keeps the screens | Release 1.1, with the window server |
+| Ctrl, Alt and Delete pressed one after another with sticky keys as the secure key while a program has the screens (ADR 0708) | Sticky keys are consoled's, which reads no key while a program has the screens, and the three keys are never down together for the kernel to see | Release 1.3, with the desktop's sticky keys |
+| A wheel's fine steps on a mouse or touchpad that speaks HID over I2C: it is counted in notches (ADR 0706) | Both USB host drivers ask a wheel to count finer than a notch; the I2C driver comes with the touchpads | Release 1.3 |
+| Touch screens, touchpads' fingers, pens' pressure and tilt, and game controllers as kinds of input device with their own codes (ADR 0706) | The files and the hub take them as they are; each needs its driver's reports decoded and a reader | Releases 1.3 and 1.26 |
 | Console layouts whose letters are not Latin, with a second group (ADR 0149) | Needs group switching in the consoles | Release 1.31 (languages) or a need |
 | A sound server that mixes, as the one player (ADR 0320) | Full audio | Release 1.13 |
 | Version 2 of the bundle manifest: `entries`, `actions` and `display` (ADR 0221) | Desktop integration | Releases 1.3 and 1.4 |

@@ -20,15 +20,19 @@ the Linux console's colours, keys and escape sequences, running the
 sign-in, *login*(1), on a pseudo-terminal of its own (*radix-posix*(7)).
 
 The Radix kernel shows its log on the screens while the machine starts.
-consoled is a holder of the display layer (_/devices/display/control_,
-*radix-display*(2)): its first change takes the screens from the log;
+consoled is a holder of the display layer, the one that has
+_/devices/display/attention_ (*radix-display*(2)): its first change
+takes the screens from the log;
 *dmesg*(1) shows the kernel's messages meanwhile. When consoled ends,
 what it showed stays on the screens for three seconds, and the consoled
 that Spark starts in its place takes them with no log between; after
 the three seconds, or at once if the kernel logs an error, the screens
 are the log's again. The keys come from _/devices/kbd_
 (*radix-input*(2)): the PS/2 keyboard's events and every USB keyboard's,
-which can be plugged in and pulled out at any time.
+which can be plugged in and pulled out at any time. consoled ties its
+description of that file to its holder of the screens, so that it reads
+a key only while the consoles are in front; it does not use
+*inputd*(8).
 
 The shown console is on every screen a monitor is plugged into. Every
 screen shows the same columns and rows: as many as the screen with room
@@ -352,6 +356,11 @@ typed on the keyboard is not typed into a console, and no key waits to
 be typed when the consoles show again. A braille display reads and
 types on the consoles throughout.
 
+Ctrl+Alt+Delete puts the consoles in front of a borrower without asking
+it (*KEYS*, ADR 0708). The borrower is told that it was passed over and
+keeps what it made; it reads no key until it is in front again, which it
+is told too. *Esc* in consoled's menu gives it the front back as it was.
+
 # BRAILLE DISPLAYS
 
 consoled shows a braille display the consoles through *brltty*(1),
@@ -396,14 +405,31 @@ refused, and a line that is not one of these is dropped.
 	Lock is pressed again.
 
 *Ctrl+Alt+Delete*
-	The secure attention key, which no program ever receives (ADR
-	0251). When the shown console asks for a password, it clears what
+	The secure attention key, which no program ever receives (ADRs
+	0251 and 0708). The kernel sees the three keys itself, on any
+	keyboard, and tells consoled alone, the one holder of
+	_/devices/display/attention_. If a program that borrowed the
+	screens has them, the kernel puts the consoles in front of it
+	first. From the third key until consoled has nothing left of what
+	the key brought up, no other program reads a key, whatever input
+	file it has open (*radix-input*(2)).
+
+	When the shown console asks for a password, the key clears what
 	was typed there, so that what is typed next goes to consoled alone.
 	Otherwise it shows consoled's menu on the bottom line: *Enter*
 	shows the sign-in, on the shown console if nobody is signed in
 	there, or else on the first console where nobody is; *R* runs
 	*reboot*(8) and *P* *poweroff*(8); *Esc* closes it. With root's
-	shell on each console and no sign-in, the menu has no *Enter*.
+	shell on each console and no sign-in, the menu has no *Enter*,
+	unless a program has the screens.
+
+	Over a program that has the screens, *Esc* gives the program the
+	front back, and *Enter* keeps the consoles in front of it, with
+	the sign-in or, where there is none, the shown console's shell:
+	the menu then says *Enter: consoles*, and consoled logs
+	*Ctrl+Alt+Delete menu: the consoles stay in front*. The consoles
+	stay until the key is pressed again and its menu closed with
+	*Esc*.
 
 *Caps Lock*, *Num Lock*
 	As on any keyboard; every keyboard's lights follow them. The keypad
@@ -460,8 +486,11 @@ installer's screens set their design's sixteen while they show.
 
 # FILES
 
-_/devices/display/control_
-	The display layer, by which consoled draws on the screens.
+_/devices/display/attention_
+	The display layer, by which consoled draws on the screens. The one
+	program that has this file open is the one Ctrl+Alt+Delete puts in
+	front. The programs consoled lends the screens to have
+	_/devices/display/control_.
 
 _/devices/kbd_
 	The keyboards' events.
@@ -511,7 +540,7 @@ _/system/live/consoled/display_
 *login*(1), *authd*(8), *admind*(8), *elevate*(8), *spark*(8), *reboot*(8),
 *keymap*(1), *keymap*(5), *welcome.toml*(5), *accessibility.toml*(5),
 *nukesh*(1), *dmesg*(1),
-*notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *brailled*(8),
+*notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *brailled*(8), *inputd*(8),
 *braille*(1), *brltty*(1), *dukovo-boot*(7),
 *radix-display*(2), *radix-input*(2), *radix-files*(7),
 *serial-console*(8)
