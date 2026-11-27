@@ -36,9 +36,9 @@ use std::io;
 
 pub use radix_abi::input as abi;
 use radix_abi::input::{
-    EV_ABS, EV_KEY, EV_REL, EV_SW, INPUT_AXIS, INPUT_BITS, INPUT_INFO, INPUT_LIST, INPUT_NAME,
-    INPUT_PLACE, INPUT_SERIAL, INPUT_STATE, INPUT_TEXT_MAX, INPUT_TIE, InputAxis, InputInfo,
-    KEY_CODES,
+    EV_ABS, EV_KEY, EV_REL, EV_SW, INPUT_AXIS, INPUT_BITS, INPUT_INFO, INPUT_LIGHTS, INPUT_LIST,
+    INPUT_NAME, INPUT_PLACE, INPUT_SERIAL, INPUT_STATE, INPUT_TEXT_MAX, INPUT_TIE, InputAxis,
+    InputInfo, KEY_CODES,
 };
 
 use kind::{Has, Kinds};
@@ -189,6 +189,17 @@ impl<C: Control> Device<C> {
         let mut bytes = [0; InputAxis::SIZE];
         self.file.control(INPUT_AXIS, u64::from(code), &mut bytes)?;
         wire::axis(&bytes).ok_or_else(short)
+    }
+
+    /// INPUT_LIGHTS: lights the lock lights `lights` names, in SET_LEDS's
+    /// bits, on every keyboard.
+    ///
+    /// # Errors
+    ///
+    /// EBUSY while the description is paused, and EINVAL for a device
+    /// that has no lights.
+    pub fn light(&self, lights: u32) -> io::Result<()> {
+        self.file.control(INPUT_LIGHTS, u64::from(lights), &mut []).map(|_| ())
     }
 
     /// INPUT_NAME: what the device calls itself.

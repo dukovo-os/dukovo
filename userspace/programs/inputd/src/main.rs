@@ -547,15 +547,18 @@ impl Inputd {
     }
 }
 
-/// A socket listening at `path`, which only root may connect to, as
-/// only root opens the display layer's files.
+/// A socket listening at `path`, which any program may connect to
+/// (ADR 0713): a desktop runs as the person it is for. Only root opens
+/// the display layer's files, so a holder of the screens, which is what
+/// a program is handed the devices for, is one root or consoled(8) gave
+/// it.
 fn listen(path: &str) -> io::Result<UnixListener> {
     if let Some(dir) = Path::new(path).parent() {
         std::fs::create_dir_all(dir)?;
     }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
     listener.set_nonblocking(true)?;
     Ok(listener)
 }

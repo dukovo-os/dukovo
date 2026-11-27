@@ -33,6 +33,9 @@
 //!   it is in the back. When the raised holder is done
 //!   ([`Layer::attention_end`]) or ends, the top of the stack has the
 //!   front back the same way.
+//! - The holder of the attention file that stands under the stack (ADR
+//!   0716, [`Layer::stand_under`]) changes nothing that shows and is
+//!   told nothing: the front comes to it as to any lender.
 
 use core::alloc::Allocator;
 use core::ops::Deref;
@@ -327,12 +330,33 @@ where
     /// as deep as it goes.
     pub fn lend(&mut self, from: u32, to: u32) -> Result<(), Status> {
         let passed = self.stack.lend(from, to).map_err(|refused| match refused {
-            Refused::NotFront => busy(),
+            Refused::NotFront | Refused::Empty => busy(),
             Refused::Stacked => invalid(),
             Refused::Full => Kernel::TooMany.status(0),
         })?;
         self.pass(passed, false);
         Ok(())
+    }
+
+    /// STAND_UNDER: holder `me`, which has the attention file, takes the
+    /// bottom of the stack while others are stacked (ADR 0716): the
+    /// place of the lender it started in place of. Nothing that shows
+    /// changes, and the front comes to it when the holders over it give
+    /// it back or end.
+    ///
+    /// # Errors
+    ///
+    /// not_permitted for a holder that has not the attention file, busy
+    /// for one that is stacked already or while no holder is, and
+    /// too_many for a stack as deep as it goes.
+    pub fn stand_under(&mut self, me: u32) -> Result<(), Status> {
+        if self.attention != me {
+            return Err(Kernel::NotPermitted.status(0));
+        }
+        self.stack.stand_under(me).map_err(|refused| match refused {
+            Refused::Full => Kernel::TooMany.status(0),
+            Refused::NotFront | Refused::Stacked | Refused::Empty => busy(),
+        })
     }
 
     /// RETURN: holder `me`, which is in front, gives the front back to

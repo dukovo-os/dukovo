@@ -95,7 +95,7 @@ pub fn control(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
     match call.request {
         abi::LIST => list(call),
         abi::GET => get(call),
-        abi::MAKE_BUFFER..=abi::ATTENTION_END if !call.may_write => {
+        abi::MAKE_BUFFER..=abi::STAND_UNDER if !call.may_write => {
             Err(Kernel::MissingRights.status(0))
         }
         abi::MAKE_BUFFER => done(make_buffer(call)),
@@ -120,11 +120,12 @@ pub fn control(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
         abi::LEND => done(lend(file, call)),
         abi::RETURN => done(mine(file, Layer::give_back)),
         abi::ATTENTION_END => done(mine(file, Layer::attention_end)),
+        abi::STAND_UNDER => done(mine(file, Layer::stand_under)),
         _ => Err(Kernel::NotTerminal.status(0)),
     }
 }
 
-const _: () = assert!(abi::MAKE_BUFFER == abi::GET + 1 && abi::ATTENTION_END == abi::GET + 11);
+const _: () = assert!(abi::MAKE_BUFFER == abi::GET + 1 && abi::STAND_UNDER == abi::GET + 12);
 
 fn gone() -> Status {
     Kernel::Gone.status(0)

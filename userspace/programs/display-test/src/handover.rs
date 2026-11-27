@@ -33,6 +33,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use display::Unmade;
+use display::loan::Answer;
 use display::abi::{DisplayEvent, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, KIND_PIPE};
 use display::wire::ChangeBytes;
 use display_pattern::said::Said;
@@ -42,7 +43,7 @@ use crate::rig::{Keys, Outcome, Seat, State, ensure};
 use crate::stage::{Stage, unmade};
 
 /// Where consoled lends the screens (consoled(8)).
-const LENDER: &str = "/system/live/consoled/display";
+const LENDER: &str = display::loan::SOCKET;
 
 /// How long consoled has to start and to have the screens to lend.
 const LENDER_PATIENCE: Duration = Duration::from_secs(120);
@@ -71,7 +72,7 @@ pub fn borrow_seat() -> Outcome<Seat> {
     loop {
         let said = match UnixStream::connect(LENDER) {
             Ok(stream) => match answer(&stream)? {
-                (said, Some(holder)) if said == "lent\n" => {
+                (said, Some(holder)) if matches!(Answer::parse(&said), Some(Answer::Lent(_))) => {
                     return Ok(Seat::of(File::from(holder)));
                 }
                 (said, _) => format!("consoled answered `{}`", said.trim_end()),

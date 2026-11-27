@@ -7,9 +7,11 @@
 //!
 //! - [`wire`] lays out the interface's records as a request's `buffer`
 //!   holds them, and reads what the kernel writes back.
-//! - [`Holder`] sends the thirteen requests, each with its record, over
+//! - [`Holder`] sends the layer's requests, each with its record, over
 //!   whatever sends a `control` request to the program's description of
 //!   the file ([`Control`]).
+//! - [`loan`] is the lines a program and consoled(8) say to each other
+//!   when the program borrows the screens.
 //!
 //! Nothing here opens a file or makes a system call of its own, so its
 //! tests run on the build machine, where they check each record against
@@ -19,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod loan;
 pub mod wire;
 
 #[cfg(test)]
@@ -30,7 +33,8 @@ pub use radix_abi::display as abi;
 use radix_abi::display::{
     ASK_BEAT, ATTENTION_END, Buffer, CHANGE, CardInfo, DROP, FORMAT_XRGB8888, GET, Get, LEND, LIST,
     MAKE_BLOB, MAKE_BUFFER, MAKE_PICTURE, MOVE_POINTER, Mode, PART_INFO, PART_MODES,
-    PART_MONITOR_DATA, PICTURE_KEPT, PUT, Picture, PipeInfo, PlaneInfo, RETURN, ScreenInfo, Thing,
+    PART_MONITOR_DATA, PICTURE_KEPT, PUT, Picture, PipeInfo, PlaneInfo, RETURN, STAND_UNDER,
+    ScreenInfo, Thing,
 };
 
 use wire::{ChangeBytes, PutBytes};
@@ -333,5 +337,18 @@ impl<C: Control> Holder<C> {
     /// EBUSY for a holder the key did not raise.
     pub fn attention_end(&self) -> io::Result<()> {
         self.file.control(ATTENTION_END, 0, &mut []).map(|_| ())
+    }
+
+    /// STAND_UNDER: the holder of the attention file takes the place
+    /// under every holder that is stacked (ADR 0716), and reads
+    /// EVENT_FRONT when they have given the front back or ended.
+    ///
+    /// # Errors
+    ///
+    /// EBUSY while no holder is stacked, when the front is the caller's
+    /// to take with a change, and for a holder that is stacked already;
+    /// EPERM for a holder that has not the attention file.
+    pub fn stand_under(&self) -> io::Result<()> {
+        self.file.control(STAND_UNDER, 0, &mut []).map(|_| ())
     }
 }

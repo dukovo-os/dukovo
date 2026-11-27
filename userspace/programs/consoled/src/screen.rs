@@ -326,11 +326,15 @@ impl Screen<Device> {
     /// `want`'s columns and rows at least, or the smallest. A program
     /// the screens are lent to is given the layer's file at `lends`.
     ///
+    /// If a program has the screens, lent by a consoled that has ended,
+    /// the consoles stand under it (ADR 0716) and show when it gives the
+    /// screens back or ends.
+    ///
     /// # Errors
     ///
     /// If the file cannot be opened, there is no graphics card, or the
-    /// layer does not let the consoles show: another program is in
-    /// front.
+    /// layer does not let the consoles show or stand under the program
+    /// that is in front.
     pub fn open(path: &str, lends: &str, want: (usize, usize)) -> io::Result<Screen> {
         let device = Device::open(Path::new(path), libc::O_NONBLOCK, Path::new(lends))?;
         Screen::on(device, want)
@@ -386,8 +390,21 @@ impl<L: Link> Screen<L> {
             match screen.start() {
                 Ok(true) => return Ok(screen),
                 Ok(false) => break,
-                // Another holder is in front, and stays there.
-                Err(err) if err.raw_os_error() == Some(libc::EBUSY) => return Err(err),
+                // Another holder is in front: a program the consoled
+                // before this one lent the screens to. This one stands
+                // under it, and has the screens when it is done.
+                Err(err) if err.raw_os_error() == Some(libc::EBUSY) => {
+                    match screen.holder.stand_under() {
+                        Ok(()) => {
+                            (screen.lent, screen.stale) = (true, true);
+                            return Ok(screen);
+                        }
+                        // It ended meanwhile: the screens are there to
+                        // take.
+                        Err(under) if under.raw_os_error() == Some(libc::EBUSY) => last = err,
+                        Err(under) => return Err(under),
+                    }
+                }
                 Err(err) => last = err,
             }
         }
@@ -626,6 +643,25 @@ impl<L: Link> Screen<L> {
     /// secure key has it raised; and why the layer's file could not be
     /// opened or the front lent.
     pub fn lend(&mut self) -> io::Result<L> {
+        // Asked before a description is opened for a loan that cannot
+        // be made.
+        self.read();
+        if !self.front || self.raised {
+            return Err(io::Error::from_raw_os_error(libc::EBUSY));
+        }
+        let borrower = self.holder.file().another()?;
+        self.lend_to(&borrower)?;
+        Ok(borrower)
+    }
+
+    /// Lends the front to `borrower`, a holder consoled lent to before
+    /// and kept a description of: what it last showed shows again at
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Screen::lend`].
+    pub fn lend_to(&mut self, borrower: &L) -> io::Result<()> {
         // What the layer said before the loan is taken in first: an
         // event read after it is the loan's.
         self.read();
@@ -633,11 +669,10 @@ impl<L: Link> Screen<L> {
         if !self.front || self.raised {
             return Err(io::Error::from_raw_os_error(libc::EBUSY));
         }
-        let borrower = self.holder.file().another()?;
         self.holder.lend(borrower.slot())?;
         (self.front, self.lent) = (false, true);
         (self.ended, self.waits_until) = (false, None);
-        Ok(borrower)
+        Ok(())
     }
 
     /// The description of the last loan never reached its borrower and
@@ -733,7 +768,7 @@ impl<L: Link> Screen<L> {
         // while a borrower's last picture is left on the screens would
         // take it off them: the screens are arranged when consoled
         // draws again.
-        if !self.stale || self.waits() || !(self.front || self.surfaces.is_empty()) {
+        if !self.stale || self.waits() || self.lent || !(self.front || self.surfaces.is_empty()) {
             return false;
         }
         let before = (self.cols, self.rows, self.fits());

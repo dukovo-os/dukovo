@@ -374,6 +374,13 @@ impl Consoled {
         if index >= self.consoles.len() {
             return;
         }
+        // A desktop stands in this console: it has the screens again,
+        // and the console itself shows only if it cannot.
+        if self.lender.stands_in() == Some(index) && self.lender.lend_again(&mut self.screen) {
+            self.active = index;
+            self.screen.invalidate();
+            return;
+        }
         if !self.consoles[index].has_session() {
             self.start(index);
         }
@@ -382,6 +389,19 @@ impl Consoled {
             self.screen.invalidate();
             let console = &mut self.consoles[index];
             self.reader.switched(console.number, &mut console.term);
+        }
+    }
+
+    /// Takes in what the desktop that stands in a console wrote: the
+    /// console it asks for is the one that shows when it gives the
+    /// screens back, which it does next.
+    fn borrower_asks(&mut self) {
+        let own = self.lender.stands_in();
+        let heard = self.lender.hear();
+        if let Some(console) = heard.console.filter(|&console| Some(console) != own)
+            && !heard.left
+        {
+            self.switch(console);
         }
     }
 
@@ -413,6 +433,10 @@ impl Consoled {
         let away = self.screen.away();
         if away && !self.keys_away {
             self.keyboard.let_go();
+        }
+        // A borrower lit the lock lights as its own keyboard has them.
+        if !away && self.keys_away {
+            self.lights();
         }
         self.keys_away = away;
         !away
@@ -862,6 +886,7 @@ impl Consoled {
                 fds.push(PollFd::optional(display, wanted));
                 fds.push(PollFd::new(self.screen.fd(), libc::POLLIN));
                 fds.push(PollFd::optional(self.lender.fd(), libc::POLLIN));
+                fds.push(PollFd::optional(self.lender.borrower_fd(), libc::POLLIN));
                 for (i, console) in self.consoles.iter().enumerate() {
                     let held = i == self.active && self.keyboard.scroll;
                     let fd = console.master_fd().filter(|_| !held);
@@ -943,8 +968,12 @@ impl Consoled {
             // A screen came, went or changed its size, or the front
             // passed: the consoles take the cells the screens now show.
             let arranged = revents[7] != 0 && self.screen.events();
+            if revents[9] != 0 {
+                self.borrower_asks();
+            }
             if revents[8] != 0 {
-                self.lender.accept(&mut self.screen);
+                let session = self.consoles[self.active].session();
+                self.lender.accept(&mut self.screen, self.active, session);
             }
             self.secure_key();
             // After the events, one of which may start the wait for
@@ -953,7 +982,7 @@ impl Consoled {
                 self.fit_consoles();
             }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if revents[9 + i] != 0 {
+                if revents[10 + i] != 0 {
                     console.read();
                 }
             }
