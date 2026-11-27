@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The screens: the shown console drawn on every screen a monitor is
-//! plugged into, through the display layer
-//! (_/devices/display/control_, radix-display(2)).
+//! plugged into, through the display layer (radix-display(2)).
 //!
-//! consoled is one of the layer's holders. Its first change takes the
+//! consoled is one of the layer's holders, and the one that has
+//! _/devices/display/attention_. Its first change takes the
 //! front from the kernel's log and puts a picture on each screen's main
 //! plane, the size of the screen's mode, which the card keeps: consoled
 //! maps nothing and holds no copy of a screen. A draw sends the cells
@@ -27,6 +27,12 @@
 //! borrower takes the screens from that picture, with no console between
 //! the two. Only when none has come does consoled show the consoles
 //! again.
+//!
+//! Ctrl+Alt+Delete is the secure key (ADR 0708). The kernel sees it, and
+//! raises the holder of the attention file over whoever has the
+//! screens: consoled is told ([`Screen::take_key`]), is in front, and
+//! alone reads the keys, until it says it is done ([`Screen::lower`]).
+//! The borrower it was raised over has the screens back then.
 //!
 //! Every screen shows the same grid, the largest that fits them all,
 //! centred, in the Spleen font the kernel's log used, chosen the same way
@@ -53,11 +59,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use display::abi::{
-    DisplayEvent, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, EVENT_OVERFLOW, EVENT_SCREEN,
-    MAY_BLANK,
+    DisplayEvent, EVENT_ATTENTION, EVENT_BACK, EVENT_BORROWER_ENDED, EVENT_FRONT, EVENT_OVERFLOW,
+    EVENT_SCREEN, MAY_BLANK,
 };
 use display::wire::{self, ChangeBytes, PutBytes};
 use display::{Control, Holder, Unmade};
+use radix_abi::input::INPUT_TIE;
 use radix_fbcon::{Font, builtin_font, choose_font_for};
 use sysapi::kernel;
 
@@ -113,25 +120,26 @@ pub trait Link: Control + Sized {
     fn slot(&self) -> u32;
 }
 
-/// A description of _/devices/display/control_: consoled's own, or one
-/// it opened to lend the front to.
+/// A description of one of the layer's files: consoled's own, of
+/// _/devices/display/attention_, or one of _/devices/display/control_
+/// that it opened to lend the front to.
 #[derive(Debug)]
 pub struct Device {
     file: File,
-    /// Where the layer's file is, to open it once more.
-    path: PathBuf,
+    /// The layer's file as a borrower has it, to open it once more.
+    lends: PathBuf,
 }
 
 impl Device {
     /// Opens the layer's file at `path` with the open flags `flags`, and
-    /// never for a program consoled starts.
-    fn open(path: &Path, flags: i32) -> io::Result<Device> {
+    /// never for a program consoled starts. A borrower's is `lends`.
+    fn open(path: &Path, flags: i32, lends: &Path) -> io::Result<Device> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_CLOEXEC | flags)
             .open(path)?;
-        Ok(Device { file, path: path.to_path_buf() })
+        Ok(Device { file, lends: lends.to_path_buf() })
     }
 }
 
@@ -154,7 +162,7 @@ impl Link for Device {
 
     // The borrower chooses for itself whether its reads wait.
     fn another(&self) -> io::Result<Device> {
-        Device::open(&self.path, 0)
+        Device::open(&self.lends, 0, &self.lends)
     }
 
     fn slot(&self) -> u32 {
@@ -277,6 +285,15 @@ pub struct Screen<L: Link = Device> {
     shows: bool,
     /// Whether a borrower has the screens.
     lent: bool,
+    /// Whether the secure key raised consoled, which has not said it is
+    /// done.
+    raised: bool,
+    /// Whether it was raised over a borrower, which has the screens
+    /// back when consoled is done.
+    over: bool,
+    /// Set when the secure key is read of, until it is acted on
+    /// ([`Screen::take_key`]).
+    key: bool,
     /// Set when a loan's description never reached its borrower: the
     /// borrower's end, when the layer tells of it, leaves no picture to
     /// wait behind.
@@ -306,20 +323,34 @@ pub struct Screen<L: Link = Device> {
 impl Screen<Device> {
     /// Opens the display layer's file at `path` and takes the screens
     /// from the kernel's log, with the largest font that gives a grid of
-    /// `want`'s columns and rows at least, or the smallest.
+    /// `want`'s columns and rows at least, or the smallest. A program
+    /// the screens are lent to is given the layer's file at `lends`.
     ///
     /// # Errors
     ///
     /// If the file cannot be opened, there is no graphics card, or the
     /// layer does not let the consoles show: another program is in
     /// front.
-    pub fn open(path: &str, want: (usize, usize)) -> io::Result<Screen> {
-        Screen::on(Device::open(Path::new(path), libc::O_NONBLOCK)?, want)
+    pub fn open(path: &str, lends: &str, want: (usize, usize)) -> io::Result<Screen> {
+        let device = Device::open(Path::new(path), libc::O_NONBLOCK, Path::new(lends))?;
+        Screen::on(device, want)
     }
 
     /// The file to wait on for the layer's events.
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.holder.file().as_fd()
+    }
+
+    /// Ties `input`, a description of an input file, to the consoles'
+    /// holder (radix-input(2)): it reads keys only while the consoles
+    /// are in front, and alone while the secure key raised them.
+    ///
+    /// # Errors
+    ///
+    /// Why the kernel did not tie it.
+    pub fn tie(&self, input: &File) -> io::Result<()> {
+        let slot = u64::from(self.holder.file().slot());
+        kernel::control(input, INPUT_TIE, slot, &mut []).map(|_| ()).map_err(kernel::io_error)
     }
 }
 
@@ -336,6 +367,9 @@ impl<L: Link> Screen<L> {
             front: false,
             shows: false,
             lent: false,
+            raised: false,
+            over: false,
+            key: false,
             unsent: false,
             ended: false,
             waits_until: None,
@@ -511,20 +545,71 @@ impl<L: Link> Screen<L> {
                     self.forget();
                 }
             }
-            EVENT_BACK => self.front = false,
+            // Only a borrower is ever in front of consoled: as when it
+            // is done with the secure key over one.
+            EVENT_BACK => (self.front, self.lent) = (false, true),
             // Its last picture stays for the next borrower, unless it
-            // never had the screens to draw one.
-            EVENT_BORROWER_ENDED => self.ended = !core::mem::take(&mut self.unsent),
+            // never had the screens to draw one, or the raised consoles
+            // are what shows.
+            EVENT_BORROWER_ENDED => {
+                let drew = !core::mem::take(&mut self.unsent);
+                self.ended = drew && !self.raised;
+                (self.lent, self.over) = (false, false);
+            }
+            // The count says whether the front passed to consoled for
+            // the key, and so passes back. A borrower's last picture is
+            // no longer waited behind: the person asked for consoled.
+            EVENT_ATTENTION => {
+                (self.raised, self.key, self.over) = (true, true, event.count != 0);
+                (self.ended, self.waits_until) = (false, None);
+            }
             EVENT_SCREEN => self.stale = true,
             // Some were lost, and one may have been any of the above:
             // the screens are asked about again, and the next draw
-            // finds whether consoled is in front.
+            // finds whether consoled is in front. If the secure key was
+            // among them, nothing shows that it was: consoled says it
+            // is done, so that its hold does not last.
             EVENT_OVERFLOW => {
                 self.stale = true;
                 (self.front, self.shows, self.lent) = (true, false, false);
+                (self.raised, self.over) = (true, false);
                 self.forget();
             }
             _ => {}
+        }
+    }
+
+    /// Whether the secure key was pressed since this was last asked.
+    pub fn take_key(&mut self) -> bool {
+        core::mem::take(&mut self.key)
+    }
+
+    /// Whether the secure key raised consoled, which has not said it is
+    /// done ([`Screen::lower`]): it alone reads the keys.
+    pub fn raised(&self) -> bool {
+        self.raised
+    }
+
+    /// Whether consoled is raised over a borrower, which has the
+    /// screens back when consoled is done.
+    pub fn over(&self) -> bool {
+        self.raised && self.over
+    }
+
+    /// consoled is done with the secure key: every reader reads the keys
+    /// again, and the borrower it was raised over has the screens back.
+    pub fn lower(&mut self) {
+        if !core::mem::take(&mut self.raised) {
+            return;
+        }
+        self.over = false;
+        match self.holder.attention_end() {
+            // Not raised, as the layer has it: after events were lost.
+            Err(err) if err.raw_os_error() == Some(libc::EBUSY) => {}
+            Err(err) => eprintln!("consoled: cannot end the secure key's hold: {err}"),
+            // What the layer said of the front is taken in at once: a
+            // key typed from here is the borrower's.
+            Ok(()) => self.read(),
         }
     }
 
@@ -537,13 +622,15 @@ impl<L: Link> Screen<L> {
     /// # Errors
     ///
     /// EBUSY while consoled is not in front, as while another borrower
-    /// has the screens or no screen shows the consoles; and why the
-    /// layer's file could not be opened or the front lent.
+    /// has the screens or no screen shows the consoles, and while the
+    /// secure key has it raised; and why the layer's file could not be
+    /// opened or the front lent.
     pub fn lend(&mut self) -> io::Result<L> {
         // What the layer said before the loan is taken in first: an
         // event read after it is the loan's.
         self.read();
-        if !self.front {
+        // Nobody passes the front while the secure key has it raised.
+        if !self.front || self.raised {
             return Err(io::Error::from_raw_os_error(libc::EBUSY));
         }
         let borrower = self.holder.file().another()?;

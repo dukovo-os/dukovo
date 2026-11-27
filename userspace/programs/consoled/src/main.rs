@@ -33,7 +33,12 @@
 //! writes new ones, and the log says "ttyN: drawing the sign-in screen
 //! again for the web console's address". A program that draws the screens
 //! itself, such as a desktop, borrows them from consoled (`lend`, ADR
-//! 0702), and no key is typed into a console while it has them. When
+//! 0702), and no key is typed into a console while it has them.
+//! Ctrl+Alt+Delete is the secure key (ADR 0708): the kernel sees it
+//! before any program and puts consoled, the holder of
+//! _/devices/display/attention_, in front of whatever has the screens,
+//! where it alone reads the keys while its menu, or the password prompt
+//! the key cleared, shows. When
 //! consoled ends, what it showed stays for three seconds, in which the
 //! consoled that Spark starts in its place takes the screens with no
 //! kernel log between; after them the screens are the kernel log's
@@ -82,7 +87,12 @@ const USAGE: &str = "usage: consoled [--consoles N] [--shell PATH]";
 /// The consoles there are, at most: Alt+F1 to Alt+F12.
 const CONSOLES_MAX: usize = 12;
 
-/// The display layer's file, which the screens are drawn through.
+/// The display layer's file as consoled has it, which the screens are
+/// drawn through: its one holder is the one the secure key puts in front
+/// (ADR 0708).
+const ATTENTION: &str = "/devices/display/attention";
+
+/// The display layer's file as a program the screens are lent to has it.
 const DISPLAY: &str = "/devices/display/control";
 
 /// Where the text shown before each session comes from.
@@ -340,6 +350,13 @@ struct Consoled {
     lender: Lender,
     /// Whether the keys were last another program's, with the screens.
     keys_away: bool,
+    /// Whether the secure key cleared a password prompt, which keeps
+    /// the key's hold while it shows.
+    cleared: bool,
+    /// Whether the person chose the consoles from the secure key's menu:
+    /// they stay in front of a program that had the screens until the
+    /// menu is closed with Esc.
+    stays: bool,
     /// admind's file of the web console's address and fingerprint, which
     /// sign-in screens are drawn again for when it changes.
     web_console: welcome::WebConsoleWatch,
@@ -595,10 +612,53 @@ impl Consoled {
     fn attention(&mut self) {
         let active = self.active;
         if self.prompts.as_mut().is_some_and(|p| p.clear(active)) {
-            self.bar = None;
+            (self.bar, self.cleared) = (None, true);
             return;
         }
         self.bar = Some(Bar::Menu);
+    }
+
+    /// Ctrl+Alt+Delete as the kernel saw it (ADR 0708), which put
+    /// consoled in front of whatever had the screens. What consoled
+    /// shows next is said, not where the cursor was.
+    fn secure_key(&mut self) {
+        if self.screen.take_key() {
+            self.reader.forget();
+            self.attention();
+        }
+    }
+
+    /// Says consoled is done with the secure key once nothing the key
+    /// brought up is left: the menu is closed, and the password prompt
+    /// the key cleared is answered. Every program reads the keys again
+    /// then, and a program that had the screens has them back, unless
+    /// the person chose the consoles from the menu.
+    fn settle_key(&mut self) {
+        if !self.screen.raised() {
+            (self.cleared, self.stays) = (false, false);
+            return;
+        }
+        let menu = self.bar == Some(Bar::Menu);
+        let prompt =
+            self.cleared && self.prompts.as_ref().is_some_and(|p| p.shown(self.active).is_some());
+        if menu || prompt || (self.stays && self.screen.over()) {
+            return;
+        }
+        (self.cleared, self.stays) = (false, false);
+        self.screen.lower();
+        // Pressed again as the layer was told.
+        self.secure_key();
+    }
+
+    /// What Enter does in the Ctrl+Alt+Delete menu.
+    fn menu_enter(&self) -> prompts::Enter {
+        if self.shell.sign_in {
+            prompts::Enter::SignIn
+        } else if self.screen.over() {
+            prompts::Enter::Consoles
+        } else {
+            prompts::Enter::Nothing
+        }
     }
 
     /// A key's bytes while consoled's own line shows.
@@ -608,10 +668,17 @@ impl Consoled {
             return;
         }
         match bytes {
-            b"\r" if self.shell.sign_in => {
-                self.bar = None;
-                self.sign_in();
-            }
+            b"\r" => match self.menu_enter() {
+                prompts::Enter::SignIn => {
+                    (self.bar, self.stays) = (None, true);
+                    self.sign_in();
+                }
+                prompts::Enter::Consoles => {
+                    (self.bar, self.stays) = (None, true);
+                    eprintln!("consoled: Ctrl+Alt+Delete menu: the consoles stay in front");
+                }
+                prompts::Enter::Nothing => {}
+            },
             b"r" | b"R" => {
                 self.bar = None;
                 eprintln!("consoled: Ctrl+Alt+Delete menu: restarting the machine");
@@ -622,7 +689,7 @@ impl Consoled {
                 eprintln!("consoled: Ctrl+Alt+Delete menu: powering off the machine");
                 run(POWEROFF);
             }
-            b"\x1b" | b"\x03" => self.bar = None,
+            b"\x1b" | b"\x03" => (self.bar, self.stays) = (None, false),
             _ => {}
         }
     }
@@ -654,7 +721,7 @@ impl Consoled {
             return Some(ask.cells(cols));
         }
         match self.bar {
-            Some(Bar::Menu) => return Some(prompts::menu_cells(cols, self.shell.sign_in)),
+            Some(Bar::Menu) => return Some(prompts::menu_cells(cols, self.menu_enter())),
             Some(Bar::Note(text)) => return Some(prompts::note_cells(cols, text)),
             None => {}
         }
@@ -695,7 +762,7 @@ impl Consoled {
         let ask = self.prompts.as_ref().and_then(|p| p.shown(self.active));
         self.reader.prompt(ask.map(|ask| (ask.id(), ask.spoken())));
         let bar = match self.bar {
-            Some(Bar::Menu) => Some(prompts::menu_text(self.shell.sign_in)),
+            Some(Bar::Menu) => Some(prompts::menu_text(self.menu_enter())),
             Some(Bar::Note(text)) => Some(text),
             None => None,
         };
@@ -879,6 +946,7 @@ impl Consoled {
             if revents[8] != 0 {
                 self.lender.accept(&mut self.screen);
             }
+            self.secure_key();
             // After the events, one of which may start the wait for
             // another borrower.
             if self.screen.tick(now) || arranged {
@@ -899,6 +967,7 @@ impl Consoled {
                 prompts.tick(now);
             }
             self.redraw_sign_ins(now);
+            self.settle_key();
             self.speak(now);
             // Only the cells that changed are drawn.
             let bottom = self.bottom();
@@ -922,12 +991,12 @@ fn main() -> ExitCode {
         eprintln!("consoled: install: the installer's screens are on {place}");
     }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
-    let mut screen = match Screen::open(DISPLAY, grid) {
+    let mut screen = match Screen::open(ATTENTION, DISPLAY, grid) {
         Ok(screen) => screen,
         Err(err) => {
             // No screen to draw on, as with a serial console only: nothing
             // to do, and nothing to start again.
-            eprintln!("consoled: no screen for consoles ({DISPLAY}: {err})");
+            eprintln!("consoled: no screen for consoles ({ATTENTION}: {err})");
             return ExitCode::SUCCESS;
         }
     };
@@ -946,6 +1015,13 @@ fn main() -> ExitCode {
         .open("/devices/kbd")
         .map_err(|err| eprintln!("consoled: no keyboard (/devices/kbd: {err})"))
         .ok();
+    // The keys are the consoles' while the consoles are in front, and
+    // theirs alone once the secure key put them there (radix-input(2)).
+    if let Some(kbd) = &kbd
+        && let Err(err) = screen.tie(kbd)
+    {
+        eprintln!("consoled: the keyboard does not follow the screens: {err}");
+    }
     // Sign-in on each console, unless a shell was asked for, which then
     // runs as root with no sign-in.
     let (sign_in, path, home) = match options.shell {
@@ -1015,6 +1091,8 @@ fn main() -> ExitCode {
         braille: Braille::listen(braille::SOCKET),
         lender: Lender::listen(lend::SOCKET),
         keys_away: false,
+        cleared: false,
+        stays: false,
         web_console: welcome::WebConsoleWatch::new(welcome::WEB_CONSOLE, Instant::now()),
     };
     consoled.lights();

@@ -148,26 +148,27 @@ where
 
     /// The secure key was pressed (ADR 0708): the holder of the
     /// attention file is raised over the stack, told it is in front if
-    /// it was not, and told of the key. Returns that holder; `None` if
-    /// no holder has the attention file, or the machine ends. A key
-    /// pressed again while the holder is raised changes nothing: the
-    /// holder reads it as keys.
+    /// it was not, and told of the key, with a count of 1 if the front
+    /// passed to it and so passes back when it is done. Returns that
+    /// holder; `None` if no holder has the attention file, or the
+    /// machine ends. A key pressed again while the holder is raised
+    /// changes nothing: the holder reads it as keys.
     pub fn secure_key(&mut self) -> Option<u32> {
         if self.closing || self.attention == 0 {
             return None;
         }
         let id = self.attention;
-        match self.stack.raise(id) {
-            Err(_) => return self.stack.raised(),
-            Ok(None) => {}
-            Ok(Some(passed)) => {
-                if passed.from.is_none() {
-                    self.log_gives_way();
-                }
-                self.pass(passed, false);
+        let Ok(passed) = self.stack.raise(id) else {
+            return self.stack.raised();
+        };
+        if let Some(passed) = passed {
+            if passed.from.is_none() {
+                self.log_gives_way();
             }
+            self.pass(passed, false);
         }
-        self.post(id, DisplayEvent { kind: EVENT_ATTENTION, ..self.event() });
+        let count = u64::from(passed.is_some());
+        self.post(id, DisplayEvent { kind: EVENT_ATTENTION, count, ..self.event() });
         Some(id)
     }
 

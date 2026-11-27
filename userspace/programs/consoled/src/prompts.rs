@@ -454,18 +454,33 @@ fn answer(id: u64, typed: Prompted) {
     }
 }
 
-/// The Ctrl+Alt+Delete menu on the bottom line, consoled's own: `sign_in`
-/// says whether Enter signs in.
-pub fn menu_cells(cols: usize, sign_in: bool) -> Vec<Cell> {
-    note_cells(cols, menu_text(sign_in))
+/// What Enter does in the Ctrl+Alt+Delete menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Enter {
+    /// Shows the sign-in on a console.
+    SignIn,
+    /// Keeps the consoles, root's shells, in front of the program that
+    /// had the screens.
+    Consoles,
+    /// Nothing: the consoles are root's shells, and in front already.
+    Nothing,
+}
+
+/// The Ctrl+Alt+Delete menu on the bottom line, consoled's own.
+pub fn menu_cells(cols: usize, enter: Enter) -> Vec<Cell> {
+    note_cells(cols, menu_text(enter))
 }
 
 /// The Ctrl+Alt+Delete menu's words.
-pub fn menu_text(sign_in: bool) -> &'static str {
-    if sign_in {
-        "Ctrl+Alt+Delete    Enter: sign in    R: restart    P: power off    Esc: back"
-    } else {
-        "Ctrl+Alt+Delete    R: restart    P: power off    Esc: back"
+pub fn menu_text(enter: Enter) -> &'static str {
+    match enter {
+        Enter::SignIn => {
+            "Ctrl+Alt+Delete    Enter: sign in    R: restart    P: power off    Esc: back"
+        }
+        Enter::Consoles => {
+            "Ctrl+Alt+Delete    Enter: consoles    R: restart    P: power off    Esc: back"
+        }
+        Enter::Nothing => "Ctrl+Alt+Delete    R: restart    P: power off    Esc: back",
     }
 }
 

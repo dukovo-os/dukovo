@@ -7,7 +7,7 @@
 //!
 //! - [`wire`] lays out the interface's records as a request's `buffer`
 //!   holds them, and reads what the kernel writes back.
-//! - [`Holder`] sends the twelve requests, each with its record, over
+//! - [`Holder`] sends the thirteen requests, each with its record, over
 //!   whatever sends a `control` request to the program's description of
 //!   the file ([`Control`]).
 //!
@@ -28,9 +28,9 @@ use std::io;
 
 pub use radix_abi::display as abi;
 use radix_abi::display::{
-    ASK_BEAT, Buffer, CHANGE, CardInfo, DROP, FORMAT_XRGB8888, GET, Get, LEND, LIST, MAKE_BLOB,
-    MAKE_BUFFER, MAKE_PICTURE, MOVE_POINTER, Mode, PART_INFO, PART_MODES, PART_MONITOR_DATA,
-    PICTURE_KEPT, PUT, Picture, PipeInfo, PlaneInfo, RETURN, ScreenInfo, Thing,
+    ASK_BEAT, ATTENTION_END, Buffer, CHANGE, CardInfo, DROP, FORMAT_XRGB8888, GET, Get, LEND, LIST,
+    MAKE_BLOB, MAKE_BUFFER, MAKE_PICTURE, MOVE_POINTER, Mode, PART_INFO, PART_MODES,
+    PART_MONITOR_DATA, PICTURE_KEPT, PUT, Picture, PipeInfo, PlaneInfo, RETURN, ScreenInfo, Thing,
 };
 
 use wire::{ChangeBytes, PutBytes};
@@ -322,5 +322,16 @@ impl<C: Control> Holder<C> {
     /// The request's failure.
     pub fn give_back(&self) -> io::Result<()> {
         self.file.control(RETURN, 0, &mut []).map(|_| ())
+    }
+
+    /// ATTENTION_END: the holder of the attention file, which the secure
+    /// key raised, is done. The front is the top of the stack's again,
+    /// and the readers of the input files that the key paused are heard.
+    ///
+    /// # Errors
+    ///
+    /// EBUSY for a holder the key did not raise.
+    pub fn attention_end(&self) -> io::Result<()> {
+        self.file.control(ATTENTION_END, 0, &mut []).map(|_| ())
     }
 }

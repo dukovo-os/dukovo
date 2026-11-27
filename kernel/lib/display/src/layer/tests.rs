@@ -358,6 +358,11 @@ impl Rig {
         self.events(holder).iter().map(|event| event.kind).collect()
     }
 
+    /// The kind and the count of each event `holder` has not read.
+    fn told(&mut self, holder: u32) -> Vec<(u32, u64)> {
+        self.events(holder).iter().map(|event| (event.kind, event.count)).collect()
+    }
+
     /// A holder that has taken the front from the log with picture 1,
     /// tagged 1, on the firmware-like card's screen. What the card was
     /// asked and what the holder was told on the way are forgotten.
@@ -776,7 +781,8 @@ fn the_secure_key_raises_the_attention_holder_until_it_is_done() {
     let drawn = rig.firmware.shown();
     assert_eq!((drawn.main, drawn.whole), (Some(1), true));
     assert_eq!(rig.kinds(desktop), [EVENT_BACK]);
-    assert_eq!(rig.kinds(console), [EVENT_FRONT, EVENT_ATTENTION]);
+    // The key's event counts the front that passed, and passes back.
+    assert_eq!(rig.told(console), [(EVENT_FRONT, 0), (EVENT_ATTENTION, 1)]);
     let entries = [(MAIN, PLANE_PICTURE, picture)];
     assert_eq!(rig.change(desktop, NOW, 0, &entries), status(busy()));
     // Nobody passes the front meanwhile, and only the raised holder
@@ -802,7 +808,7 @@ fn the_secure_key_with_its_holder_in_front_already_passes_no_front() {
     let mut rig = Rig::firmware();
     let console = rig.console();
     assert_eq!(rig.layer.secure_key(), Some(console));
-    assert_eq!(rig.kinds(console), [EVENT_ATTENTION]);
+    assert_eq!(rig.told(console), [(EVENT_ATTENTION, 0)]);
     assert_eq!(rig.layer.attention_end(console), Ok(()));
     assert!(rig.kinds(console).is_empty());
     // Nothing was drawn anew for it.
@@ -847,7 +853,7 @@ fn a_holder_that_never_drew_is_raised_over_the_log_and_gives_it_back() {
     rig.firmware.asked();
     assert_eq!(rig.layer.secure_key(), Some(prompt));
     assert_eq!(rig.firmware.asked(), [Call::LogGives]);
-    assert_eq!(rig.kinds(prompt), [EVENT_FRONT, EVENT_ATTENTION]);
+    assert_eq!(rig.told(prompt), [(EVENT_FRONT, 0), (EVENT_ATTENTION, 1)]);
     let picture = u64::from(rig.frame(prompt, 1));
     assert_eq!(rig.change(prompt, NOW, 0, &[(MAIN, PLANE_PICTURE, picture)]), DONE);
     assert_eq!(rig.firmware.shown().main, Some(1));

@@ -14,7 +14,7 @@ const THEIRS: u8 = 0x77;
 
 /// A console of 640 by 400 on a card like the firmware's, with something
 /// written on it and drawn.
-fn drawn() -> (Wire, Rc<FakeCard>, Screen<Wire>, Terminal) {
+pub(super) fn drawn() -> (Wire, Rc<FakeCard>, Screen<Wire>, Terminal) {
     let (wire, card) = firmware(640, 400);
     let mut screen = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap();
     let mut term = terminal(&screen);
@@ -26,7 +26,7 @@ fn drawn() -> (Wire, Rc<FakeCard>, Screen<Wire>, Terminal) {
 
 /// The borrower draws: a picture of its own goes on the first screen's
 /// main plane, and its pixels cover the screen.
-fn borrower_draws(borrower: &Wire, card: &FakeCard) {
+pub(super) fn borrower_draws(borrower: &Wire, card: &FakeCard) {
     let holder = Holder::new(borrower.clone());
     let found = outputs::Found::read(&holder).unwrap();
     let output = outputs::outputs(&found)[0];
@@ -38,12 +38,12 @@ fn borrower_draws(borrower: &Wire, card: &FakeCard) {
 }
 
 /// Whether all of `card`'s first screen is the borrower's picture still.
-fn shows_theirs(card: &FakeCard) -> bool {
+pub(super) fn shows_theirs(card: &FakeCard) -> bool {
     card.glass.borrow()[0].1.iter().all(|&byte| byte == THEIRS)
 }
 
 /// How many PUT and CHANGE requests the layer has had.
-fn asked(wire: &Wire) -> (usize, usize) {
+pub(super) fn asked(wire: &Wire) -> (usize, usize) {
     let kernel = wire.0.borrow();
     (kernel.puts, kernel.changes)
 }
@@ -172,6 +172,11 @@ fn with_the_events_of_a_loan_lost_the_consoles_still_show_again() {
     assert!(!screen.away());
     screen.draw(&term, None);
     assert_shows(&card, 0, &screen, 0, &term);
+    // The secure key may have been among them, so consoled says it is
+    // done, which the layer refuses here, and can lend again.
+    assert!(screen.raised());
+    screen.lower();
+    assert!(!screen.raised() && screen.lend().is_ok());
 }
 
 #[test]
