@@ -103,6 +103,8 @@ const CASE_SECONDS: u64 = 180;
 const SCRIPT_FILE: &str = "linux-suite.sh";
 const LTP_ON_DISK: &str = "ltp";
 const CASES_FILE: &str = "cases.lst";
+/// The list of every case, which ob writes beside the work folder's own.
+const ALL_FILE: &str = "all.lst";
 const RUNNER_FILE: &str = "suite-run";
 const SECCOMP_FILE: &str = "seccomp-diff";
 const RESULTS_FILE: &str = "results.txt";
@@ -282,7 +284,7 @@ pub fn command(ctx: &Ctx, profile: crate::config::Profile, limit: Option<Duratio
         std::fs::remove_dir_all(&on_linux)
             .context(|| format!("clearing {}", on_linux.display()))?;
     }
-    let list = work.join("all.lst");
+    let list = work.join(ALL_FILE);
     std::fs::write(&list, case_list(&all)).context(|| format!("writing {}", list.display()))?;
     let mut run = std::process::Command::new(&runner);
     run.arg(&list).arg(ltp_root(ctx)).arg(&on_linux).arg(CASE_SECONDS.to_string());
@@ -616,16 +618,31 @@ fn skipped<'a>(
         .collect()
 }
 
+/// The files of LTP's testcases/bin, `names`, that the disk holds: the
+/// programs of the cases `chosen`, and every file that no case of `all`
+/// runs, the helpers that cases start (execve_child) or copy to where they
+/// work (creat07_child). A case's program that is not chosen stays off.
+fn on_disk(names: &[String], all: &[Entry], chosen: &[Entry]) -> BTreeSet<String> {
+    let of_a_case: BTreeSet<&str> = all.iter().map(Entry::program).collect();
+    let mut files: BTreeSet<String> =
+        chosen.iter().map(|case| case.program().to_string()).collect();
+    files.extend(names.iter().filter(|name| !of_a_case.contains(name.as_str())).cloned());
+    files
+}
+
 /// Makes the disk: FAT32 holding the Linux base's bundle, the programs of
-/// the cases [`command`] chose, stripped, their list, suite-run,
-/// seccomp-diff and the script.
+/// the cases [`command`] chose and the helpers they run ([`on_disk`]),
+/// the programs stripped, their list, suite-run, seccomp-diff and the
+/// script.
 pub fn make_disk(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     make_bundle_disk(ctx, disk, path, |name| name.starts_with(cases::linux_view::BUNDLE_PREFIX))?;
     let work = work_folder(ctx);
-    let cases =
-        parse_cases(&std::fs::read_to_string(work.join(CASES_FILE)).map_err(|err| {
-            format!("reading the cases chosen (run `./ob test linux-suite`): {err}")
-        })?);
+    let list = |file: &str| {
+        std::fs::read_to_string(work.join(file)).map(|text| parse_cases(&text)).map_err(|err| {
+            format!("reading the list of cases {file} (run `./ob test linux-suite`): {err}")
+        })
+    };
+    let (cases, all) = (list(CASES_FILE)?, list(ALL_FILE)?);
     let staged = work.join("disk");
     if staged.exists() {
         std::fs::remove_dir_all(&staged)
@@ -634,15 +651,26 @@ pub fn make_disk(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     let bin = staged.join(LTP_ON_DISK).join("testcases/bin");
     std::fs::create_dir_all(&bin).map_err(|err| format!("making {}: {err}", bin.display()))?;
     let installed = ltp_root(ctx).join("testcases/bin");
-    let programs: BTreeSet<&str> = cases.iter().map(Entry::program).collect();
-    for program in programs {
-        host_tool(
-            std::process::Command::new("strip")
-                .arg("--strip-unneeded")
-                .arg("-o")
-                .arg(bin.join(program))
-                .arg(installed.join(program)),
-        )?;
+    let names: Vec<String> = std::fs::read_dir(&installed)
+        .and_then(|entries| {
+            entries.map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned())).collect()
+        })
+        .map_err(|err| format!("reading {}: {err}", installed.display()))?;
+    for file in on_disk(&names, &all, &cases) {
+        let (from, to) = (installed.join(&file), bin.join(&file));
+        let bytes =
+            std::fs::read(&from).map_err(|err| format!("reading {}: {err}", from.display()))?;
+        if crate::elf::Elf::parse(&bytes).is_some() {
+            host_tool(
+                std::process::Command::new("strip")
+                    .arg("--strip-unneeded")
+                    .arg("-o")
+                    .arg(&to)
+                    .arg(&from),
+            )?;
+        } else {
+            std::fs::write(&to, bytes).map_err(|err| format!("writing {}: {err}", to.display()))?;
+        }
     }
     let ltp = staged.join(LTP_ON_DISK);
     let write = |path: PathBuf, text: String| {
@@ -885,7 +913,8 @@ const WHY_WIDTH: usize = 160;
 /// What the logs of the failed cases say of why, from the file of them
 /// the script writes (`== NAME` and then its log, a case after another):
 /// for each, its first lines that LTP marks as a failure, a broken test,
-/// a warning or a test that does not apply, or else the last line it
+/// a warning or a test that does not apply, as its library writes them
+/// (`TFAIL: `) or its old one (`TFAIL  :  `), or else the last line it
 /// wrote, each cut to [`WHY_WIDTH`] characters.
 fn faults_of(failed: &str) -> BTreeMap<String, Vec<String>> {
     let mut faults = BTreeMap::new();
@@ -893,7 +922,10 @@ fn faults_of(failed: &str) -> BTreeMap<String, Vec<String>> {
         let (name, log) = section.split_once('\n').unwrap_or((section, ""));
         let cut = |line: &str| line.trim().chars().take(WHY_WIDTH).collect::<String>();
         let marked = |line: &&str| {
-            ["TFAIL: ", "TBROK: ", "TWARN: ", "TCONF: "].iter().any(|mark| line.contains(mark))
+            ["TFAIL", "TBROK", "TWARN", "TCONF"].iter().any(|mark| {
+                line.match_indices(mark)
+                    .any(|(at, _)| line[at + mark.len()..].trim_start_matches(' ').starts_with(':'))
+            })
         };
         let mut why: Vec<String> = log.lines().filter(marked).take(WHY_LINES).map(cut).collect();
         if why.is_empty() {
@@ -994,6 +1026,19 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_holds_the_chosen_cases_and_the_helpers_no_case_runs() {
+        let all =
+            entries("execve01 execve01\ncreat07 creat07\nmmap10 mmap10\nmmap10_1 mmap10 -s\n");
+        let chosen = entries("execve01 execve01\nmmap10_1 mmap10 -s\n");
+        let names = ["execve01", "execve01_child", "creat07", "creat07_child", "mmap10"];
+        let names: Vec<String> = names.map(String::from).to_vec();
+        assert_eq!(
+            on_disk(&names, &all, &chosen).into_iter().collect::<Vec<_>>(),
+            ["creat07_child", "execve01", "execve01_child", "mmap10"]
+        );
+    }
+
+    #[test]
     fn the_cases_that_passed_on_linux_and_have_no_skip_run_on_dukovo() {
         let cases = entries("abort01 abort01\naccept01 accept01\nfcntl36 fcntl36\nbrk01 brk01\n");
         let linux = outcomes(&[
@@ -1063,7 +1108,10 @@ mod tests {
                       mmap01.c:9: TFAIL: mmap() failed: EINVAL\n\
                       mmap01.c:12: TBROK: munmap() failed: EINVAL\n\
                       mmap01.c:14: TFAIL: a third\n\
-                      == pipe08\nstarted\nwaiting\n\n";
+                      == pipe08\nstarted\nwaiting\n\n\
+                      == fcntl11\nfcntl11     0  TINFO  :  Enter block 9\n\
+                      fcntl11     1  TFAIL  :  fcntl11.c:140: F_GETLK got the wrong lock\n\
+                      fcntl11     0  TINFO  :  Exit block 9\n";
         let faults = faults_of(failed);
         assert_eq!(
             faults["mmap01"],
@@ -1074,6 +1122,11 @@ mod tests {
         );
         // A log with no marked line shows its last.
         assert_eq!(faults["pipe08"], ["waiting"]);
+        // The old library's marks.
+        assert_eq!(
+            faults["fcntl11"],
+            ["fcntl11     1  TFAIL  :  fcntl11.c:140: F_GETLK got the wrong lock"]
+        );
         let long = format!("== x\nx.c:1: TFAIL: {}\n", "a".repeat(400));
         assert_eq!(faults_of(&long)["x"][0].chars().count(), WHY_WIDTH);
         assert!(faults_of("").is_empty());
