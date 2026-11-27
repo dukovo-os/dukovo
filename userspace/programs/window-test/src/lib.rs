@@ -428,7 +428,10 @@ impl Client {
             }
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(format!("the window server did not say it in {patience:?}"));
+                let heard = &self.told.heard;
+                return Err(format!(
+                    "the window server did not say it in {patience:?}; it said {heard:?}"
+                ));
             }
             self.turn(left.min(Duration::from_millis(100)))?;
         }
