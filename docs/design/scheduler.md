@@ -264,8 +264,14 @@ The waker asks for the switch and reads whether the word is watched in
 one atomic read-modify-write; the poller stops watching and reads the
 request in another. The two are ordered on the one word, so either the
 poller sees the request or the waker sees the word unwatched and sends
-the IPI. The TLA+ model `kernel/sched/tla/IdleWake.tla` checks that no
-wake-up is lost with polling, MWAIT and HLT, that every thread handed to
+the IPI. Which state a halt waits in, C1 or one of the deeper states
+the firmware describes, the idle governor picks for each idle period
+(ADR 0795); only MWAIT's states watch the word, so before HLT or a state
+entered through an I/O port the CPU reads `pending` without setting the
+watched bit, and wakers interrupt it. The TLA+ model
+`kernel/sched/tla/IdleWake.tla` checks that no wake-up is lost with
+polling and any mix of MWAIT's states and the others from one sleep to
+the next, that every thread handed to
 the CPU's inbox or queued on it runs, that no switch takes the word while
 the idle thread watches it, and that a request a switch took is acted on
 before the CPU runs on.

@@ -319,6 +319,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     i2c::find();
     crosec::find();
     mce::start(flags.value("mce-poll"));
+    // The idle states, before the speeds: both read the processor objects.
+    acpi::processor::start();
     pstate::start(flags.value("pstate") == Some("off"), flags.value("epp"));
     settings::init();
     acpi::thermal::start();

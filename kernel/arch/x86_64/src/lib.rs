@@ -45,6 +45,7 @@ mod firmware;
 mod fpu;
 mod hyperv;
 mod i8042;
+mod idle;
 mod interrupts;
 mod io;
 mod iommu;
@@ -89,9 +90,6 @@ use radix_hal::{
     UserMode,
 };
 
-/// Whether idle CPUs wait with MONITOR and MWAIT.
-static IDLE_MWAIT: AtomicBool = AtomicBool::new(false);
-
 /// The x86-64 implementation of the HAL traits.
 #[derive(Clone, Copy, Debug)]
 pub struct Arch;
@@ -107,21 +105,12 @@ impl Cpu for Arch {
         cpu::halt();
     }
 
-    fn idle_until(wake: &AtomicUsize) {
-        time::doorbell_off();
-        if IDLE_MWAIT.load(Ordering::Relaxed) {
-            cpu::monitor(core::ptr::from_ref::<AtomicUsize>(wake) as usize);
-            // A write between the check and MWAIT still ends the wait: the
-            // monitor is armed already.
-            if wake.load(Ordering::Acquire) & 1 == 0 {
-                speculation::before_idle();
-                cpu::sti_mwait();
-            }
-        } else if wake.load(Ordering::Acquire) & 1 == 0 {
-            speculation::before_idle();
-            cpu::sti_hlt();
-        }
-        cpu::disable_interrupts();
+    fn idle_until(wake: &AtomicUsize, state: usize) {
+        idle::until(wake, state);
+    }
+
+    fn idle_states(cpu: usize) -> &'static [radix_hal::IdleState] {
+        idle::states(cpu)
     }
 
     fn cpu_flaws() -> &'static [&'static str] {
@@ -133,7 +122,7 @@ impl Cpu for Arch {
     }
 
     fn idle_mode() -> (bool, &'static str) {
-        if IDLE_MWAIT.load(Ordering::Relaxed) { (true, "MWAIT") } else { (false, "HLT") }
+        if idle::mwait() { (true, "MWAIT") } else { (false, "HLT") }
     }
 
     fn virtualized() -> bool {
@@ -435,6 +424,10 @@ impl Timer for Arch {
         time::set_deadline(deadline_ns);
     }
 
+    fn next_interrupt_ns() -> u64 {
+        time::next_interrupt_ns()
+    }
+
     fn timer_writes(cpu: usize) -> u64 {
         time::writes(cpu)
     }
@@ -477,6 +470,14 @@ impl Timer for Arch {
 }
 
 impl Devices for Arch {
+    fn acpi_processor_id(cpu: usize) -> Option<u32> {
+        smp::acpi_uid(cpu)
+    }
+
+    fn set_idle_states(states: &[radix_hal::FirmwareState]) -> usize {
+        idle::set(states)
+    }
+
     fn pci_segments(found: &mut dyn FnMut(PciSegment)) {
         let Some(mcfg) = acpi::get().and_then(|acpi| acpi.mcfg.as_ref()) else { return };
         for window in radix_acpi::mcfg_entries(mcfg) {
@@ -1304,9 +1305,7 @@ impl Platform for Arch {
         rtc::init(acpi.and_then(|acpi| acpi.fadt.as_ref()).map_or(0, |fadt| fadt.century));
         time::set_cpu_number(percpu::current_index());
         time::share_clock();
-        // Under a hypervisor MWAIT is usually not passed through, and when
-        // it is emulated it may spin; HLT lets the host run something else.
-        IDLE_MWAIT.store(cpu::feature::monitor() && !cpu::feature::hypervisor(), Ordering::Relaxed);
+        idle::init(flags.value("idle"), flags.value("max_cstate"));
         // Before any driver starts a device.
         iommu::init(flags.value("iommu") == Some("off"));
     }

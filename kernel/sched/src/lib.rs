@@ -40,6 +40,7 @@ pub mod account;
 pub mod cpuset;
 pub mod fair;
 pub mod haltpoll;
+pub mod idle;
 pub mod resched;
 pub mod rt;
 pub mod topology;
