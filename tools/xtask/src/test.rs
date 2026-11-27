@@ -7077,6 +7077,23 @@ impl Vm {
     /// gives the place in `needles` of the one that comes first in the
     /// log: for a start that may take either of two ways.
     pub fn expect_first(&mut self, needles: &[&str]) -> Result<usize, String> {
+        self.expect_first_in(needles, std::convert::identity)
+    }
+
+    /// Waits until GRUB prints `line` after the previous match, whether
+    /// or not GRUB broke it in two (see [`unwrap_grub`]). A boot entry's
+    /// title holds versions, so whether it breaks changes with them.
+    pub fn expect_grub(&mut self, line: &str) -> Result<(), String> {
+        self.expect_first_in(&[line], |log| unwrap_grub(&log)).map(|_| ())
+    }
+
+    /// [`Vm::expect_first`] in the log as `read` gives it, which keeps
+    /// each byte in its place.
+    fn expect_first_in(
+        &mut self,
+        needles: &[&str],
+        read: fn(String) -> String,
+    ) -> Result<usize, String> {
         let wanted = needles.iter().map(|needle| format!("\"{needle}\"")).collect::<Vec<_>>();
         let wanted = wanted.join(" or ");
         // How much QEMU had printed at the last look. The log is cleaned
@@ -7090,7 +7107,7 @@ impl Vm {
             let printed = self.output.lock().expect("not poisoned").len();
             if looked != Some(printed) {
                 looked = Some(printed);
-                let log = self.log();
+                let log = read(self.log());
                 let found = log.get(self.cursor..).and_then(|rest| {
                     let at = |(place, needle): (usize, &&str)| Some((rest.find(needle)?, place));
                     needles.iter().enumerate().filter_map(at).min()
@@ -7636,6 +7653,16 @@ pub fn clean_log(raw: &str) -> String {
         }
     }
     out
+}
+
+/// A cleaned serial log with the breaks GRUB makes in long lines taken
+/// out. GRUB wraps what it prints at the terminal's width, 80 columns on
+/// the serial port: a line that would reach the last column breaks at
+/// its last space before it, a line break in the space's place
+/// (print_ucs4_terminal, in GRUB's normal/term.c). So every line break
+/// becomes a space again; both are a byte, so each byte keeps its place.
+fn unwrap_grub(log: &str) -> String {
+    log.replace('\n', " ")
 }
 
 /// Fails unless some line of `screen` contains each of `needles`.
@@ -12748,6 +12775,22 @@ mod tests {
     #[test]
     fn strips_escapes() {
         assert_eq!(clean_log("\u{1b}[1;1HRadix\r\n\u{1b}[=3hok"), "Radix\nok");
+    }
+
+    #[test]
+    fn finds_a_line_grub_broke() {
+        // 80 columns: GRUB breaks it at the space before "failed".
+        let line =
+            "  Booting `Dukovo Server 1.0.0-alpha.1 (the update to 1.0.1-test.broken failed)'";
+        assert_eq!(line.len(), 80);
+        let printed = clean_log(
+            "  Booting `Dukovo Server 1.0.0-alpha.1 (the update to 1.0.1-test.broken\r\n\
+             failed)'\r\n\r\nspark: started",
+        );
+        assert!(!printed.contains(line.trim_start()));
+        let unwrapped = unwrap_grub(&printed);
+        assert_eq!(unwrapped.len(), printed.len());
+        assert_eq!(unwrapped.find(line.trim_start()), printed.find("Booting"));
     }
 
     #[test]
