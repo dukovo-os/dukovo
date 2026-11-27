@@ -91,6 +91,9 @@ pub mod usage {
     pub const Y: Usage = 0x0001_0031;
     /// The wheel: away from the user is more.
     pub const WHEEL: Usage = 0x0001_0038;
+    /// A Feature value that makes the wheels of its collection count
+    /// finer than a detent (HID Usage Tables 1.4, section 4.3.1).
+    pub const RESOLUTION_MULTIPLIER: Usage = 0x0001_0048;
     /// The system keys: power, sleep and wake.
     pub const SYSTEM_CONTROL: Usage = 0x0001_0080;
     /// What a keyboard reports with too many keys down to say which.
@@ -136,6 +139,18 @@ const MAX_LIGHTS: usize = 8;
 const MAX_APPLICATIONS: usize = 4;
 /// How deep Push can go.
 const STACK: usize = 4;
+/// The most collections the parser numbers, and how deep in one another
+/// it follows them: a wheel in one past either counts in whole detents.
+const MAX_COLLECTIONS: usize = 32;
+const NEST_DEPTH: usize = 8;
+/// The most Resolution Multipliers a layout keeps.
+const MAX_MULTIPLIERS: usize = 4;
+/// No collection, or no multiplier.
+const NONE: u8 = u8::MAX;
+
+/// What a wheel's detent is counted as: 120, so that a wheel that counts
+/// finer says whole numbers too.
+pub const DETENT: i32 = 120;
 /// The most usages of a range the parser looks through for keys and
 /// pointer usages.
 const RANGE_LOOK: u32 = 1024;
@@ -177,7 +192,7 @@ impl fmt::Display for Error {
 }
 
 /// An Input field.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Field {
     /// The report it is in: its ID, or 0 when the device numbers none.
     pub report: u8,
@@ -203,6 +218,11 @@ pub struct Field {
     keys: bool,
     /// Whether one of its usages is a pointer's axis, wheel or button.
     pointer: bool,
+    /// The collection it is in, of those the parser numbered, and the
+    /// Resolution Multiplier its wheels count by, of the layout's:
+    /// [`NONE`] for either.
+    collection: u8,
+    multiplier: u8,
 }
 
 /// A range of usages.
@@ -226,6 +246,82 @@ struct Light {
     offset: u32,
     /// LED_* bit of radix-input(2).
     led: u32,
+}
+
+/// A Resolution Multiplier: a Feature value that, at its most, makes the
+/// wheels of its collection count `per_detent` to a detent. A device
+/// starts with it at its least, where a count is a detent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Multiplier {
+    report: u8,
+    /// In bits from the start of the report's data.
+    offset: u32,
+    size: u8,
+    /// The value that asks for the most.
+    most: u32,
+    per_detent: u16,
+    collection: u8,
+    /// Whether a wheel counts by it: one that no wheel does is left as
+    /// the device has it.
+    used: bool,
+}
+
+/// The collections a descriptor opens, each with the one it is in: how
+/// a wheel finds the Resolution Multiplier of the nearest collection
+/// around it.
+struct Nest {
+    parents: [u8; MAX_COLLECTIONS],
+    count: usize,
+    /// The collections open now, the innermost last, and how many are:
+    /// more than it holds are open without a number.
+    open: [u8; NEST_DEPTH],
+    depth: usize,
+}
+
+impl Nest {
+    const fn new() -> Nest {
+        Nest { parents: [NONE; MAX_COLLECTIONS], count: 0, open: [NONE; NEST_DEPTH], depth: 0 }
+    }
+
+    /// The innermost collection open, or [`NONE`].
+    fn inner(&self) -> u8 {
+        match self.depth {
+            0 => NONE,
+            depth => self.open.get(depth - 1).copied().unwrap_or(NONE),
+        }
+    }
+
+    /// A Collection item.
+    fn enter(&mut self) {
+        let mut index = NONE;
+        if self.count < MAX_COLLECTIONS && self.depth < NEST_DEPTH {
+            self.parents[self.count] = self.inner();
+            index = self.count as u8;
+            self.count += 1;
+        }
+        if let Some(open) = self.open.get_mut(self.depth) {
+            *open = index;
+        }
+        self.depth += 1;
+    }
+
+    /// An End Collection item.
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    /// Whether the collection `inner` is `outer` or in it.
+    fn within(&self, mut inner: u8, outer: u8) -> Option<u32> {
+        let mut steps = 0;
+        while inner != NONE {
+            if inner == outer {
+                return Some(steps);
+            }
+            inner = self.parents[usize::from(inner)];
+            steps += 1;
+        }
+        None
+    }
 }
 
 /// How long the Input, Output and Feature reports of a report ID are, in
@@ -252,6 +348,9 @@ pub struct Layout<A: Allocator> {
     /// Its top-level collections' usages.
     applications: [Usage; MAX_APPLICATIONS],
     application_count: usize,
+    /// Its Resolution Multipliers, the first `multiplier_count`.
+    multipliers: [Multiplier; MAX_MULTIPLIERS],
+    multiplier_count: usize,
     /// Whether its reports start with their ID.
     numbered: bool,
 }
@@ -276,6 +375,9 @@ struct Globals {
     page: u16,
     logical_min: i32,
     logical_max: i32,
+    /// The physical extent's most: what a Resolution Multiplier's most
+    /// value stands for.
+    physical_max: i32,
     size: u32,
     count: u32,
     report: u8,
@@ -357,6 +459,8 @@ impl<A: Allocator + Clone> Layout<A> {
             power: Vec::new_in(alloc),
             applications: [0; MAX_APPLICATIONS],
             application_count: 0,
+            multipliers: [Multiplier::default(); MAX_MULTIPLIERS],
+            multiplier_count: 0,
             numbered: false,
         };
         layout.read(bytes)?;
@@ -368,7 +472,7 @@ impl<A: Allocator + Clone> Layout<A> {
         let mut stack = [Globals::default(); STACK];
         let mut pushed = 0;
         let mut locals = Locals::new();
-        let mut depth = 0usize;
+        let mut nest = Nest::new();
         let mut at = 0;
         while at < bytes.len() {
             let prefix = bytes[at];
@@ -399,20 +503,20 @@ impl<A: Allocator + Clone> Layout<A> {
                 0 => {
                     locals.settle(globals.page);
                     match tag {
-                        0x8 => self.input(&globals, &locals, unsigned as u16)?,
+                        0x8 => self.input(&globals, &locals, unsigned as u16, nest.inner())?,
                         0x9 => self.output(&globals, &locals, unsigned as u16)?,
                         0xa => {
-                            if depth == 0
+                            if nest.depth == 0
                                 && self.application_count < MAX_APPLICATIONS
                                 && let Some(usage) = locals.usage(0)
                             {
                                 self.applications[self.application_count] = usage;
                                 self.application_count += 1;
                             }
-                            depth += 1;
+                            nest.enter();
                         }
-                        0xb => self.feature(&globals, &locals, unsigned as u16)?,
-                        0xc => depth = depth.saturating_sub(1),
+                        0xb => self.feature(&globals, &locals, unsigned as u16, nest.inner())?,
+                        0xc => nest.leave(),
                         // The reserved tags.
                         _ => {}
                     }
@@ -428,6 +532,7 @@ impl<A: Allocator + Clone> Layout<A> {
                         globals.logical_max =
                             if globals.logical_min < 0 { signed } else { unsigned as i32 };
                     }
+                    0x4 => globals.physical_max = signed,
                     0x7 => globals.size = unsigned,
                     0x8 => {
                         globals.report = u8::try_from(unsigned)
@@ -445,7 +550,8 @@ impl<A: Allocator + Clone> Layout<A> {
                         pushed = pushed.checked_sub(1).ok_or(Error::Stack)?;
                         globals = stack[pushed];
                     }
-                    // Physical extents and units: nothing the decoder uses.
+                    // The physical extent's least and the units: nothing
+                    // the decoder uses.
                     _ => {}
                 },
                 // Local.
@@ -474,7 +580,37 @@ impl<A: Allocator + Clone> Layout<A> {
         if self.fields.is_empty() && self.power.is_empty() {
             return Err(Error::NoInputs);
         }
+        self.pair_wheels(&nest);
         Ok(())
+    }
+
+    /// Gives each field with a wheel the Resolution Multiplier of the
+    /// nearest collection around it that has one: the first of that
+    /// collection. A descriptor may write the multiplier before the wheel
+    /// or after it, so this waits for the whole of it.
+    fn pair_wheels(&mut self, nest: &Nest) {
+        let Layout { fields, usages, multipliers, multiplier_count, .. } = self;
+        let multipliers = &mut multipliers[..*multiplier_count];
+        for field in fields.iter_mut() {
+            let ranges =
+                &usages[usize::from(field.first_usage)..][..usize::from(field.usage_count)];
+            let wheel = |r: &Range| {
+                (r.first..=r.last).contains(&usage::WHEEL)
+                    || (r.first..=r.last).contains(&usage::AC_PAN)
+            };
+            if !ranges.iter().any(wheel) {
+                continue;
+            }
+            let nearest = multipliers
+                .iter()
+                .enumerate()
+                .filter_map(|(at, m)| Some((nest.within(field.collection, m.collection)?, at)))
+                .min();
+            if let Some((_, at)) = nearest {
+                field.multiplier = at as u8;
+                multipliers[at].used = true;
+            }
+        }
     }
 
     /// The lengths of report `id`'s reports, kept from its first item.
@@ -490,8 +626,14 @@ impl<A: Allocator + Clone> Layout<A> {
         Ok(&mut self.reports[at])
     }
 
-    /// An Input item.
-    fn input(&mut self, globals: &Globals, locals: &Locals, flags: u16) -> Result<(), Error> {
+    /// An Input item, in the collection `collection`.
+    fn input(
+        &mut self,
+        globals: &Globals,
+        locals: &Locals,
+        flags: u16,
+        collection: u8,
+    ) -> Result<(), Error> {
         let bits = bits(globals)?;
         let report = self.report(globals.report)?;
         let offset = u32::from(report.input);
@@ -526,18 +668,64 @@ impl<A: Allocator + Clone> Layout<A> {
             usage_count: locals.count as u16,
             keys,
             pointer,
+            collection,
+            multiplier: NONE,
         };
         push(&mut self.fields, field, MAX_FIELDS, Error::TooManyFields)
     }
 
-    /// A Feature item: keeps a power device's values.
-    fn feature(&mut self, globals: &Globals, locals: &Locals, flags: u16) -> Result<(), Error> {
+    /// A Feature item, in the collection `collection`: keeps a power
+    /// device's values, and a Resolution Multiplier.
+    fn feature(
+        &mut self,
+        globals: &Globals,
+        locals: &Locals,
+        flags: u16,
+        collection: u8,
+    ) -> Result<(), Error> {
         let bits = bits(globals)?;
         let report = self.report(globals.report)?;
         let offset = u32::from(report.feature);
         report.feature = u16::try_from(offset + bits).map_err(|_| Error::TooLong)?;
         self.power_values(power::Kind::Feature, globals, locals, flags, offset);
+        self.multiplier(globals, locals, flags, (offset, collection));
         Ok(())
+    }
+
+    /// Keeps a Resolution Multiplier among the values of a variable
+    /// Feature item at `place`, its offset in its report and its
+    /// collection, if its most makes a wheel count finer: its physical
+    /// extent's most is how many counts a detent is then. Those past
+    /// [`MAX_MULTIPLIERS`], and one outside every numbered collection, are
+    /// left as the device has them.
+    fn multiplier(&mut self, globals: &Globals, locals: &Locals, flags: u16, place: (u32, u8)) {
+        let (offset, collection) = place;
+        let per_detent = u16::try_from(globals.physical_max).unwrap_or(0);
+        if flags & (flag::CONSTANT | flag::VARIABLE) != flag::VARIABLE
+            || !(1..=32).contains(&globals.size)
+            || globals.logical_max <= globals.logical_min
+            || per_detent < 2
+            || collection == NONE
+        {
+            return;
+        }
+        for i in 0..globals.count.min(MAX_MULTIPLIERS as u32) {
+            if locals.usage(i) != Some(usage::RESOLUTION_MULTIPLIER)
+                || self.multiplier_count == MAX_MULTIPLIERS
+            {
+                continue;
+            }
+            self.multipliers[self.multiplier_count] = Multiplier {
+                report: globals.report,
+                offset: offset + i * globals.size,
+                size: globals.size as u8,
+                most: globals.logical_max as u32,
+                per_detent,
+                collection,
+                used: false,
+            };
+            self.multiplier_count += 1;
+        }
     }
 
     /// Keeps the values of a variable Input or Feature item at `offset` of
@@ -715,6 +903,60 @@ impl<A: Allocator + Clone> Layout<A> {
         usize::from(bits).div_ceil(8) + usize::from(self.numbered)
     }
 
+    /// The Resolution Multipliers a wheel counts by.
+    fn used_multipliers(&self) -> impl Iterator<Item = (usize, &Multiplier)> + '_ {
+        self.multipliers[..self.multiplier_count].iter().enumerate().filter(|(_, m)| m.used)
+    }
+
+    /// The Feature reports that hold a Resolution Multiplier one of its
+    /// wheels counts by, each once: a report's ID, and its length in
+    /// bytes without the ID. A driver asks the device for each, has
+    /// [`Layout::set_fine`] change it, sends it back, asks again to see
+    /// that the device took it ([`Layout::is_fine`]), and tells the
+    /// decoder if it did ([`Decoder::fine`]).
+    pub fn fine_reports(&self) -> impl Iterator<Item = (u8, usize)> + '_ {
+        self.used_multipliers()
+            .filter(|&(at, m)| {
+                !self.used_multipliers().any(|(e, earlier)| e < at && earlier.report == m.report)
+            })
+            .map(|(_, m)| {
+                let bits = self.reports.iter().find(|r| r.id == m.report).map_or(0, |r| r.feature);
+                (m.report, usize::from(bits).div_ceil(8))
+            })
+    }
+
+    /// Sets every Resolution Multiplier one of its wheels counts by in
+    /// the Feature report `id` to its most, in `data`: the report as the
+    /// device gave it, without its ID. The report's other values stay as
+    /// they are. Returns false, with nothing changed, if the report has
+    /// none or `data` is too short for one.
+    pub fn set_fine(&self, id: u8, data: &mut [u8]) -> bool {
+        let here = || self.used_multipliers().map(|(_, m)| m).filter(|m| m.report == id);
+        let fits = |m: &Multiplier| (m.offset + u32::from(m.size)) as usize <= data.len() * 8;
+        if here().next().is_none() || !here().all(fits) {
+            return false;
+        }
+        for m in here() {
+            put(data, m.offset, m.size, m.most);
+        }
+        true
+    }
+
+    /// Whether every Resolution Multiplier one of its wheels counts by in
+    /// the Feature report `id` is at its most in `data`, the report
+    /// without its ID: what a device that took the report answers when it
+    /// is asked again. False if the report has none or `data` is too
+    /// short for one.
+    pub fn is_fine(&self, id: u8, data: &[u8]) -> bool {
+        let mut here =
+            self.used_multipliers().map(|(_, m)| m).filter(|m| m.report == id).peekable();
+        here.peek().is_some()
+            && here.all(|m| {
+                let most = u64::from(m.most) & ((1u64 << m.size) - 1);
+                value(data, m.offset, m.size, false).is_some_and(|v| u64::from(v as u32) == most)
+            })
+    }
+
     /// Writes into `out` the Output report that lights the lights of
     /// `leds` (LED_* bits of radix-input(2)) and puts the others out.
     /// Returns its report ID and length with the ID, or None if it has no
@@ -763,6 +1005,19 @@ fn value(data: &[u8], at: u32, size: u8, signed: bool) -> Option<i32> {
     Some(bits as i32)
 }
 
+/// Writes the low `size` bits of `value` at bit `at` of `data`, which
+/// has room for them.
+fn put(data: &mut [u8], at: u32, size: u8, value: u32) {
+    for bit in 0..u32::from(size) {
+        let (byte, mask) = (((at + bit) / 8) as usize, 1u8 << ((at + bit) % 8));
+        if value >> bit & 1 != 0 {
+            data[byte] |= mask;
+        } else {
+            data[byte] &= !mask;
+        }
+    }
+}
+
 /// `value` of an absolute axis from `min` to `max`, from 0 to
 /// POSITION_MAX.
 fn scale(value: i32, min: i32, max: i32) -> u32 {
@@ -804,9 +1059,10 @@ pub struct Pointer {
     pub dx: i32,
     /// Down.
     pub dy: i32,
-    /// The wheel's detents: away from the user is more.
+    /// How far the wheel turned, in 120ths of a detent ([`DETENT`]): away
+    /// from the user is more.
     pub wheel: i32,
-    /// The horizontal wheel's: right is more.
+    /// The horizontal wheel, likewise: right is more.
     pub pan: i32,
     /// Whether it says where it points, in `x` and `y`.
     pub absolute: bool,
@@ -845,6 +1101,12 @@ pub struct Decoder {
     used: usize,
     buttons: u32,
     position: (u32, u32),
+    /// The Resolution Multipliers the device took at their most, a bit
+    /// for each of the layout's.
+    fine: u8,
+    /// What the wheel and the horizontal wheel turned that has not made
+    /// a 120th of a detent yet, in counts times 120.
+    rest: [i32; 2],
 }
 
 impl Default for Decoder {
@@ -886,7 +1148,39 @@ impl Decoder {
             used: 0,
             buttons: 0,
             position: (0, 0),
+            fine: 0,
+            rest: [0; 2],
         }
+    }
+
+    /// The device took its Feature report `id` as [`Layout::set_fine`]
+    /// made it: the wheels that count by that report's multipliers count
+    /// finer than a detent from here on.
+    pub fn fine<A: Allocator + Clone>(&mut self, layout: &Layout<A>, id: u8) {
+        for (at, _) in layout.used_multipliers().filter(|(_, m)| m.report == id) {
+            self.fine |= 1 << at;
+        }
+    }
+
+    /// `counts` of a wheel of `field`, in 120ths of a detent; `which` is
+    /// 0 for the wheel and 1 for the horizontal one. A wheel whose
+    /// multiplier the device took counts that many to a detent, and what
+    /// does not make a 120th yet is kept for its next report, so that
+    /// nothing a wheel turned is lost to rounding.
+    fn detents<A: Allocator + Clone>(
+        &mut self,
+        layout: &Layout<A>,
+        field: &Field,
+        which: usize,
+        counts: i32,
+    ) -> i32 {
+        let multiplier = layout.multipliers[..layout.multiplier_count]
+            .get(usize::from(field.multiplier))
+            .filter(|_| self.fine & 1 << field.multiplier != 0);
+        let per = multiplier.map_or(1, |m| i64::from(m.per_detent));
+        let total = i64::from(counts) * i64::from(DETENT) + i64::from(self.rest[which]);
+        self.rest[which] = (total % per) as i32;
+        (total / per).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
     }
 
     /// Where report `id`'s keys are kept, if a place is left for them.
@@ -960,8 +1254,14 @@ impl Decoder {
                     usage::Y if relative => pointer.dy = pointer.dy.wrapping_add(value),
                     usage::X => x = Some(scale(value, field.logical_min, field.logical_max)),
                     usage::Y => y = Some(scale(value, field.logical_min, field.logical_max)),
-                    usage::WHEEL => pointer.wheel = pointer.wheel.wrapping_add(value),
-                    usage::AC_PAN => pointer.pan = pointer.pan.wrapping_add(value),
+                    usage::WHEEL => {
+                        let turned = self.detents(layout, field, 0, value);
+                        pointer.wheel = pointer.wheel.wrapping_add(turned);
+                    }
+                    usage::AC_PAN => {
+                        let turned = self.detents(layout, field, 1, value);
+                        pointer.pan = pointer.pan.wrapping_add(turned);
+                    }
                     _ if usage >> 16 == u32::from(page::BUTTON) => {
                         has_buttons = true;
                         let n = usage & 0xffff;

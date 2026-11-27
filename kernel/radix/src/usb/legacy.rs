@@ -48,7 +48,7 @@ use super::controller::{Name, Path, RECOVERY_NS, RESET_US, Why, alloc, read_devi
 use super::hid::{HidPlan, MAX_HIDS};
 use super::shown::{self, RootHub, Shown};
 use super::{Kind, STARTS, Start};
-use crate::hid::Port;
+use crate::hid::{Feature, Port};
 use crate::sched;
 
 /// How often the thread looks at the controller.
@@ -944,6 +944,10 @@ impl Legacy {
         let pipe = self.listen(endpoint, length)?;
         let name = self.devices[at].name.as_str();
         let port = super::hid::port(self.bus, path, (interface, plan.interval), name, &layout);
+        let mut decoder = Decoder::new();
+        if self.fine_wheels((target, max), interface, &layout, &mut decoder) {
+            info!("USB: {}: interface {interface}: {}", Name(self.bus, path), super::hid::FINER);
+        }
         let hid = Hid {
             interface,
             pipe,
@@ -951,7 +955,7 @@ impl Legacy {
             length,
             lights: layout.has_lights().then_some(u32::MAX),
             layout,
-            decoder: Decoder::new(),
+            decoder,
             port,
             errors: 0,
         };
@@ -991,6 +995,42 @@ impl Legacy {
                 hid.port = None;
             }
         }
+    }
+
+    /// Asks the wheels of HID interface `interface` of the device at
+    /// `device`, its address and its control endpoint's packet size, to
+    /// count finer than a notch (`crate::hid::fine_wheels`).
+    #[inline(never)]
+    fn fine_wheels(
+        &mut self,
+        device: (Target, u16),
+        interface: u8,
+        layout: &Layout<Kmalloc>,
+        decoder: &mut Decoder,
+    ) -> bool {
+        let Legacy { hcd, waiter, .. } = self;
+        let (target, max) = device;
+        let mut ask = |feature: Feature<'_>| {
+            let mut sent = [0u8; 64];
+            let (setup, data) = match feature {
+                Feature::Get(id, report) => {
+                    let length = report.len() as u16;
+                    (Setup::get_report(interface, hid::REPORT_FEATURE, id, length), report)
+                }
+                Feature::Set(id, report) => {
+                    let data = sent.get_mut(..report.len())?;
+                    data.copy_from_slice(report);
+                    let length = report.len() as u16;
+                    (Setup::set_report(interface, hid::REPORT_FEATURE, id, length), data)
+                }
+            };
+            let out = !setup.device_to_host();
+            hcd.control(target, max, setup, data, CONTROL_MS, waiter)
+                .ok()
+                .map(|came| if out { 0 } else { came })
+        };
+        let mut report = [0u8; 64];
+        crate::hid::fine_wheels(layout, decoder, &mut report, &mut ask)
     }
 
     /// Sends the keyboards of the device at `at` the lock lights consoled

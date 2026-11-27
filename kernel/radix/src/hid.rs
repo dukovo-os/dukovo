@@ -12,13 +12,17 @@
 //! pointer moved in the counts the device reported, where a tablet
 //! points, the wheels in 120ths of a notch, and the buttons that
 //! changed.
+//!
+//! A mouse whose wheels can count finer than a notch is asked to
+//! ([`fine_wheels`]), by the Resolution Multipliers of its report
+//! descriptor.
 
 use radix_abi::input::{
     ABS_X, ABS_Y, BTN_LEFT, LED_CAPS_LOCK, LED_CAPSL, LED_NUM_LOCK, LED_NUML, LED_SCROLL_LOCK,
     LED_SCROLLL, POSITION_MAX, REL_HWHEEL_HI_RES, REL_WHEEL_HI_RES, REL_X, REL_Y,
 };
 use radix_hid::{Decoder, Input, Layout, Pointer, usage};
-use radix_input::device::{NOTCH, padded};
+use radix_input::device::padded;
 use radix_mm::Kmalloc;
 
 use crate::input::{self, About, Axis, FRAME_MAX, Said};
@@ -132,6 +136,53 @@ impl Drop for Port {
     }
 }
 
+/// A Feature report asked of a HID interface, or sent to it, as HID over
+/// USB carries one: its ID first, if the device numbers its reports.
+pub enum Feature<'a> {
+    /// The report of this ID is read into these bytes.
+    Get(u8, &'a mut [u8]),
+    /// These bytes are the report of this ID to send.
+    Set(u8, &'a [u8]),
+}
+
+/// Asks the wheels of a HID interface laid out as `layout` to count
+/// finer than a notch (ADR 0706). Each Feature report that holds a
+/// Resolution Multiplier of a wheel's is read, its multipliers are set
+/// to their most with its other values as they were, and it is sent
+/// back and read again. `decoder` is told of each report the device
+/// answers with the multipliers at their most; if it will not say again,
+/// that it took the report is enough. A device that refuses any of it
+/// is read in whole notches, as it starts. Returns whether a wheel
+/// counts finer now.
+///
+/// `ask` carries a report out: it returns how many bytes of one came, or
+/// 0 for one sent, and `None` if the device refused. `buffer` is room
+/// for a report with its ID.
+pub fn fine_wheels(
+    layout: &Layout<Kmalloc>,
+    decoder: &mut Decoder,
+    buffer: &mut [u8],
+    ask: &mut dyn FnMut(Feature<'_>) -> Option<usize>,
+) -> bool {
+    let skip = usize::from(layout.numbered());
+    let mut finer = false;
+    for (id, bytes) in layout.fine_reports() {
+        let Some(report) = buffer.get_mut(..bytes + skip) else { continue };
+        let whole = |came: Option<usize>| came == Some(bytes + skip);
+        if !whole(ask(Feature::Get(id, report))) || !layout.set_fine(id, &mut report[skip..]) {
+            continue;
+        }
+        if ask(Feature::Set(id, report)).is_none() {
+            continue;
+        }
+        if !whole(ask(Feature::Get(id, report))) || layout.is_fine(id, &report[skip..]) {
+            decoder.fine(layout, id);
+            finer = true;
+        }
+    }
+    finer
+}
+
 /// What fills a frame's places before a report does.
 const NOTHING: Said = Said::key(0, false);
 
@@ -159,8 +210,8 @@ impl Frame {
         for (code, by) in [
             (REL_X, pointer.dx),
             (REL_Y, pointer.dy),
-            (REL_WHEEL_HI_RES, pointer.wheel.saturating_mul(NOTCH)),
-            (REL_HWHEEL_HI_RES, pointer.pan.saturating_mul(NOTCH)),
+            (REL_WHEEL_HI_RES, pointer.wheel),
+            (REL_HWHEEL_HI_RES, pointer.pan),
         ] {
             if by != 0 {
                 self.push(Said::moved(code, by));

@@ -6,9 +6,10 @@
 //! Once a device is configured, [`Controller::start_hid`] starts each of
 //! its HID interfaces: it reads the interface's report descriptor and
 //! lays it out (`radix_hid::Layout`), asks it to report only changes
-//! (SET_IDLE; a device may refuse), lights a keyboard's lock lights as
-//! consoled(8) last asked, and starts a transfer on its interrupt IN
-//! endpoint. A boot keyboard or mouse whose report descriptor cannot be
+//! (SET_IDLE; a device may refuse), asks a mouse's wheels to count finer
+//! than a notch if they can (`crate::hid::fine_wheels`), lights a
+//! keyboard's lock lights as consoled(8) last asked, and starts a
+//! transfer on its interrupt IN endpoint. A boot keyboard or mouse whose report descriptor cannot be
 //! read or laid out is put in the boot protocol, whose reports are fixed.
 //!
 //! Each interface that is read is an input device of its own
@@ -40,8 +41,12 @@ use radix_xhci::{BUFFER_SIZE, code, endpoint_index};
 
 use super::controller::{Attached, Controller, Name, Path, Why};
 use super::shown;
-use crate::hid::{Identity, Port};
+use crate::hid::{Feature, Identity, Port};
 use crate::sched;
+
+/// What the log says of a mouse that took its Resolution Multipliers
+/// (`crate::hid::fine_wheels`).
+pub(super) const FINER: &str = "its wheel counts finer than a notch";
 
 /// Errors in a row on an interface's reports before it is given up.
 const REPORT_ERRORS: u8 = 3;
@@ -218,6 +223,22 @@ impl Controller {
         if !read {
             return Ok(());
         }
+        let mut decoder = Decoder::new();
+        let mut ask = |feature: Feature<'_>| match feature {
+            Feature::Get(id, report) => {
+                let setup =
+                    Setup::get_report(interface, hid::REPORT_FEATURE, id, report.len() as u16);
+                device.control_in(xhci, host, setup, report).ok()
+            }
+            Feature::Set(id, report) => {
+                let setup =
+                    Setup::set_report(interface, hid::REPORT_FEATURE, id, report.len() as u16);
+                device.control_out(xhci, host, setup, report).ok().map(|()| 0)
+            }
+        };
+        if crate::hid::fine_wheels(&layout, &mut decoder, &mut buffer[..], &mut ask) {
+            info!("USB: {}: interface {interface}: {FINER}", Name(*bus, path));
+        }
         let hid = Hid {
             interface,
             endpoint: endpoint_index(plan.endpoint),
@@ -226,7 +247,7 @@ impl Controller {
             lights: layout.has_lights().then_some(u32::MAX),
             port: port(*bus, path, (interface, plan.interval), attached.name.as_str(), &layout),
             layout,
-            decoder: Decoder::new(),
+            decoder,
             errors: 0,
             ups: None,
         };
