@@ -15,6 +15,11 @@
 //! framebuffer in the pictures' own layout takes a row with no pointer
 //! on it straight from the picture's pages.
 //!
+//! The framebuffer is mapped write-combining, so its bytes are written
+//! once each and in order, by the copy for such memory (ADR 0718): the
+//! kernel's general copy takes over three times as long to put a
+//! picture there.
+//!
 //! A picture the card keeps has no pixels here either: PUT's rows go
 //! straight to the screen while the picture shows, and are dropped while
 //! it does not. Its holder sends them again when it is in front, as
@@ -49,6 +54,7 @@ use radix_abi::display::{
 use radix_display::Rect;
 use radix_display::pixels::{self, Channel, Layout};
 use radix_display::state::PictureShape;
+use radix_hal::Cpu;
 use radix_hw::pci::{Bar, Function};
 use radix_klog::{info, warn};
 use radix_mm::Kmalloc;
@@ -59,7 +65,7 @@ use super::{
     CardSpec, Change, Driver, Failed, Frame, Pages, Picture, PlaneFault, PlaneSpec, ScreenSpec,
     Shown, add_card, kmalloc, name,
 };
-use crate::console;
+use crate::{Arch, console};
 
 /// The rate the card's beat is kept at, in frames in 1000 seconds.
 const REFRESH_MHZ: u32 = 60_000;
@@ -69,7 +75,14 @@ const POINTER_SIDE: u32 = 256;
 /// console's lock, which masks interrupts: one row at least, whatever
 /// its length, and as many shorter rows as come to this. A row of a
 /// screen 3840 pixels wide is 15 KiB.
-const HOLD_BYTES: usize = 16 << 10;
+///
+/// Taking the lock is a locked instruction, at which the CPU sends on
+/// what it has gathered for write-combining memory and waits until it
+/// is sent, so every hold costs a wait as well (ADR 0718): at 16 KiB a
+/// picture of 1280 by 800 was 267 holds and took a sixth longer than
+/// its copying. At this size a hold is some 2 microseconds of copying
+/// where memory takes 28 GiB a second.
+const HOLD_BYTES: usize = 64 << 10;
 
 /// The card's number in the layer and where its framebuffer starts in
 /// physical memory, while the layer has the card.
@@ -255,7 +268,7 @@ impl Firmware {
         match from {
             // One copy, from the picture's pages to the screen.
             Some((from, pages)) if over.is_none() && self.layout == Layout::XRGB8888 => {
-                return pages.read(from, target);
+                return pages.read_to_screen(from, target);
             }
             Some((from, pages)) => pages.read(from, row),
             None => row.fill(0),
@@ -270,7 +283,20 @@ impl Firmware {
                 pixels::blend(under, over);
             }
         }
-        pixels::store(self.layout, row, target);
+        self.store(row, target);
+    }
+
+    /// Writes the pixels of `row`, which are XRGB8888, to `target`, the
+    /// framebuffer's bytes they show at, in its layout: as many whole
+    /// pixels as both hold.
+    fn store(&self, row: &[u8], target: &mut [u8]) {
+        if self.layout == Layout::XRGB8888 {
+            let len = row.len().min(target.len()) / 4 * 4;
+            Arch::copy_in_order(&mut target[..len], &row[..len]);
+        } else {
+            // A pixel at a time, each stored once and in order.
+            pixels::store(self.layout, row, target);
+        }
     }
 
     /// Writes `row`, the pixels PUT sends for `rect`, one row of the
@@ -285,7 +311,7 @@ impl Firmware {
         let pixel = usize::from(self.layout.bytes);
         let at = part.y as usize * self.pitch + part.x as usize * pixel;
         if let Some(target) = screen.get_mut(at..at + part.width as usize * pixel) {
-            pixels::store(self.layout, row, target);
+            self.store(row, target);
         }
     }
 }

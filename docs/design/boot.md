@@ -77,7 +77,10 @@ through it. `compiler_builtins` gives the kernel `memcpy` with the rest
 of its memory functions, but on x86-64 the kernel's own takes its place:
 a copy of fewer than 512 bytes goes by general-purpose registers rather
 than by `rep movs`, which takes some 30 cycles to start on CPUs without
-fast short REP MOVSB (`copy.rs`, ADR 0775).
+fast short REP MOVSB (`copy.rs`, ADR 0775). Beside it is a copy for
+memory mapped write-combining, such as the firmware's framebuffer,
+which stores every byte once and in order: such memory takes a store
+that goes back, and the end of a `rep movs`, with a wait (ADR 0718).
 
 ## The trampoline
 

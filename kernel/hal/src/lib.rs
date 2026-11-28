@@ -130,6 +130,16 @@ pub trait Cpu {
     /// survive a reset that discards the caches.
     fn flush_to_memory(bytes: &[u8]);
 
+    /// Copies `src` to `dst`, which are of one length, with every byte
+    /// stored once and the lowest address first: the copy for a
+    /// destination mapped write-combining, such as a framebuffer, which
+    /// gathers stores a cache line at a time and is slow to take one
+    /// that goes back. An architecture whose plain copy suits such
+    /// memory keeps this one.
+    fn copy_in_order(dst: &mut [u8], src: &[u8]) {
+        dst.copy_from_slice(src);
+    }
+
     /// How many banks each CPU reports hardware errors in, through its
     /// machine-check architecture (Phase 11, ADR 0145): 0 when it has none
     /// or reporting was turned off.

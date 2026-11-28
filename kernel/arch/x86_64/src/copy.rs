@@ -25,6 +25,19 @@
 //! - 33 to 511 bytes, 32 at a time from the start, then the last 32;
 //! - 512 bytes or more, the first 8, then quadwords from the
 //!   destination's next 8-byte boundary, then the last 8.
+//!
+//! Memory mapped write-combining, such as a framebuffer, is served badly
+//! by both halves of that (ADR 0718). The CPU gathers the stores to such
+//! memory a cache line at a time and sends each line on when it is full
+//! and the stores have moved past it. A store that goes back to a line
+//! already sent opens the line again for a few bytes, which then go out
+//! on their own, and a `rep movs` to such memory costs what a store
+//! fence after it would: a wait until everything gathered so far has
+//! been sent. A picture goes to the screen as a couple of thousand
+//! copies of a few kilobytes each, so those two costs came to more than
+//! twice the copying itself. [`in_order`] is the copy for such a
+//! destination: every byte stored once, lowest address first, by
+//! general-purpose registers whatever the length.
 
 /// The fewest bytes copied by `rep movsq`.
 const LONG: usize = 512;
@@ -124,7 +137,86 @@ memcpy:
     mov [r10], r9
     ret
     .size memcpy, . - memcpy
+
+    /* radix_copy_in_order(rdi = to, rsi = from, rdx = length). */
+    .balign 64
+    .global radix_copy_in_order
+    .type radix_copy_in_order, @function
+radix_copy_in_order:
+    /* Where the source's whole 32 bytes end. */
+    mov r11, rdx
+    and r11, -32
+    jz 41f
+    add r11, rsi
+40: mov rcx, [rsi]
+    mov r8, [rsi + 8]
+    mov r9, [rsi + 16]
+    mov r10, [rsi + 24]
+    mov [rdi], rcx
+    mov [rdi + 8], r8
+    mov [rdi + 16], r9
+    mov [rdi + 24], r10
+    add rsi, 32
+    add rdi, 32
+    cmp rsi, r11
+    jb 40b
+41: /* Under 32 bytes are left: 16, 8, 4, 2 and 1 of them, as the bits
+       of their number say. */
+    test dl, 16
+    jz 42f
+    mov rcx, [rsi]
+    mov r8, [rsi + 8]
+    mov [rdi], rcx
+    mov [rdi + 8], r8
+    add rsi, 16
+    add rdi, 16
+42: test dl, 8
+    jz 43f
+    mov rcx, [rsi]
+    mov [rdi], rcx
+    add rsi, 8
+    add rdi, 8
+43: test dl, 4
+    jz 44f
+    mov ecx, [rsi]
+    mov [rdi], ecx
+    add rsi, 4
+    add rdi, 4
+44: test dl, 2
+    jz 45f
+    movzx ecx, word ptr [rsi]
+    mov [rdi], cx
+    add rsi, 2
+    add rdi, 2
+45: test dl, 1
+    jz 46f
+    movzx ecx, byte ptr [rsi]
+    mov [rdi], cl
+46: ret
+    .size radix_copy_in_order, . - radix_copy_in_order
     .popsection
 "#,
     long = const LONG,
 );
+
+unsafe extern "C" {
+    /// Copies `len` bytes from `src` to `dst`, which do not overlap, with
+    /// every byte stored once and the lowest address first; see the
+    /// assembly above.
+    fn radix_copy_in_order(dst: *mut u8, src: *const u8, len: usize);
+}
+
+/// Copies `len` bytes from `src` to `dst` with every byte stored once
+/// and the lowest address first: the copy for a destination mapped
+/// write-combining, which `memcpy`'s overlapping stores and its `rep
+/// movsq` both slow down (ADR 0718).
+///
+/// # Safety
+///
+/// `src` is readable and `dst` writable for `len` bytes, and the two do
+/// not overlap.
+pub unsafe fn in_order(dst: *mut u8, src: *const u8, len: usize) {
+    // SAFETY: the caller's; the routine reads and writes those bytes
+    // alone and uses no stack.
+    unsafe { radix_copy_in_order(dst, src, len) };
+}
