@@ -81,6 +81,13 @@ ADR 0027 had the extended state switched eagerly on every switch.
   fails, the waker chooses a CPU and places the thread as before.
 - **An idle CPU that a wake-up ends goes straight to the switch**, not
   through the idle loop's checks again.
+- **A benchmark row times the wake-up of a thread that is asleep**
+  (`posix_futex_asleep_cross_cpu`): the pair of `posix_futex_cross_cpu`,
+  but each thread holds the turn 5 µs before it passes it on, long
+  enough for the other to be asleep in the kernel on either system, and
+  the row leaves those holds out. A pair that passes the turn straight
+  back finds it passed before it sleeps once wake-ups are quick enough,
+  and then times no wake-up at all.
 
 The scheduler's and the idle wake-up's TLA+ models
 (`kernel/sched/tla/`) gain the hand-over under the thread's lock and the
@@ -93,6 +100,16 @@ balancing and counters) brought `posix_futex_cross_cpu` on optiplex-1
 from 4300 ns to 3811 ns, against Linux's 3086 ns; the same-CPU futex,
 pipe, signal and fork-wait rows stayed faster than Linux, at 0.73x to
 0.89x.
+
+With the rest, a wake-up reaches the other CPU quickly enough that the
+pairs mostly find the turn passed back before they sleep: on optiplex-1
+`posix_futex_cross_cpu` took 1369 ns against Linux's 2974 ns (0.46x),
+with 20,000 switches in 50,000 rounds, and
+`posix_futex_shared_cross_cpu` 1217 ns against 3208 ns (0.38x), with
+307, where a pair that sleeps every round makes about 200,000.
+`posix_futex_asleep_cross_cpu`, whose threads sleep every round (80,188
+switches in 20,000), took 3478 ns against 6339 ns (0.55x). The
+same-CPU rows stayed at 0.73x and 0.74x.
 
 A context switch now depends on per-CPU and per-context records of whose
 state the registers hold; the FPU self-test checks them with a thread
