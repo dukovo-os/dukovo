@@ -509,6 +509,57 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Which of the `count` pages from `start`, at most 64 in one page
+    /// table, have an entry that holds nothing, a bit for each from bit 0:
+    /// no frame, with access or without, and no swap slot. All of them
+    /// where their table is not there yet, none under a large page.
+    pub fn empty(&self, start: u64, count: u32) -> u64 {
+        let first = run_in_table(start, count);
+        let _guard = self.lock.lock();
+        match mapping(self.pml4, start) {
+            Some((entries, 1)) => entries[first..first + count as usize]
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.load(Ordering::Relaxed) == 0)
+                .fold(0, |empty, (bit, _)| empty | 1 << bit),
+            Some(_) => 0,
+            None => run_bits(count),
+        }
+    }
+
+    /// Points the entry of the page at `start + i * PAGE` at `frames[i]`
+    /// with `access`, for each bit `i` of `pages` whose entry still holds
+    /// nothing ([`AddressSpace::empty`]), with the lock taken once; the
+    /// pages, at most 64, lie in one page table, which is made if it is
+    /// not there. Returns the bits of the pages it mapped, none if the
+    /// table cannot be made. No CPU caches an entry that is not present,
+    /// so none is shot down.
+    pub fn fill(&self, start: u64, frames: &[u64], pages: u64, access: Access) -> u64 {
+        let count = u32::try_from(frames.len()).unwrap_or(u32::MAX);
+        let first = run_in_table(start, count);
+        let pages = pages & run_bits(count);
+        if pages == 0 {
+            return 0;
+        }
+        let _guard = self.lock.lock();
+        let Ok(table) = paging::table_of(self.pml4, start, 1, true) else { return 0 };
+        let entries = paging::table(table);
+        let mut filled = 0;
+        let mut lines = 0;
+        for (bit, &frame) in frames.iter().enumerate().filter(|&(bit, _)| pages & 1 << bit != 0) {
+            let entry = &entries[first + bit];
+            if entry.load(Ordering::Relaxed) == 0 {
+                entry.store(leaf_entry(frame, Some(access)), Ordering::Relaxed);
+                lines |= paging::line_bit(first + bit);
+                filled |= 1 << bit;
+            }
+        }
+        if let Some(record) = paging::table_record(table) {
+            record.add_table_lines(lines);
+        }
+        filled
+    }
+
     /// Visits every entry from `start` to `end` that holds a frame, in
     /// order, and does what `decide` says with it, given its address, its
     /// frame and its access. The TLB is flushed once for every
@@ -882,6 +933,22 @@ fn leaves_of(
         }
     }
     true
+}
+
+/// The index in its page table of the entry of `start`, the first of
+/// `count` pages that must lie in that one table, at most 64 of them.
+fn run_in_table(start: u64, count: u32) -> usize {
+    let first = index(start, 1);
+    assert!(
+        start.is_multiple_of(PAGE) && count <= 64 && first + count as usize <= 512,
+        "{count} pages from {start:#x} are not in one page table"
+    );
+    first
+}
+
+/// The bits of a run of `count` pages, at most 64, from bit 0.
+const fn run_bits(count: u32) -> u64 {
+    if count == 0 { 0 } else { u64::MAX >> (64 - count) }
 }
 
 /// The entry of a large page that maps the frames from `frame` on.
@@ -1392,6 +1459,54 @@ fn check_spaces() {
     }
 }
 
+/// Checks [`AddressSpace::empty`] and [`AddressSpace::fill`], as a fault
+/// that maps the pages around it uses them, on a space no CPU runs, with
+/// the frames `a` and `b`: a run whose table is not there holds nothing;
+/// a mapped page, a page held without access and a swapped-out page are
+/// not empty and are left as they were, while the rest are mapped; and a
+/// filled run is empty nowhere.
+fn fill_around(a: u64, b: u64) -> Result<(), &'static str> {
+    const RUN: u32 = 16;
+    let space = AddressSpace::new().map_err(|_| "out of memory")?;
+    let end = USER_TEST + u64::from(RUN) * PAGE;
+    let result = (|| {
+        if space.empty(USER_TEST, RUN) != run_bits(RUN) {
+            return Err("a run without a page table was not all empty");
+        }
+        space.map(USER_TEST, a, Access::ReadOnly).map_err(|_| "out of memory")?;
+        space.set(USER_TEST + 3 * PAGE, a, None, false).map_err(|_| "out of memory")?;
+        space.set_swapped(USER_TEST + 5 * PAGE, 7).map_err(|_| "out of memory")?;
+        let taken = 1 | 1 << 3 | 1 << 5;
+        if space.empty(USER_TEST, RUN) != run_bits(RUN) & !taken {
+            return Err("empty pages were not told from mapped, held and swapped ones");
+        }
+        let frames = [b; RUN as usize];
+        // Asked for all but page 1: it stays empty.
+        let filled = space.fill(USER_TEST, &frames, run_bits(RUN) & !2, Access::ReadOnly);
+        if filled != run_bits(RUN) & !taken & !2 {
+            return Err("a fill mapped a page that held something or was not asked for");
+        }
+        let kept = space.entry(USER_TEST) == Some((a, Some(Access::ReadOnly)))
+            && space.entry(USER_TEST + 3 * PAGE) == Some((a, None))
+            && space.swapped(USER_TEST + 5 * PAGE) == Some(7)
+            && space.entry(USER_TEST + 2 * PAGE) == Some((b, Some(Access::ReadOnly)))
+            && space.entry(end - PAGE) == Some((b, Some(Access::ReadOnly)))
+            && space.entry(USER_TEST + PAGE).is_none();
+        if !kept {
+            return Err("a fill changed what was there, or mapped the wrong frame");
+        }
+        if space.empty(USER_TEST, RUN) != 2 {
+            return Err("a filled run still had empty pages");
+        }
+        Ok(())
+    })();
+    space.clear_swapped(USER_TEST, end, &mut |_| {});
+    space.edit(USER_TEST, end, &mut |_, _, _| Edit::Clear, &mut |_| {});
+    // SAFETY: no CPU ever ran the space, and nothing keeps the reference.
+    unsafe { space.destroy() };
+    result
+}
+
 /// Reads `TEST.address` in the first test space (run on every CPU).
 fn check_large_page() {
     let were_enabled = cpu::disable_interrupts();
@@ -1607,7 +1722,8 @@ pub fn self_test(on_others: &dyn Fn(fn())) -> Result<(), &'static str> {
         // `check_spaces`, and nothing keeps the references.
         unsafe { space.destroy() };
     }
-    let result = result.and_then(|()| large_pages(on_others, b, B));
+    let result =
+        result.and_then(|()| fill_around(a, b)).and_then(|()| large_pages(on_others, b, B));
     memory::free_pages(a, 1, Owner::Kernel);
     memory::free_pages(b, 1, Owner::Kernel);
     result

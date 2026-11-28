@@ -155,4 +155,24 @@ static inline long check_anonymous_pages(void) {
 	return pages;
 }
 
+// The page faults the process has taken, minor and major, from
+// /processes/<pid>/status; -1 if they cannot be read.
+static inline long check_page_faults(void) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)getpid());
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long minor = -1, major = -1, value;
+	while(fgets(line, sizeof(line), status)) {
+		if(sscanf(line, "minor_faults: %ld", &value) == 1)
+			minor = value;
+		else if(sscanf(line, "major_faults: %ld", &value) == 1)
+			major = value;
+	}
+	fclose(status);
+	return minor < 0 || major < 0 ? -1 : minor + major;
+}
+
 #endif

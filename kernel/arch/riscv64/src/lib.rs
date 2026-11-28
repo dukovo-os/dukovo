@@ -496,6 +496,14 @@ impl UserMode for Arch {
         Err(MapPageError::NoMemory)
     }
 
+    fn empty_pages(_: &Space, _: u64, _: u32) -> u64 {
+        0
+    }
+
+    fn fill_pages(_: &Space, _: u64, _: &[u64], _: u64, _: UserAccess) -> u64 {
+        0
+    }
+
     fn frames(_: &Space, _: u64, _: u64, _: bool, _: &mut dyn FnMut(u64) -> bool) {}
 
     fn scan(_: &Space, _: u64, _: u64, _: bool, _: &mut dyn FnMut(u64, Scanned) -> bool) {}

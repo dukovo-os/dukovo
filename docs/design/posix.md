@@ -118,6 +118,15 @@ spanned that no space maps any more. A shared writable mapping of a
 file needs the page cache to map its own pages, and is refused until
 then.
 
+A fault that does not write a page of a shared mapping, or a kept page
+of a file, also maps the pages around it that are there already, as
+Linux's fault-around does (ADR 0799): those of the aligned run of 16
+pages that holds it, within its region, that the space holds nothing
+for, each charged to the space. Nothing is made for them, so a backend
+that reads shared buffers another made, or a program whose code another
+process ran, takes a fault for each run rather than for each page. A
+page past a memory file's end is never among them.
+
 Shared memory by name is a filesystem of its own, `shm`, which Spark
 mounts on `/devices/shm` (`/dev/shm`) (ADR 0490). Its files keep their
 pages in a `SharedPages`, so a shared mapping of one is the same pages
