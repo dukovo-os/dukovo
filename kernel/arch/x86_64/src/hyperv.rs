@@ -189,8 +189,10 @@ fn hypercall(control: u64, input: u64, output: u64) -> u16 {
     // any, is the caller's and the hypervisor only reads it.
     unsafe {
         core::arch::asm!(
-            "call {page}",
-            page = in(reg) page,
+            // Through the retpoline, as the compiler calls (`thunks.rs`).
+            ".byte 0x2e",
+            "call __x86_indirect_thunk_r11",
+            in("r11") page,
             in("rcx") control,
             in("rdx") input,
             in("r8") output,

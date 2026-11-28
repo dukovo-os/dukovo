@@ -35,7 +35,7 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_posix::ipc::{
     self as rules, Caller, GetError, OpError, Operation, Outcome, Perm, Table, TableError,
 };
-use radix_sync::{Mutex, Once};
+use radix_sync::{Mutex, Once, nospec};
 
 use crate::sched::{self, wait};
 use crate::user::memory::{RoomRef, SharedPages, SharedRef};
@@ -673,10 +673,12 @@ impl Ipc {
         if !state.perm.permits(caller, want) {
             return Err(denied());
         }
-        let n = number as usize;
-        if n >= set.count {
+        if number as usize >= set.count {
             return Err(invalid());
         }
+        // A semaphore the processor guesses in range, while the check is
+        // still to be done, is semaphore 0 meanwhile (Spectre v1, ADR 0790).
+        let n = nospec::index(number as usize, set.count);
         Ok(match command {
             Command::Value => u64::from(state.values[n]),
             Command::Pid => state.pids[n],

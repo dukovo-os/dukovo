@@ -137,6 +137,7 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
 // It is 300 more again for the trial banner's count of its journal reads, so that a late answer does not hide who began a trial.
+// It is 100 more again for the weight of the check that the processor has a flaw nothing closes, SEC-180.
 // Add an app, Websites and Databases each keep about 1,000 of room over what
 // they bring; Websites' list reads the whole model of a site, its words and checks.
 // Databases' row is 4,200 more than it was, for the firewall's row and its rule that
@@ -153,7 +154,7 @@ const PAGE_LIMITS = {
   certificates: 60_000,
   report: 67_000,
   alerts: 65_000,
-  security: 149_800,
+  security: 149_900,
   move: 107_500,
   reliability: 22_000,
   terminal: 149_908,

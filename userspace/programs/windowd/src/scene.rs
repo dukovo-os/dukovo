@@ -3,9 +3,11 @@
 
 //! What a screen's frame is drawn from.
 //!
-//! From the front: the panel windowd shows over the windows, then each
+//! From the front: the box windowd shows over the windows, then each
 //! window in the windows' order, and of each window its popups, the
-//! strips of its frame and its own surface. The surface is cut to the
+//! strips of its frame and its own surface. Under a window that is
+//! dragged to an edge of the desktop lies the preview of what it will
+//! fill there (ADR 0727). The surface is cut to the
 //! places the frame's layout gives it, so that a program draws nowhere
 //! else: the content, and the region of a title bar the program shares
 //! (ADR 0720). It lies behind the frame, which is see-through there.
@@ -16,7 +18,9 @@
 //! is cut to the rectangle around its parts ([`Cut`]), and drawn in the
 //! parts alone.
 
+use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
@@ -26,11 +30,16 @@ use smithay::backend::renderer::element::{
 };
 use smithay::backend::renderer::pixman::{PixmanError, PixmanFrame, PixmanRenderer};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
-use smithay::desktop::PopupManager;
+use smithay::desktop::{PopupManager, Window};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
-use crate::panel::Panel;
+use window_frame::{Colour, Shape, Theme};
+
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+
+use crate::windows::zones::Fills;
 use crate::windows::{Framed, Windows};
 
 render_elements! {
@@ -42,6 +51,9 @@ render_elements! {
     Popup=WaylandSurfaceRenderElement<PixmanRenderer>,
     /// A surface of a window, where the window's frame lets it show.
     Window=Cut,
+    /// A rectangle of one colour: the ground under a window's content,
+    /// or a part of a preview.
+    Solid=SolidColorRenderElement,
 }
 
 /// A surface of a window, which shows in some parts of a screen's frame
@@ -150,20 +162,128 @@ impl RenderElement<PixmanRenderer> for Cut {
     }
 }
 
+/// How far in from the edges of the area it stands for a preview's
+/// own edges are, and how wide the line around it is, in points.
+const PREVIEW_INSET: i32 = 8;
+const PREVIEW_LINE: i32 = 2;
+
+/// How much of what is under a preview its inside covers, of 255.
+const PREVIEW_COVER: u8 = 110;
+
+/// What the renderer knows the parts of the preview by: its inside and
+/// the four lines around it.
+#[derive(Debug)]
+pub struct Shade {
+    parts: [Id; 5],
+}
+
+impl Default for Shade {
+    fn default() -> Shade {
+        Shade { parts: core::array::from_fn(|_| Id::new()) }
+    }
+}
+
+/// The preview of the area a window that is dragged will fill.
+#[derive(Debug, Clone, Copy)]
+pub struct Preview<'a> {
+    /// The window, which the preview lies under.
+    pub window: &'a Window,
+    /// The area.
+    pub area: Rectangle<i32, Logical>,
+    /// What the renderer knows the preview by.
+    pub shade: &'a Shade,
+}
+
+impl Preview<'_> {
+    /// Adds the preview's parts to `pieces`, for the screen `onto`: a
+    /// see-through inside with a line around it, in the colours of a
+    /// panel's chosen row.
+    fn pieces(&self, theme: &Theme, onto: Onto, pieces: &mut Vec<Piece>) {
+        let all = Rectangle::new(
+            self.area.loc + Point::from((PREVIEW_INSET, PREVIEW_INSET)),
+            (self.area.size.w - 2 * PREVIEW_INSET, self.area.size.h - 2 * PREVIEW_INSET).into(),
+        );
+        if all.size.w <= 2 * PREVIEW_LINE || all.size.h <= 2 * PREVIEW_LINE {
+            return;
+        }
+        let (line, rows) = (PREVIEW_LINE, all.size.h - 2 * PREVIEW_LINE);
+        let part = |x: i32, y: i32, w: i32, h: i32| {
+            Rectangle::new(all.loc + Point::from((x, y)), (w, h).into())
+        };
+        let lines = [
+            part(0, 0, all.size.w, line),
+            part(0, all.size.h - line, all.size.w, line),
+            part(0, line, line, rows),
+            part(all.size.w - line, line, line, rows),
+        ];
+        let inside = part(line, line, all.size.w - 2 * line, rows);
+        let parts = lines
+            .into_iter()
+            .map(|line| (line, theme.panel.chosen_line))
+            .chain([(inside, theme.panel.chosen.covering(PREVIEW_COVER))]);
+        for (id, (rect, colour)) in self.shade.parts.iter().zip(parts) {
+            pieces.push(Piece::Solid(SolidColorRenderElement::new(
+                id.clone(),
+                onto.rect(rect),
+                CommitCounter::default(),
+                solid(colour),
+                Kind::Unspecified,
+            )));
+        }
+    }
+}
+
+/// `colour` as the renderer takes one: each of red, green and blue
+/// already times how much the colour covers.
+fn solid(colour: Colour) -> Color32F {
+    let cover = f32::from(colour.cover) / 255.0;
+    let part = |part: u8| f32::from(part) / 255.0 * cover;
+    Color32F::new(part(colour.red), part(colour.green), part(colour.blue), cover)
+}
+
+/// A box of windowd's own over the windows: a panel or the picker.
+#[derive(Debug, Clone, Copy)]
+pub struct Over<'a> {
+    /// Where its top left corner is on the desktop.
+    pub at: Point<i32, Logical>,
+    /// Its pixels.
+    pub pixels: &'a MemoryRenderBuffer,
+}
+
 /// What the screens show beside the windows.
 #[derive(Debug, Clone, Copy)]
 pub struct Scene<'a> {
     /// The windows.
     pub windows: &'a Windows,
-    /// The panel over them.
-    pub panel: Option<&'a Panel>,
+    /// The box over them.
+    pub over: Option<Over<'a>>,
+    /// The preview under one of them.
+    pub preview: Option<Preview<'a>>,
 }
 
-/// The place of the desktop `at` as a place of the frame of the screen
-/// whose top left corner is at `screen`. A screen shows the desktop at
-/// its own size in release 1.1.
-fn on_screen(at: Point<i32, Logical>, screen: Point<i32, Logical>) -> Point<i32, Physical> {
-    (at - screen).to_physical(1)
+/// A screen as a frame is drawn for it: where the top left corner of
+/// its area of the desktop is, and how many of its pixels a point of
+/// the desktop is across.
+#[derive(Clone, Copy)]
+struct Onto {
+    corner: Point<i32, Logical>,
+    zoom: f64,
+}
+
+impl Onto {
+    /// The place of the desktop `at` as a place of the frame, to the
+    /// nearest pixel.
+    fn place(self, at: Point<i32, Logical>) -> Point<i32, Physical> {
+        (at - self.corner).to_physical_precise_round(self.zoom)
+    }
+
+    /// The rectangle of the desktop `rect` as one of the frame, each
+    /// of its edges to the nearest pixel, so that two that share an
+    /// edge on the desktop share it in the frame.
+    fn rect(self, rect: Rectangle<i32, Logical>) -> Rectangle<i32, Physical> {
+        let (from, to) = (self.place(rect.loc), self.place(rect.loc + rect.size.to_point()));
+        Rectangle::new(from, (to - from).to_size())
+    }
 }
 
 impl Scene<'_> {
@@ -177,14 +297,16 @@ impl Scene<'_> {
         &self,
         renderer: &mut PixmanRenderer,
         screen: Rectangle<i32, Logical>,
+        zoom: f64,
     ) -> Result<Vec<Piece>, PixmanError> {
+        let onto = Onto { corner: screen.loc, zoom };
         let mut pieces = Vec::new();
-        if let Some(panel) = self.panel {
-            let at = on_screen(panel.area().loc, screen.loc).to_f64();
+        if let Some(over) = self.over {
+            let at = onto.place(over.at).to_f64();
             let own = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 at,
-                panel.pixels(),
+                over.pixels,
                 None,
                 None,
                 None,
@@ -192,39 +314,81 @@ impl Scene<'_> {
             )?;
             pieces.push(Piece::Own(own));
         }
+        let theme = self.windows.theme();
         for framed in self.windows.stacked() {
-            window(renderer, framed, screen.loc, &mut pieces)?;
+            // A window that fills a part of its screen is on that
+            // screen alone: the line and the shadow around its frame
+            // do not fall on the screen beside it.
+            let frame = framed.fills() == Fills::Nothing || framed.frame().overlaps(screen);
+            window(renderer, framed, onto, frame.then_some(theme.content_line), &mut pieces)?;
+            if let Some(preview) = self.preview.filter(|preview| *preview.window == framed.window) {
+                preview.pieces(theme, onto, &mut pieces);
+            }
         }
         Ok(pieces)
     }
 }
 
-/// Adds to `pieces` what `framed` is drawn from on the screen whose top
-/// left corner is at `screen`.
+impl Scene<'_> {
+    /// The surface that is all the screen whose area of the desktop is
+    /// `screen` shows, if one surface is: the only surface of a window
+    /// that fills the screen with no frame, with no popup, in front of
+    /// every other window that reaches the screen, and with nothing of
+    /// windowd's over it. A frame of that screen is that surface's
+    /// pixels and nothing else, if they are as many as the screen's.
+    pub fn alone(&self, screen: Rectangle<i32, Logical>) -> Option<WlSurface> {
+        if self.over.is_some() || self.preview.is_some() {
+            return None;
+        }
+        for framed in self.windows.stacked() {
+            let surface = framed.window.wl_surface()?;
+            // A popup may reach anywhere, onto a screen its window is
+            // not on too.
+            if PopupManager::popups_for_surface(&surface).next().is_some() {
+                return None;
+            }
+            if !framed.frame().overlaps(screen) {
+                continue;
+            }
+            let fills = framed.layout().shape == Shape::Full
+                && framed.surface_at() == screen.loc
+                && framed.frame() == screen;
+            let mut surfaces = 0;
+            framed.window.with_surfaces(|_, _| surfaces += 1);
+            return (fills && surfaces == 1).then(|| surface.into_owned());
+        }
+        None
+    }
+}
+
+/// Adds to `pieces` what `framed` is drawn from on the screen `onto`:
+/// its popups, its own pixels, and its frame if `line` is the colour
+/// of the frame's line around a window's content.
 fn window(
     renderer: &mut PixmanRenderer,
     framed: &Framed,
-    screen: Point<i32, Logical>,
+    onto: Onto,
+    line: Option<Colour>,
     pieces: &mut Vec<Piece>,
 ) -> Result<(), PixmanError> {
     let Some(surface) = framed.window.wl_surface() else { return Ok(()) };
-    let origin = on_screen(framed.surface_at(), screen);
+    let origin = onto.place(framed.surface_at());
     for (popup, within) in PopupManager::popups_for_surface(&surface) {
         let offset = framed.window.geometry().loc + within - popup.geometry().loc;
         pieces.extend(render_elements_from_surface_tree(
             renderer,
             popup.wl_surface(),
-            origin + offset.to_physical(1),
-            1.0,
+            onto.place(framed.surface_at() + offset),
+            onto.zoom,
             1.0,
             Kind::Unspecified,
         ));
     }
-    for strip in framed.strips() {
+    for strip in framed.strips().iter().filter(|_| line.is_some()) {
         let at = framed.at() + Point::from((strip.rect.x, strip.rect.y));
         let own = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            on_screen(at, screen).to_f64(),
+            onto.place(at).to_f64(),
             &strip.buffer,
             None,
             None,
@@ -233,13 +397,38 @@ fn window(
         )?;
         pieces.push(Piece::Own(own));
     }
-    let mut parts = framed
-        .shows()
-        .map(|part| Rectangle::new(on_screen(part.loc, screen), part.size.to_physical(1)));
+    let mut parts = framed.shows().map(|part| onto.rect(part));
     let parts = [parts.next(), parts.next()];
-    let whole: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> =
-        render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
+    let whole: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> = render_elements_from_surface_tree(
+        renderer,
+        &surface,
+        origin,
+        onto.zoom,
+        1.0,
+        Kind::Unspecified,
+    );
     let cut = whole.into_iter().filter_map(|surface| Cut::of(surface, parts));
     pieces.extend(cut.map(Piece::Window));
+    if let Some((id, around)) = framed.around() {
+        pieces.push(Piece::Solid(SolidColorRenderElement::new(
+            id.clone(),
+            onto.rect(around),
+            CommitCounter::default(),
+            solid(Colour::BLACK),
+            Kind::Unspecified,
+        )));
+    } else if let Some(line) = line
+        && onto.zoom.fract() != 0.0
+        && framed.layout().bar_rows() > 0
+    {
+        let (id, ground) = framed.ground();
+        pieces.push(Piece::Solid(SolidColorRenderElement::new(
+            id.clone(),
+            onto.rect(ground),
+            CommitCounter::default(),
+            solid(line),
+            Kind::Unspecified,
+        )));
+    }
     Ok(())
 }

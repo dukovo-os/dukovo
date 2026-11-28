@@ -3,7 +3,7 @@
 
 [package]
 name = "window-protocols"
-description = "The Wayland protocols that are Dukovo's own, as the tables the window server (windowd(1)) and a program speak them from: a window's title bar shared between the two"
+description = "The Wayland protocols that are Dukovo's own, as the tables the window server (windowd(1)) and a program speak them from: a window's title bar shared between the two, and the names windows are known again by"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -11,8 +11,11 @@
 //! here, where no memory file is shared with a card.
 
 use std::alloc::Global;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::fs::File;
 use std::io;
+use std::os::fd::BorrowedFd;
+use std::os::unix::fs::FileExt;
 use std::rc::Rc;
 
 use display::abi::{
@@ -34,7 +37,7 @@ use radix_display::state::PictureShape;
 use radix_display::wire as kernel;
 use smithay::reexports::pixman::{FormatCode, Image};
 
-use crate::link::Link;
+use crate::link::{Link, Source};
 
 /// What the lender's description of the layer's file is known by, and
 /// the desktop's.
@@ -80,6 +83,45 @@ pub struct Showed {
 pub struct FakeCard {
     /// Each thing, in order.
     pub showed: RefCell<Vec<Showed>>,
+    /// Each picture that was made of a program's own pixels, in order.
+    pub brought: RefCell<Vec<Brought>>,
+    /// How many times a picture of a program's own pixels was asked
+    /// for.
+    pub asked: Cell<u32>,
+    /// Whether the card takes no picture of a program's own pixels.
+    pub takes_none: Cell<bool>,
+    /// How many changes were asked for that were to show at once, and
+    /// not at a beat.
+    pub at_once: Cell<u32>,
+    /// Whether the card's device has stopped answering: nothing it is
+    /// asked to show shows.
+    pub fails: Cell<bool>,
+}
+
+/// A picture of a program's own pixels.
+#[derive(Debug)]
+pub struct Brought {
+    /// Its number, which a later picture has again once this one was
+    /// let go of.
+    pub picture: u32,
+    /// Where its pixels are in its file.
+    pub source: Source,
+    /// The file.
+    pub file: File,
+}
+
+impl Brought {
+    /// The picture's pixels as the file has them now: rows of
+    /// FORMAT_XRGB8888 with nothing between them.
+    pub fn pixels(&self) -> Vec<u8> {
+        let (width, height) = self.source.size;
+        let mut pixels = vec![0; width as usize * 4 * height as usize];
+        for (row, into) in pixels.chunks_exact_mut(width as usize * 4).enumerate() {
+            let at = self.source.offset + row as u64 * u64::from(self.source.row_bytes);
+            self.file.read_exact_at(into, at).unwrap();
+        }
+        pixels
+    }
 }
 
 impl frame::Card<Pixels> for Rc<FakeCard> {
@@ -96,6 +138,9 @@ impl frame::Card<Pixels> for Rc<FakeCard> {
     }
 
     fn show(&self, frame: &Frame<'_, Pixels>, change: &Change<'_>) -> Result<(), Failed> {
+        if self.fails.get() {
+            return Err(Failed);
+        }
         self.showed.borrow_mut().push(Showed {
             pipe: frame.pipe,
             mode: change.mode,
@@ -194,6 +239,18 @@ impl FakeKernel {
         assert_eq!(self.layer.screen_found(self.card.0, index, &found), Ok(true));
     }
 
+    /// The card's screen at `index` is found anew with a monitor that
+    /// offers `modes`, each a width, a height and its frames in 1000
+    /// seconds, the one it prefers first.
+    pub fn offers(&mut self, index: usize, modes: &[(u32, u32, u32)]) {
+        let modes: Vec<Mode> = modes
+            .iter()
+            .map(|(width, height, mhz)| Mode { refresh_mhz: *mhz, ..mode(*width, *height) })
+            .collect();
+        let found = Found { plugged: true, modes: &modes, data: &[] };
+        assert_eq!(self.layer.screen_found(self.card.0, index, &found), Ok(true));
+    }
+
     /// The lender takes the screens back, as when the person chooses a
     /// console, or lends them to the desktop again.
     pub fn lend(&mut self, to_desktop: bool) {
@@ -280,7 +337,11 @@ impl FakeKernel {
             }
             CHANGE => {
                 let asked = kernel::ChangeRequest::read(buffer).ok_or_else(invalid)?;
-                match self.layer.change(me, Asked::of(&asked), &asked) {
+                let how = Asked::of(&asked);
+                if how.now && !how.check_only {
+                    self.card.1.at_once.set(self.card.1.at_once.get() + 1);
+                }
+                match self.layer.change(me, how, &asked) {
                     Ok(Made::Done) => Ok(0),
                     Ok(Made::Wait(seq)) => {
                         self.wait_shown(seq);
@@ -359,5 +420,27 @@ impl Link for Wire {
         };
         let pixels = Image::new(code, width as usize, height as usize, true);
         Ok((picture, pixels.map_err(|_| io::Error::other("pixman made no image"))?))
+    }
+
+    fn brought(
+        holder: &Holder<Wire>,
+        card: u32,
+        file: BorrowedFd<'_>,
+        source: &Source,
+    ) -> io::Result<u32> {
+        let mut kernel = holder.file().0.borrow_mut();
+        let fake = kernel.card.1.clone();
+        fake.asked.set(fake.asked.get() + 1);
+        if fake.takes_none.get() {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let me = kernel.layer.holder_of(DESKTOP, false).map_err(failure)?;
+        let (width, height) = source.size;
+        let shape = PictureShape { card, format: FORMAT_XRGB8888, width, height };
+        let of_holder = kernel.layer.holder(me).ok_or_else(|| io::Error::other("no holder"))?;
+        let picture = of_holder.keep_picture(Rc::new(Pixels(shape))).map_err(failure)?;
+        let file = File::from(file.try_clone_to_owned()?);
+        fake.brought.borrow_mut().push(Brought { picture, source: *source, file });
+        Ok(picture)
     }
 }

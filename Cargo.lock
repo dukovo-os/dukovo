@@ -427,6 +427,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-cpuflaws"
+version = "1.0.0-alpha.1"
+
+[[package]]
 name = "radix-fat"
 version = "1.0.0-alpha.1"
 dependencies = [
@@ -501,6 +505,10 @@ dependencies = [
 
 [[package]]
 name = "radix-sync"
+version = "1.0.0-alpha.1"
+
+[[package]]
+name = "radix-thunks"
 version = "1.0.0-alpha.1"
 
 [[package]]
@@ -728,6 +736,7 @@ dependencies = [
  "radix-bitlocker",
  "radix-bootfs",
  "radix-btrfs",
+ "radix-cpuflaws",
  "radix-fat",
  "radix-fbcon",
  "radix-hal",
@@ -735,6 +744,7 @@ dependencies = [
  "radix-ksyms",
  "radix-microcode",
  "radix-relocs",
+ "radix-thunks",
  "radix-vfs",
  "ridlc",
  "rustc-demangle",

@@ -25,6 +25,9 @@
 //! the screen whole at once. That frame takes the place of one that
 //! still waits (`NEWEST_WINS`).
 
+mod direct;
+mod feedback;
+pub mod layout;
 pub mod pace;
 
 use std::io;
@@ -32,7 +35,7 @@ use std::io;
 use display::abi::{
     CARD_SHARED_PAGES, DisplayEvent, EVENT_BACK, EVENT_BEAT, EVENT_FAILED, EVENT_FRONT,
     EVENT_OVERFLOW, EVENT_SCREEN, EVENT_SHOWN, FORMAT_ARGB8888, FORMAT_XRGB8888, NEWEST_WINS,
-    NO_WAIT, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PICTURE, PLANE_PIPE, PLANE_POINTER,
+    NO_WAIT, NOW, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PICTURE, PLANE_PIPE, PLANE_POINTER,
 };
 use display::outputs::{self, Found};
 use display::wire::{self, ChangeBytes};
@@ -40,8 +43,9 @@ use display::{Holder, Unmade};
 use smithay::backend::renderer::damage::{Error as DamageError, OutputDamageTracker};
 use smithay::backend::renderer::pixman::{PixmanError, PixmanRenderer};
 use smithay::backend::renderer::utils::draw_render_elements;
-use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer};
+use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer, TextureFilter};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
@@ -50,7 +54,11 @@ use sysapi::time::monotonic_ns;
 use crate::link::Link;
 use crate::pointer::{self, Arrows, SIDE, Shown};
 use crate::scene::Scene;
+use crate::settings::screens::{ScreensSet, Turn, Zoom};
 use crate::shell::Shell;
+use crate::tearing;
+use direct::{Direct, Fit};
+use feedback::Waiting;
 use pace::Pace;
 
 /// The colour of the desktop where no window is, a dark blue grey: red,
@@ -117,19 +125,55 @@ impl<L: Link> Pictures<L> {
     }
 }
 
+/// The widest and the tallest picture of the pointer windowd draws:
+/// the pointer at four times its size.
+const SIDE_MOST: u32 = 128;
+
+/// How wide and tall, in points, the pointer is at most that is drawn
+/// whole at any zoom its plane has room for.
+const POINTER_POINTS: u32 = 32;
+
 /// A screen's pointer plane, and what it shows.
 struct PointerPlane<L: Link> {
     plane: u32,
+    /// The width and the height of its pictures.
+    side: u32,
     pictures: Pictures<L>,
     /// Which of the pointer's pictures the layer was last asked to show
     /// here ([`Pointing::picture`]), or `None` for no pointer.
     asked: Option<u64>,
 }
 
+/// What the desktop calls a screen and how it shows on it, by the
+/// person's settings (ADR 0725).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Named {
+    /// Its name, as programs are told it: its card's and its place on
+    /// the card.
+    name: String,
+    /// Its monitor's maker and model, or nothing.
+    monitor: String,
+    zoom: Zoom,
+    turn: Turn,
+}
+
+/// How the renderer turns the desktop for a screen whose picture is
+/// turned by `turn`. The protocol names the turn the other way round:
+/// the one that undoes the monitor's.
+fn transform(turn: Turn) -> Transform {
+    match turn {
+        Turn::None => Transform::Normal,
+        Turn::Quarter => Transform::_270,
+        Turn::Half => Transform::_180,
+        Turn::ThreeQuarters => Transform::_90,
+    }
+}
+
 /// One screen the desktop shows on.
 struct Screen<L: Link> {
     /// The layer's screen, pipe, plane and mode.
     on: outputs::Output,
+    named: Named,
     /// What the programs are told of it.
     output: Output,
     /// Its place among what the programs are offered.
@@ -141,6 +185,14 @@ struct Screen<L: Link> {
     tracker: OutputDamageTracker,
     pace: Pace,
     pointer: Option<PointerPlane<L>>,
+    /// What it shows straight from a program's memory.
+    direct: Direct,
+    /// Whether the change that was asked for last was to show at once,
+    /// and not at a beat.
+    at_once: bool,
+    /// What the programs asked to be told of the frames that have not
+    /// shown yet.
+    waiting: Waiting,
 }
 
 /// Where the pointer is and what it shows, for the screens' frames.
@@ -271,8 +323,10 @@ where
     }
 
     /// Reads which screens there are, shows on each that is new or
-    /// changed its mode, lets go of those that went, and draws each a
-    /// first frame.
+    /// changed its mode, lets go of those that went, puts each where
+    /// `set`, the person's settings, has it, and draws each a first
+    /// frame. Returns what of the settings could not be followed, a
+    /// line for each thing.
     ///
     /// # Errors
     ///
@@ -282,43 +336,121 @@ where
         renderer: &mut PixmanRenderer,
         shell: &mut Shell,
         display: &DisplayHandle,
-    ) -> Result<(), Failed> {
-        self.found = Found::read(&self.holder)?;
-        let wanted = outputs::outputs(&self.found);
+        set: &ScreensSet,
+    ) -> Result<Vec<String>, Failed> {
+        let mut said = Vec::new();
+        let screens_before = shell.windows.screens();
+        let mut found = Found::read(&self.holder)?;
+        let named = self.choose(&mut found, set, &mut said)?;
+        self.found = found;
         let mut before = core::mem::take(&mut self.shown);
-        let mut left = 0;
-        for on in wanted {
-            let kept = before.iter().position(|screen| screen.on == on);
-            let screen = match kept {
-                Some(at) => before.remove(at),
-                None => self.screen(on, display)?,
+        for on in outputs::outputs(&self.found) {
+            let Some((_, named)) = named.iter().find(|(screen, _)| *screen == on.screen) else {
+                continue;
             };
-            let mode = screen.output.current_mode();
-            screen.output.change_current_state(mode, None, None, Some((left, 0).into()));
-            shell.windows.space.map_output(&screen.output, (left, 0));
-            left += on.mode.width as i32;
+            let kept = before.iter().position(|screen| screen.on == on);
+            let mut screen = match kept {
+                Some(at) => before.remove(at),
+                None => self.screen(on, named.clone(), display)?,
+            };
+            screen.named = named.clone();
             self.shown.push(screen);
+        }
+        let shown: Vec<layout::Shown<'_>> = self.shown.iter().map(Screen::laid).collect();
+        let (areas, unused) = layout::places(&shown, &set.layouts);
+        if let Some(why) = unused {
+            let names: Vec<&str> = shown.iter().map(|screen| screen.name).collect();
+            let names = names.join(", ");
+            said.push(format!("the layout for {names} {why}; the screens are side by side"));
+        }
+        for (screen, area) in self.shown.iter().zip(areas) {
+            let (turn, zoom) = (transform(screen.named.turn), screen.named.zoom);
+            let scale = if zoom.is_whole() {
+                Scale::Integer(zoom.whole())
+            } else {
+                Scale::Fractional(zoom.number())
+            };
+            screen.output.change_current_state(None, Some(turn), Some(scale), Some(area.loc));
+            shell.windows.space.map_output(&screen.output, area.loc);
         }
         for gone in &before {
             shell.windows.space.unmap_output(&gone.output);
             display.remove_global::<Shell>(gone.global.clone());
         }
+        shell.windows.screens_changed(&screens_before);
+        shell.windows.tell_all();
         self.pointed = None;
-        let scene = Scene { windows: &shell.windows, panel: None };
+        let scene = Scene { windows: &shell.windows, over: None, preview: None };
         self.first_frames(renderer, &scene)?;
         // The change above stopped showing them.
-        for gone in before {
+        for mut gone in before {
+            gone.waiting.discard();
             let pointer = gone.pointer.iter().flat_map(|pointer| pointer.pictures.numbers());
-            for number in gone.pictures.numbers().chain(pointer).chain([gone.mode_value]) {
+            let own = gone.pictures.numbers().chain(pointer).chain(gone.direct.numbers());
+            for number in own.chain([gone.mode_value]) {
                 self.holder.drop_object(number)?;
             }
         }
-        Ok(())
+        Ok(said)
+    }
+
+    /// What each screen with a monitor is called and how the person
+    /// has set it to show, by the screen's number. `found` is left
+    /// with the mode each is to show in, and with none for a screen
+    /// that is set not to be in use. What cannot be followed goes to
+    /// `said`.
+    fn choose(
+        &self,
+        found: &mut Found,
+        set: &ScreensSet,
+        said: &mut Vec<String>,
+    ) -> io::Result<Vec<(u32, Named)>> {
+        let mut named = Vec::new();
+        let mut unused = Vec::new();
+        for at in 0..found.screens.len() {
+            let (info, Some(preferred)) = found.screens[at] else { continue };
+            let thing = found.things.iter().find(|thing| thing.id == info.id);
+            let card = self.holder.card(info.card)?;
+            let name =
+                format!("{}/{}", wire::text(&card.name), thing.map_or(0, |thing| thing.index));
+            let monitor = format!("{} {}", wire::text(&info.maker), wire::text(&info.name));
+            let monitor = monitor.trim().to_owned();
+            let screen = set.of(&name, &monitor);
+            let mut mode = preferred;
+            if let Some(wanted) = screen.mode {
+                match layout::mode(&self.holder.modes(&info)?, wanted) {
+                    Some(chosen) => mode = chosen,
+                    None => said.push(format!(
+                        "the screen {name} has no mode {wanted}; it shows in the one its monitor \
+                         prefers"
+                    )),
+                }
+            }
+            found.screens[at].1 = Some(mode);
+            if screen.used == Some(false) {
+                unused.push((at, found.screens[at].1.take()));
+            }
+            let (zoom, turn) = (screen.zoom.unwrap_or_default(), screen.turn.unwrap_or_default());
+            named.push((info.id, Named { name, monitor, zoom, turn }));
+        }
+        // The person is not left with no screen to set one right on.
+        if !unused.is_empty() && found.screens.iter().all(|(_, mode)| mode.is_none()) {
+            said.push("no screen is set to be in use; the desktop shows on every one".to_owned());
+            for (at, mode) in unused {
+                found.screens[at].1 = mode;
+            }
+        }
+        Ok(named)
     }
 
     /// A screen for `on`: its pictures, its pointer plane's, and what
     /// the programs are told of it.
-    fn screen(&self, on: outputs::Output, display: &DisplayHandle) -> io::Result<Screen<L>> {
+    fn screen(
+        &self,
+        on: outputs::Output,
+        named: Named,
+        display: &DisplayHandle,
+    ) -> io::Result<Screen<L>> {
         let (holder, found) = (&self.holder, &self.found);
         let size = (on.mode.width, on.mode.height);
         let pictures = Pictures::make(holder, on.card, FORMAT_XRGB8888, size)?;
@@ -331,20 +463,21 @@ where
                 && plane.height_max >= SIDE
         };
         let pointer = match found.planes.iter().find(takes) {
-            Some(plane) => Some(PointerPlane {
-                plane: plane.id,
-                pictures: Pictures::make(holder, on.card, FORMAT_ARGB8888, (SIDE, SIDE))?,
-                asked: None,
-            }),
+            Some(plane) => {
+                let side = plane.width_max.min(plane.height_max).min(SIDE_MOST);
+                Some(PointerPlane {
+                    plane: plane.id,
+                    side,
+                    pictures: Pictures::make(holder, on.card, FORMAT_ARGB8888, (side, side))?,
+                    asked: None,
+                })
+            }
             None => None,
         };
         let info = found.screens.iter().find(|(info, _)| info.id == on.screen);
         let info = info.map_or_default(|(info, _)| *info);
-        let thing = found.things.iter().find(|thing| thing.id == on.screen);
-        let card = holder.card(on.card)?;
-        let name = format!("{}/{}", wire::text(&card.name), thing.map_or(0, |thing| thing.index));
         let output = Output::new(
-            name,
+            named.name.clone(),
             PhysicalProperties {
                 size: (info.width_mm as i32, info.height_mm as i32).into(),
                 subpixel: Subpixel::Unknown,
@@ -365,6 +498,7 @@ where
         output.set_preferred(mode);
         Ok(Screen {
             on,
+            named,
             global: output.create_global::<Shell>(display),
             tracker: OutputDamageTracker::from_output(&output),
             output,
@@ -372,6 +506,9 @@ where
             pictures,
             pace: Pace::default(),
             pointer,
+            direct: Direct::default(),
+            at_once: false,
+            waiting: Waiting::default(),
         })
     }
 
@@ -402,6 +539,11 @@ where
             if let Some(pointer) = &mut screen.pointer {
                 pointer.asked = None;
             }
+            if made.is_ok() {
+                // The call waited until every screen showed its frame.
+                screen.direct.composed(&self.holder);
+                screen.direct.all_shown();
+            }
         }
         if in_back(&made) {
             self.front = false;
@@ -417,7 +559,18 @@ where
         match event.kind {
             EVENT_SHOWN | EVENT_BEAT => {
                 let Some(screen) = self.of_pipe(pipe) else { return Told::Nothing };
-                screen.pace.shown(event.deadline_ns);
+                let change = (event.kind == EVENT_SHOWN).then_some(event.cookie);
+                if let Some(cookie) = change {
+                    screen.direct.shown(cookie);
+                }
+                let (time, beat) = (event.time_ns, event.count);
+                screen.waiting.shown(&screen.output, &screen.on.mode, change, time, beat);
+                if core::mem::take(&mut screen.at_once) {
+                    // The next frame waits for no beat either.
+                    screen.pace.reset();
+                } else {
+                    screen.pace.shown(event.deadline_ns);
+                }
                 Told::Shown(screen.output.clone(), event.time_ns)
             }
             EVENT_FAILED => {
@@ -428,7 +581,10 @@ where
             }
             EVENT_BACK => {
                 self.front = false;
-                self.shown.iter_mut().for_each(|screen| screen.pace.reset());
+                for screen in &mut self.shown {
+                    screen.pace.reset();
+                    screen.waiting.discard();
+                }
                 Told::Nothing
             }
             EVENT_FRONT => {
@@ -546,16 +702,25 @@ where
         }
         let Some(screen) = on.map(|on| &self.shown[on]) else { return };
         let Some(pointer) = &screen.pointer else { return };
-        let within = at - screen.area().loc.to_f64();
+        let within = (at - screen.area().loc.to_f64()).to_physical(screen.named.zoom.number());
+        let pixel = screen.turned(Rectangle::new(within.to_i32_floor(), Size::from((1, 1)))).loc;
         if self.front {
             // A holder that went to the back meanwhile moves nothing,
             // and is told so by an event.
-            let _ = self.holder.move_pointer(pointer.plane, within.x as i16, within.y as i16);
+            let _ = self.holder.move_pointer(pointer.plane, pixel.x as i16, pixel.y as i16);
         }
     }
 
-    /// The size of the screen at place `at`, and the pixels it last
-    /// showed.
+    /// The picture of a program's buffer the screen at place `at`
+    /// shows, if it shows one, and how many buffers it keeps from
+    /// their programs.
+    #[cfg(test)]
+    pub fn straight(&self, at: usize) -> (Option<u32>, usize) {
+        self.shown[at].direct.state()
+    }
+
+    /// The size of the screen at place `at`, and the pixels of
+    /// windowd's own it last showed.
     #[cfg(test)]
     pub fn pixels(&mut self, at: usize) -> ((u32, u32), &mut L::Pixels) {
         let screen = &mut self.shown[at];
@@ -571,18 +736,70 @@ where
 {
     /// Its area of the desktop.
     fn area(&self) -> Rectangle<i32, Logical> {
-        let size = Size::from((self.on.mode.width as i32, self.on.mode.height as i32));
+        let mode = (self.on.mode.width, self.on.mode.height);
+        let size = layout::area(mode, self.named.turn, self.named.zoom);
         Rectangle::new(self.output.current_location(), size)
+    }
+
+    /// The screen, as a layout looks at it.
+    fn laid(&self) -> layout::Shown<'_> {
+        let (name, monitor) = (self.named.name.as_str(), self.named.monitor.as_str());
+        layout::Shown { name, monitor, size: self.area().size }
+    }
+
+    /// The rectangle of the screen's picture that shows `rect` of the
+    /// frame as it is drawn, upright: the same where the picture is
+    /// not turned.
+    fn turned(&self, rect: Rectangle<i32, Physical>) -> Rectangle<i32, Physical> {
+        // As the renderer turns what it draws.
+        let turn = transform(self.named.turn).invert();
+        let mode = Size::from((self.on.mode.width as i32, self.on.mode.height as i32));
+        turn.transform_rect_in(rect, &turn.transform_size(mode))
     }
 
     /// A frame may not have shown, or what shows is not known: the next
     /// frame is drawn whole and at once.
     fn lost(&mut self) {
         self.pictures.forget();
+        self.direct.lost();
+        self.waiting.discard();
         self.pace.reset();
         self.pace.stale();
         if let Some(pointer) = &mut self.pointer {
             pointer.pictures.forget();
+        }
+    }
+
+    /// The one buffer of a program's that is all the screen shows, if
+    /// one is and the card shows it from where the program drew it,
+    /// with the picture that is made of it (ADR 0728).
+    fn straight(
+        &mut self,
+        holder: &Holder<L>,
+        shell: &Shell,
+        scene: &Scene<'_>,
+    ) -> Option<(u32, Fit)> {
+        // No card of release 1.1 turns a picture: windowd does, as it
+        // draws.
+        if self.named.turn != Turn::None {
+            return None;
+        }
+        let area = self.area();
+        let surface = scene.alone(area)?;
+        let mode = (self.on.mode.width, self.on.mode.height);
+        let fit = direct::fit(&surface, mode, area.size, self.direct.seen())?;
+        let file = shell.files.of(&fit.buffer);
+        let picture = self.direct.picture(holder, &self.on, &fit, file)?;
+        Some((picture, fit))
+    }
+
+    /// Adds to `change` that `rects` of the main plane's picture
+    /// changed.
+    fn changed(&self, change: &mut ChangeBytes, rects: Vec<Rectangle<i32, Physical>>) {
+        for rect in few(rects) {
+            let (at, size) = (rect.loc, rect.size);
+            let packed = wire::rect(at.x as i16, at.y as i16, size.w as u16, size.h as u16);
+            change.set(self.on.plane, PLANE_CHANGED, packed);
         }
     }
 
@@ -594,17 +811,29 @@ where
         scene: &Scene<'_>,
     ) -> Result<(u32, Vec<Rectangle<i32, Physical>>), Failed> {
         let age = self.pictures.age();
-        let pieces = scene.pieces(renderer, self.area())?;
+        let zoom = self.named.zoom;
+        let pieces = scene.pieces(renderer, self.area(), zoom.number())?;
+        // What is drawn larger than it is has its pixels as they are
+        // at a whole zoom, and smoothed between them otherwise.
+        let filter = if zoom.is_whole() { TextureFilter::Nearest } else { TextureFilter::Linear };
+        renderer.upscale_filter(filter)?;
         let (picture, pixels) = self.pictures.target();
-        let mut target = renderer.bind(pixels)?;
-        let drawn =
-            self.tracker.render_output(renderer, &mut target, age, &pieces, background())?;
-        Ok((picture, drawn.damage.cloned().unwrap_or_default()))
+        let changed = {
+            let mut target = renderer.bind(pixels)?;
+            let drawn =
+                self.tracker.render_output(renderer, &mut target, age, &pieces, background())?;
+            drawn.damage.cloned().unwrap_or_default()
+        };
+        Ok((picture, changed.into_iter().map(|rect| self.turned(rect)).collect()))
     }
 
     /// Draws the screen a frame, with the pointer's picture if the
     /// pointer is on it, and asks the layer to show it at the next beat
-    /// without waiting. A frame in which nothing changed is not shown;
+    /// without waiting. When all the screen shows is one buffer of a
+    /// program's that the card shows from where it is, nothing is
+    /// drawn: the layer is asked to show that buffer's picture
+    /// ([`direct`]), at once if the program said its frames need not
+    /// wait ([`tearing`]). A frame in which nothing changed is not shown;
     /// the beat alone is asked for if a program on the screen waits to
     /// hear of one. Returns whether the pointer's picture is another.
     fn frame(
@@ -617,23 +846,41 @@ where
         cookie: u64,
     ) -> Result<bool, Failed> {
         let started = monotonic_ns();
+        let mut straight = self.straight(holder, shell, scene);
+        let lone = straight.as_ref().map(|(_, fit)| fit.surface.clone());
+        let at_once = lone.as_ref().is_some_and(tearing::at_once);
         // A frame that still waits for its beat is one the screen was
         // lost sight of after: this one, drawn whole, takes its place,
         // so that busy says only that the desktop is not in front.
-        let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS, cookie);
-        let (picture, changed) = self.draw(renderer, scene)?;
-        let drew = !changed.is_empty();
-        if drew {
-            if self.pictures.made.len() > 1 {
-                change.set(self.on.plane, PLANE_PICTURE, u64::from(picture));
+        let when = if at_once { NOW } else { 0 };
+        let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS | when, cookie);
+        // Whether the frame is one of windowd's own after a program's.
+        let back = straight.is_none() && self.direct.shows();
+        let mut drew = false;
+        match &mut straight {
+            Some((picture, fit)) => {
+                if self.direct.shows_another(*picture) {
+                    change.set(self.on.plane, PLANE_PICTURE, u64::from(*picture));
+                }
+                self.changed(&mut change, core::mem::take(&mut fit.changed));
             }
-            for rect in few(changed) {
-                let (at, size) = (rect.loc, rect.size);
-                let packed = wire::rect(at.x as i16, at.y as i16, size.w as u16, size.h as u16);
-                change.set(self.on.plane, PLANE_CHANGED, packed);
+            None => {
+                if back {
+                    // What its own pictures hold is long out of date.
+                    self.pictures.forget();
+                }
+                let (picture, changed) = self.draw(renderer, scene)?;
+                drew = !changed.is_empty();
+                if back || (drew && self.pictures.made.len() > 1) {
+                    change.set(self.on.plane, PLANE_PICTURE, u64::from(picture));
+                }
+                self.changed(&mut change, changed);
             }
         }
+        let main = !change.is_empty();
         let pointer = self.point(renderer, pointing, &mut change)?;
+        // A beat that is only asked for comes when it comes.
+        let at_once = at_once && !change.is_empty();
         if change.is_empty() {
             if !shell.owes_frame(&self.output) {
                 self.pace.unchanged();
@@ -643,8 +890,19 @@ where
         } else {
             holder.change(&mut change).map_err(unmade)?;
         }
+        self.at_once = at_once;
+        let mut kind = Kind::empty();
+        kind.set(Kind::ZeroCopy, lone.is_some());
+        kind.set(Kind::Vsync, !at_once);
+        let asked = shell.feedback(&self.output, lone.as_ref());
+        self.waiting.handed(cookie, asked, kind, at_once.then_some(started));
         if drew {
             self.pictures.drew();
+        }
+        match straight {
+            Some((picture, fit)) if main => self.direct.asked(cookie, picture, fit),
+            None if back => self.direct.composed(holder),
+            _ => {}
         }
         if let (Some(asked), Some(plane)) = (pointer, &mut self.pointer) {
             plane.asked = asked;
@@ -666,9 +924,14 @@ where
         pointing: Option<&Pointing<'_>>,
         change: &mut ChangeBytes,
     ) -> Result<Option<Option<u64>>, Failed> {
+        let turn = transform(self.named.turn).invert();
         let Some(plane) = &mut self.pointer else { return Ok(None) };
+        let side = plane.side as i32;
+        // As large as the screen's zoom makes it, or as the plane has
+        // room for.
+        let zoom = self.named.zoom.number().min(f64::from(plane.side / POINTER_POINTS));
         let drawn = pointing.and_then(|pointing| {
-            let drawn = pointer::drawn(renderer, pointing.shown, pointing.own)?;
+            let drawn = pointer::drawn(renderer, pointing.shown, pointing.own, zoom)?;
             Some((pointing.picture, drawn))
         });
         let wanted = drawn.as_ref().map(|(picture, _)| *picture);
@@ -681,15 +944,21 @@ where
         };
         let (picture, pixels) = plane.pictures.target();
         let mut target = renderer.bind(pixels)?;
-        let all = Rectangle::from_size(Size::from((SIDE as i32, SIDE as i32)));
-        let mut frame = renderer.render(&mut target, all.size, Transform::Normal)?;
+        let all = Rectangle::from_size(Size::from((side, side)));
+        let mut frame = renderer.render(&mut target, all.size, turn)?;
         frame.clear(Color32F::TRANSPARENT, &[all])?;
-        draw_render_elements(&mut frame, 1.0, &drawn, &[all])?;
+        draw_render_elements(&mut frame, zoom, &drawn, &[all])?;
         // pixman has drawn by the time it returns: nothing to wait for.
         let _ = frame.finish()?;
+        // The pixel of the picture, as it is turned, that shows the
+        // spot.
+        let spot = Point::<f64, Logical>::from((f64::from(spot.0), f64::from(spot.1)));
+        let spot = Rectangle::new(spot.to_physical(zoom).to_i32_floor(), Size::from((1, 1)));
+        let spot = turn.transform_rect_in(spot, &all.size).loc;
+        let spot = (spot.x.clamp(0, side - 1) as u64, spot.y.clamp(0, side - 1) as u64);
         change.set(plane.plane, PLANE_PIPE, u64::from(self.on.pipe));
         change.set(plane.plane, PLANE_PICTURE, u64::from(picture));
-        change.set(plane.plane, PLANE_HOT_SPOT, u64::from(spot.0) | u64::from(spot.1) << 16);
+        change.set(plane.plane, PLANE_HOT_SPOT, spot.0 | spot.1 << 16);
         Ok(Some(wanted))
     }
 }

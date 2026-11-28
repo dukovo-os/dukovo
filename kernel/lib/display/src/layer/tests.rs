@@ -1248,6 +1248,18 @@ fn a_card_that_does_not_answer_has_its_screens_marked_failed() {
     assert_eq!(told, [(EVENT_SCREEN, SCREEN), (EVENT_FAILED, PIPE)]);
     assert_eq!(rig.kinds(watcher), [EVENT_SCREEN]);
     assert_ne!(rig.layer.screen_info(SCREEN).unwrap().flags & SCREEN_FAILED, 0);
+    // A holder that then takes its picture off the screen asks the card
+    // again. That fails as well, and the screen is failed as it was:
+    // nobody is told of it a second time.
+    let off = [
+        (MAIN, PLANE_PICTURE, 0),
+        (MAIN, PLANE_PIPE, 0),
+        (SCREEN, SCREEN_PIPE, 0),
+        (PIPE, PIPE_ACTIVE, 0),
+    ];
+    assert_eq!(rig.change(holder, NOW | NO_WAIT | MAY_BLANK, 6, &off), DONE);
+    assert_eq!(rig.kinds(holder), [EVENT_FAILED]);
+    assert_eq!(rig.kinds(watcher), []);
     // What shows is what showed before.
     assert_eq!(rig.layer.holder(holder).unwrap().drop_object(1), Ok(()));
     rig.firmware.fails.set(false);

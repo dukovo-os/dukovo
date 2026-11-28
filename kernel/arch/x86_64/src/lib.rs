@@ -45,6 +45,7 @@ mod firmware;
 mod fpu;
 mod hyperv;
 mod i8042;
+mod idle;
 mod interrupts;
 mod io;
 mod iommu;
@@ -57,6 +58,7 @@ mod paging;
 mod percpu;
 mod power;
 mod pstate;
+mod pti;
 mod random;
 mod rtc;
 mod sci;
@@ -66,7 +68,9 @@ mod smbios;
 mod smbus;
 mod smp;
 mod space;
+mod speculation;
 mod thread;
+mod thunks;
 mod time;
 mod tsc_sync;
 mod user;
@@ -86,9 +90,6 @@ use radix_hal::{
     UserMode,
 };
 
-/// Whether idle CPUs wait with MONITOR and MWAIT.
-static IDLE_MWAIT: AtomicBool = AtomicBool::new(false);
-
 /// The x86-64 implementation of the HAL traits.
 #[derive(Clone, Copy, Debug)]
 pub struct Arch;
@@ -104,23 +105,24 @@ impl Cpu for Arch {
         cpu::halt();
     }
 
-    fn idle_until(wake: &AtomicUsize) {
-        time::doorbell_off();
-        if IDLE_MWAIT.load(Ordering::Relaxed) {
-            cpu::monitor(core::ptr::from_ref::<AtomicUsize>(wake) as usize);
-            // A write between the check and MWAIT still ends the wait: the
-            // monitor is armed already.
-            if wake.load(Ordering::Acquire) & 1 == 0 {
-                cpu::sti_mwait();
-            }
-        } else if wake.load(Ordering::Acquire) & 1 == 0 {
-            cpu::sti_hlt();
-        }
-        cpu::disable_interrupts();
+    fn idle_until(wake: &AtomicUsize, state: usize) {
+        idle::until(wake, state);
+    }
+
+    fn idle_states(cpu: usize) -> &'static [radix_hal::IdleState] {
+        idle::states(cpu)
+    }
+
+    fn cpu_flaws() -> &'static [&'static str] {
+        &speculation::NAMES
+    }
+
+    fn cpu_flaw(name: &str, out: &mut dyn fmt::Write) -> fmt::Result {
+        speculation::write_report(name, out)
     }
 
     fn idle_mode() -> (bool, &'static str) {
-        if IDLE_MWAIT.load(Ordering::Relaxed) { (true, "MWAIT") } else { (false, "HLT") }
+        if idle::mwait() { (true, "MWAIT") } else { (false, "HLT") }
     }
 
     fn virtualized() -> bool {
@@ -429,6 +431,10 @@ impl Timer for Arch {
         time::set_deadline(deadline_ns);
     }
 
+    fn next_interrupt_ns() -> u64 {
+        time::next_interrupt_ns()
+    }
+
     fn timer_writes(cpu: usize) -> u64 {
         time::writes(cpu)
     }
@@ -471,6 +477,18 @@ impl Timer for Arch {
 }
 
 impl Devices for Arch {
+    fn acpi_processor_id(cpu: usize) -> Option<u32> {
+        smp::acpi_uid(cpu)
+    }
+
+    fn set_idle_states(states: &[radix_hal::FirmwareState]) -> usize {
+        idle::set(states)
+    }
+
+    fn set_performance_states(states: &[radix_pstate::firmware::State], limit: usize) -> usize {
+        pstate::set_firmware(states, limit)
+    }
+
     fn pci_segments(found: &mut dyn FnMut(PciSegment)) {
         let Some(mcfg) = acpi::get().and_then(|acpi| acpi.mcfg.as_ref()) else { return };
         for window in radix_acpi::mcfg_entries(mcfg) {
@@ -776,6 +794,7 @@ impl Threads for Arch {
     }
 
     fn self_test_fill_vectors(seed: u64) {
+        thread::claim_extended();
         fpu::fill(seed);
     }
 
@@ -942,6 +961,10 @@ impl UserMode for Arch {
         virt < user::USER_TOP && space.space().swap_out(virt, phys, slot, true)
     }
 
+    fn swap_pages() -> u64 {
+        speculation::swap_pages()
+    }
+
     fn retire_page(space: &Self::Space, virt: u64, phys: u64, slot: u64) -> bool {
         virt < user::USER_TOP && space.space().swap_out(virt, phys, slot, false)
     }
@@ -977,6 +1000,28 @@ impl UserMode for Arch {
             "{virt:#x} is outside the user half"
         );
         space.space().set(virt, phys, access.map(space::access), upgrade)
+    }
+
+    fn empty_pages(space: &Self::Space, start: u64, count: u32) -> u64 {
+        assert!(
+            (user::USER_START..user::USER_TOP).contains(&start),
+            "{start:#x} is outside the user half"
+        );
+        space.space().empty(start, count)
+    }
+
+    fn fill_pages(
+        space: &Self::Space,
+        start: u64,
+        frames: &[u64],
+        pages: u64,
+        access: UserAccess,
+    ) -> u64 {
+        assert!(
+            (user::USER_START..user::USER_TOP).contains(&start),
+            "{start:#x} is outside the user half"
+        );
+        space.space().fill(start, frames, pages, space::access(access))
     }
 
     fn edit_pages(
@@ -1168,7 +1213,7 @@ fn log_cpu() {
     let vendor = cpu::vendor();
     let (family, model, stepping) = cpu::family_model_stepping();
     let mut revision = radix_klog::TextBuf::<40>::new();
-    if cpu::is_intel() {
+    if microcode::supported() {
         use core::fmt::Write;
         let _ = write!(revision, ", microcode revision {:#x}", microcode::revision());
     }
@@ -1205,6 +1250,8 @@ impl Platform for Arch {
         apic::disable_pics();
         apic::init(madt, !flags.has("nox2apic"));
         smp::discover_cpus();
+        // Before the other CPUs start and before any program runs.
+        speculation::init(&flags);
         memory::start_frame_allocator(
             acpi.and_then(|acpi| acpi.srat.as_ref()),
             acpi.and_then(|acpi| acpi.slit.as_ref()),
@@ -1296,9 +1343,7 @@ impl Platform for Arch {
         rtc::init(acpi.and_then(|acpi| acpi.fadt.as_ref()).map_or(0, |fadt| fadt.century));
         time::set_cpu_number(percpu::current_index());
         time::share_clock();
-        // Under a hypervisor MWAIT is usually not passed through, and when
-        // it is emulated it may spin; HLT lets the host run something else.
-        IDLE_MWAIT.store(cpu::feature::monitor() && !cpu::feature::hypervisor(), Ordering::Relaxed);
+        idle::init(flags.value("idle"), flags.value("max_cstate"));
         // Before any driver starts a device.
         iommu::init(flags.value("iommu") == Some("off"));
     }

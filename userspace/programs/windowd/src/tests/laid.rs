@@ -15,7 +15,7 @@ const SIZE: (u32, u32) = (320, 200);
 const FILLS: (u32, u32) = (1024, 732);
 
 /// The settings of a file of `text`, which has nothing wrong in it.
-fn settings(text: &str) -> Settings {
+pub(super) fn settings(text: &str) -> Settings {
     let mut settings = Settings::default();
     let wrong = settings.lay("windowd.json", text);
     assert!(wrong.is_empty(), "{wrong:?}");
@@ -47,15 +47,15 @@ fn the_pointer_moves_as_many_times_as_far_as_the_person_has_it() {
     let before = world.showed();
     // A slow hand: a pixel for a count as built, from the middle of
     // the screen.
-    world.desktop.set(&settings(r#"{"pointer": {"speed": 1}}"#));
+    world.desktop.set(&settings(r#"{"pointer": {"speed": 1}}"#)).unwrap();
     let now = world.now();
     world.desktop.moved(now, 4, -2);
     assert_eq!(world.showed_since(before).last().unwrap().pointer_at, Some((520, 380)));
-    world.desktop.set(&settings(r#"{"pointer": {"speed": -1}}"#));
+    world.desktop.set(&settings(r#"{"pointer": {"speed": -1}}"#)).unwrap();
     world.desktop.moved(now + 20_000_000, -4, 2);
     assert_eq!(world.showed_since(before).last().unwrap().pointer_at, Some((518, 381)));
     // Laid again without the key, the speed is as built.
-    world.desktop.set(&Settings::default());
+    world.desktop.set(&Settings::default()).unwrap();
     world.desktop.moved(now + 40_000_000, 4, -2);
     assert_eq!(world.showed_since(before).last().unwrap().pointer_at, Some((522, 379)));
 }
@@ -66,7 +66,7 @@ fn two_clicks_are_a_double_click_within_the_time_the_person_has_it() {
     let program = world.program();
     world.show(&program, SIZE, 7);
     let (layout, (left, top)) = framed(SIZE);
-    world.desktop.set(&settings(r#"{"pointer": {"double_click_ms": 100}}"#));
+    world.desktop.set(&settings(r#"{"pointer": {"double_click_ms": 100}}"#)).unwrap();
     // Two clicks on the title bar further apart than that are two
     // clicks: the window is as it was.
     world.click(left + 100, top + 15);
@@ -94,7 +94,7 @@ fn every_program_is_told_how_the_person_has_a_held_key_repeat() {
     world.show(&first, SIZE, 7);
     assert_eq!(world.ask(&first, |client| client.repeat()), Some((250, 30)));
     let text = r#"{"keyboard": {"repeat_delay_ms": 400, "repeat_rate": 12}}"#;
-    world.desktop.set(&settings(text));
+    world.desktop.set(&settings(text)).unwrap();
     // The program that was there is told, and one that comes after.
     world.told(&first);
     assert_eq!(world.ask(&first, |client| client.repeat()), Some((400, 12)));
@@ -108,7 +108,7 @@ fn the_person_s_settings_say_which_applications_share_their_title_bars() {
     const FULL: BarSaid = BarSaid { mode: Mode::Full, ..SHARED };
     let mut world = World::one_screen();
     // Every bar full: a program that asks is told the bar is windowd's.
-    world.desktop.set(&settings(r#"{"title_bars": {"apps": "full"}}"#));
+    world.desktop.set(&settings(r#"{"title_bars": {"apps": "full"}}"#)).unwrap();
     let (first, said) = world.asks_for_the_bar();
     assert_eq!(said, Some(FULL));
     world.show(&first, SIZE, 7);
@@ -116,7 +116,7 @@ fn the_person_s_settings_say_which_applications_share_their_title_bars() {
     // The application named as one that shares is told so when the
     // settings are laid, and has the bar once it has drawn for it.
     let text = r#"{"title_bars": {"apps": "full", "shared": ["org.dukovo.window-test"]}}"#;
-    world.desktop.set(&settings(text));
+    world.desktop.set(&settings(text)).unwrap();
     assert_eq!(world.ask(&first, |client| client.bar().unwrap()), Some(SHARED));
     world.settle();
     world.shows_frame(&layout, corner, &look(true));
@@ -127,7 +127,7 @@ fn the_person_s_settings_say_which_applications_share_their_title_bars() {
     // Named as one with the full bar where programs decide, it is told
     // that, and so is a window of it that comes after.
     let text = r#"{"title_bars": {"full": ["org.dukovo.window-test"]}}"#;
-    world.desktop.set(&settings(text));
+    world.desktop.set(&settings(text)).unwrap();
     assert_eq!(world.ask(&first, |client| client.bar().unwrap()), Some(FULL));
     world.show(&first, SIZE, 9);
     world.shows_frame(&layout, corner, &look(true));

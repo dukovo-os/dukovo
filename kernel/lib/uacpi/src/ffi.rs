@@ -14,6 +14,7 @@
 #![allow(unsafe_code)]
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::alloc::{Allocator, Layout};
 use core::ffi::{CStr, c_char, c_ulong, c_void};
 use core::fmt;
@@ -45,6 +46,11 @@ const TIMEOUT: Status = 18;
 /// `uacpi_object_type`: a string.
 const OBJECT_STRING: u32 = 2;
 
+/// `uacpi_object_type`: a device.
+const OBJECT_DEVICE: u32 = 6;
+/// `uacpi_object_type`: a legacy `Processor` object.
+const OBJECT_PROCESSOR: u32 = 12;
+
 /// `uacpi_interrupt_ret`: the interrupt was the handler's.
 const INTERRUPT_HANDLED: u32 = 1;
 /// `uacpi_fixed_event`: the power button.
@@ -64,11 +70,17 @@ const ITERATION_CONTINUE: u32 = 0;
 /// `uacpi_object_type_bits`: devices, and thermal zones.
 const DEVICE_BIT: u32 = 1 << 6;
 const THERMAL_ZONE_BIT: u32 = 1 << 13;
+/// `uacpi_object_type_bits`: processors.
+const PROCESSOR_BIT: u32 = 1 << OBJECT_PROCESSOR;
+/// The `_HID` or `_CID` of a processor device (ACPI 6.5, 8.4.1).
+const PROCESSOR_DEVICE_ID: &CStr = c"ACPI0007";
 /// `_STA`'s bits: present, and functioning.
 const STA_PRESENT: u32 = 1 << 0;
 const STA_FUNCTIONING: u32 = 1 << 3;
 /// `UACPI_MAX_DEPTH_ANY`.
 const MAX_DEPTH_ANY: u32 = u32::MAX;
+/// The most dwords an `_OSC` capabilities buffer [`Node::osc`] sends.
+const MAX_OSC_DWORDS: usize = 8;
 /// `uacpi_address_space`: the embedded controller's.
 const ADDRESS_SPACE_EMBEDDED_CONTROLLER: u32 = 3;
 /// `uacpi_region_op`: a read, then a write.
@@ -147,6 +159,9 @@ unsafe extern "C" {
     fn uacpi_object_get_string_or_buffer(object: Handle, out: *mut DataView) -> Status;
     fn uacpi_object_get_type(object: Handle) -> u32;
     fn uacpi_object_get_package(object: Handle, out: *mut ObjectArray) -> Status;
+    fn uacpi_object_get_processor_info(object: Handle, out: *mut ProcessorInfo) -> Status;
+    fn uacpi_namespace_node_type(node: Handle, out: *mut u32) -> Status;
+    fn uacpi_device_matches_pnp_id(node: Handle, list: *const *const c_char) -> u8;
     fn uacpi_find_devices(hid: *const c_char, callback: IterationCallback, user: Handle) -> Status;
     fn uacpi_namespace_root() -> Handle;
     fn uacpi_namespace_for_each_child(
@@ -206,6 +221,14 @@ struct IdString {
 struct ObjectArray {
     objects: *const Handle,
     count: usize,
+}
+
+/// `uacpi_processor_info`: a `Processor` object's operands.
+#[repr(C)]
+struct ProcessorInfo {
+    id: u8,
+    block_address: u32,
+    block_length: u8,
 }
 
 /// `uacpi_region_rw_data`: a read or write of a region's.
@@ -476,16 +499,7 @@ impl Node {
     /// thread that may sleep.
     pub fn package<T>(self, name: &CStr, read: impl FnOnce(&Package<'_>) -> T) -> Result<T, Error> {
         let object = self.eval(name)?.ok_or(Error(INVALID_ARGUMENT))?;
-        let mut array = ObjectArray { objects: ptr::null(), count: 0 };
-        // SAFETY: `object` is alive; uACPI fills in `array` on success.
-        check(unsafe { uacpi_object_get_package(object.0.as_ptr(), &raw mut array) })?;
-        let objects = if array.count == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the package's elements, which live as long as it.
-            unsafe { core::slice::from_raw_parts(array.objects, array.count) }
-        };
-        Ok(read(&Package { objects }))
+        read_package(object.0.as_ptr(), read)
     }
 
     /// Evaluates `name` and hands `read` the bytes of the buffer or the
@@ -509,6 +523,78 @@ impl Node {
             .map(Object)
             .ok_or(Error(OUT_OF_MEMORY))?;
         let objects = [integer.0.as_ptr()];
+        let args = ObjectArray { objects: objects.as_ptr(), count: objects.len() };
+        let mut object = ptr::null_mut();
+        // SAFETY: `name` is NUL-terminated and relative to the node; `args`
+        // holds a live object; uACPI writes `object` only on success, with
+        // a reference we then own.
+        check(unsafe {
+            uacpi_eval(self.0.as_ptr(), name.as_ptr(), &raw const args, &raw mut object)
+        })?;
+        drop(NonNull::new(object).map(Object));
+        Ok(())
+    }
+
+    /// Evaluates `_OSC` (ACPI 6.5, 6.2.11) with the interface `uuid`,
+    /// given as the 16 bytes of its buffer, and `revision`; its count is
+    /// the length of `dwords`, and its capabilities buffer holds them
+    /// little-endian. The dwords of the buffer it returns are written back
+    /// into `dwords`, as many as both have. From a thread that may sleep.
+    pub fn osc(self, uuid: &[u8; 16], revision: u64, dwords: &mut [u32]) -> Result<(), Error> {
+        let created = |object: Handle| NonNull::new(object).map(Object).ok_or(Error(OUT_OF_MEMORY));
+        // Interfaces' buffers are a few dwords; the kernel is built
+        // without the allocations that cannot fail, so they go on the
+        // stack.
+        let mut buffer = [0u8; 4 * MAX_OSC_DWORDS];
+        if dwords.len() > MAX_OSC_DWORDS {
+            return Err(Error(INVALID_ARGUMENT));
+        }
+        for (bytes, dword) in buffer.as_chunks_mut::<4>().0.iter_mut().zip(dwords.iter()) {
+            bytes.copy_from_slice(&dword.to_le_bytes());
+        }
+        let bytes = &buffer[..4 * dwords.len()];
+        // SAFETY: uACPI copies the bytes into a new buffer, and hands
+        // over new objects, or null.
+        let uuid = created(unsafe {
+            uacpi_object_create_buffer(DataView { bytes: uuid.as_ptr(), len: uuid.len() })
+        })?;
+        // SAFETY: as above.
+        let revision = created(unsafe { uacpi_object_create_integer(revision) })?;
+        // SAFETY: as above.
+        let count = created(unsafe { uacpi_object_create_integer(dwords.len() as u64) })?;
+        // SAFETY: as above.
+        let capabilities = created(unsafe {
+            uacpi_object_create_buffer(DataView { bytes: bytes.as_ptr(), len: bytes.len() })
+        })?;
+        let objects =
+            [uuid.0.as_ptr(), revision.0.as_ptr(), count.0.as_ptr(), capabilities.0.as_ptr()];
+        let args = ObjectArray { objects: objects.as_ptr(), count: objects.len() };
+        let mut object = ptr::null_mut();
+        // SAFETY: `args` holds live objects; uACPI writes `object` only on
+        // success, with a reference we then own.
+        check(unsafe {
+            uacpi_eval(self.0.as_ptr(), c"_OSC".as_ptr(), &raw const args, &raw mut object)
+        })?;
+        let object = NonNull::new(object).map(Object).ok_or(Error(INVALID_ARGUMENT))?;
+        let returned = view(object.0.as_ptr()).ok_or(Error(INVALID_ARGUMENT))?;
+        for (dword, bytes) in dwords.iter_mut().zip(returned.as_chunks::<4>().0) {
+            *dword = u32::from_le_bytes(*bytes);
+        }
+        Ok(())
+    }
+
+    /// Evaluates `name` with a buffer holding `bytes` as its argument, as
+    /// `_PDC`, for what it does; what it returns is dropped. From a thread
+    /// that may sleep.
+    pub fn run_with_buffer(self, name: &CStr, bytes: &[u8]) -> Result<(), Error> {
+        // SAFETY: uACPI copies the bytes into a new buffer, and hands
+        // over a new object, or null.
+        let buffer = NonNull::new(unsafe {
+            uacpi_object_create_buffer(DataView { bytes: bytes.as_ptr(), len: bytes.len() })
+        })
+        .map(Object)
+        .ok_or(Error(OUT_OF_MEMORY))?;
+        let objects = [buffer.0.as_ptr()];
         let args = ObjectArray { objects: objects.as_ptr(), count: objects.len() };
         let mut object = ptr::null_mut();
         // SAFETY: `name` is NUL-terminated and relative to the node; `args`
@@ -657,6 +743,106 @@ impl Node {
     }
 }
 
+/// Hands `read` the elements of the package `object`.
+fn read_package<T>(object: Handle, read: impl FnOnce(&Package<'_>) -> T) -> Result<T, Error> {
+    let mut array = ObjectArray { objects: ptr::null(), count: 0 };
+    // SAFETY: an object uACPI gave, alive for this call; uACPI fills in
+    // `array` on success.
+    check(unsafe { uacpi_object_get_package(object, &raw mut array) })?;
+    let objects = if array.count == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the package's elements, which live as long as it.
+        unsafe { core::slice::from_raw_parts(array.objects, array.count) }
+    };
+    Ok(read(&Package { objects }))
+}
+
+/// Calls `found` with each processor of the namespace and its ACPI
+/// processor ID, in the order uACPI walks it: every legacy `Processor`
+/// object, whose ID is the one it declares, and every device whose `_HID`
+/// or `_CID` is `ACPI0007`, whose ID is its `_UID` as an integer. Those
+/// whose `_STA` says they are not there are skipped, as are devices with
+/// no integer `_UID`. They are all found before `found` is called, so it
+/// may evaluate AML. From a thread that may sleep, after [`start`] has
+/// loaded the namespace.
+pub fn for_each_processor(mut found: impl FnMut(Node, u32)) {
+    /// The processors found, with their IDs.
+    type Processors = Vec<(Node, u32), &'static (dyn Allocator + Sync)>;
+    extern "C" fn each(user: Handle, node: Handle, _: u32) -> u32 {
+        // SAFETY: `user` is the `&mut Vec` below, alive while
+        // `uacpi_namespace_for_each_child` runs.
+        let all = unsafe { &mut *user.cast::<Processors>() };
+        let Some(node) = NonNull::new(node).map(Node) else { return ITERATION_CONTINUE };
+        let mut kind = 0;
+        // SAFETY: a node uACPI gave; `kind` is written on success.
+        if unsafe { uacpi_namespace_node_type(node.0.as_ptr(), &raw mut kind) } != OK {
+            return ITERATION_CONTINUE;
+        }
+        let id = match kind {
+            OBJECT_PROCESSOR => node.processor_id().map(u32::from),
+            OBJECT_DEVICE => node.is_processor_device().then(|| node.processor_uid()).flatten(),
+            _ => None,
+        };
+        // Without room for one more, the rest are left out.
+        if let Some(id) = id.filter(|_| node.present())
+            && all.try_reserve(1).is_ok()
+        {
+            let _ = all.push_within_capacity((node, id));
+        }
+        ITERATION_CONTINUE
+    }
+    // From the host's heap: the kernel's global allocator refuses all.
+    let mut all: Processors = Vec::new_in(host().heap());
+    // SAFETY: the root is uACPI's; `each` is handed `all` only.
+    let status = unsafe {
+        uacpi_namespace_for_each_child(
+            uacpi_namespace_root(),
+            Some(each),
+            None,
+            PROCESSOR_BIT | DEVICE_BIT,
+            MAX_DEPTH_ANY,
+            (&raw mut all).cast(),
+        )
+    };
+    if status != OK {
+        host().log(Level::Warn, format_args!("could not look for processors: {}", Error(status)));
+    }
+    for (node, id) in all {
+        found(node, id);
+    }
+}
+
+impl Node {
+    /// The ID a legacy `Processor` object declares.
+    fn processor_id(self) -> Option<u8> {
+        let mut object = ptr::null_mut();
+        // SAFETY: a null path evaluates the node itself, which for an
+        // object that is no method is a copy of it; uACPI writes `object`
+        // only on success, with a reference we then own.
+        let status =
+            unsafe { uacpi_eval(self.0.as_ptr(), ptr::null(), ptr::null(), &raw mut object) };
+        let object = NonNull::new(object).map(Object).filter(|_| status == OK)?;
+        let mut info = ProcessorInfo { id: 0, block_address: 0, block_length: 0 };
+        // SAFETY: `object` is alive; `info` is written on success.
+        let status = unsafe { uacpi_object_get_processor_info(object.0.as_ptr(), &raw mut info) };
+        (status == OK).then_some(info.id)
+    }
+
+    /// Whether its `_HID` or `_CID` is `ACPI0007`.
+    fn is_processor_device(self) -> bool {
+        let list = [PROCESSOR_DEVICE_ID.as_ptr(), ptr::null()];
+        // SAFETY: a node uACPI gave; the list is NULL-terminated, its
+        // string NUL-terminated.
+        unsafe { uacpi_device_matches_pnp_id(self.0.as_ptr(), list.as_ptr()) != 0 }
+    }
+
+    /// A processor device's `_UID`, as the ID of its processor.
+    fn processor_uid(self) -> Option<u32> {
+        u32::try_from(self.integer(c"_UID").ok()?).ok()
+    }
+}
+
 /// The bytes of a string or a buffer object, without a string's ending
 /// NUL; `None` for any other object.
 fn view<'a>(object: Handle) -> Option<&'a [u8]> {
@@ -749,6 +935,12 @@ impl Package<'_> {
     /// Whether it has none.
     pub fn is_empty(&self) -> bool {
         self.objects.is_empty()
+    }
+
+    /// Hands `read` the element at `index` if it is itself a package;
+    /// `None` if there is no such element or it is another kind.
+    pub fn package<T>(&self, index: usize, read: impl FnOnce(&Package<'_>) -> T) -> Option<T> {
+        read_package(*self.objects.get(index)?, read).ok()
     }
 }
 

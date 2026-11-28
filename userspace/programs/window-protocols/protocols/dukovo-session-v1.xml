@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+-->
+<protocol name="dukovo_session_v1">
+  <copyright>
+    Copyright 2026 The Dukovo contributors.
+
+    Licensed under the Apache License, Version 2.0, or the MIT license,
+    at your option.
+  </copyright>
+
+  <description summary="windows that are known again, where they were">
+    Dukovo's window server keeps where a window was: on which screen,
+    where on it and how large, and whether it was maximized or snapped
+    to a zone. A window that shows again shows there. To know a window
+    again, the window server needs a name for it that lasts longer than
+    the window does, and only the window's program has one: the main
+    window, the terminal of one profile, the document of one path.
+
+    With this protocol a program gives a window such a name. A program
+    that names none of its windows has them placed as new windows are.
+  </description>
+
+  <interface name="dukovo_session_manager_v1" version="1">
+    <description summary="names windows for the window server to know again">
+      The global a program binds to name its windows.
+    </description>
+
+    <enum name="error">
+      <entry name="bad_name" value="0"
+             summary="the name is empty, longer than 255 bytes, or not UTF-8"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        The names given with the manager stay.
+      </description>
+    </request>
+
+    <request name="name_window">
+      <description summary="give a toplevel a name that lasts">
+        Gives a toplevel a name the program will give the same window
+        again when it next makes it. The name is the program's own and
+        means nothing to the window server, which knows a window by
+        its toplevel's application id and this name together. A name
+        of no bytes, of more than 255, or that is not UTF-8 text, is
+        the bad_name error.
+
+        A toplevel that is named before the first commit of its
+        surface, and was known by the same application id and name
+        before, is asked in its first configure event to be drawn at
+        the size it had, maximized or tiled as it was, and shows where
+        it was: on the screen it was on if that screen is there. The
+        program draws it as any configure event asks. A toplevel that
+        was not known is placed as a new window is.
+
+        From then on the window server keeps where the window is, for
+        the next time. A toplevel named after it first showed stays
+        where it is and is kept from then on.
+
+        A name is one window's at a time: while a toplevel of the same
+        application id has it, another that is given it has no name.
+        A toplevel whose application id is not set has no name either.
+        Naming a toplevel again gives it the new name in place of the
+        old.
+      </description>
+      <arg name="toplevel" type="object" interface="xdg_toplevel"/>
+      <arg name="name" type="string"/>
+    </request>
+  </interface>
+</protocol>

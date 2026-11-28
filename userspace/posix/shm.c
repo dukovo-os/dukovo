@@ -495,6 +495,53 @@ static void huge_pages(void) {
 	CHECK(close(fd) == 0 && shm_unlink(NAME) == 0);
 }
 
+// A read of a shared mapping maps the pages around the one it faults on
+// that are there already, those of the aligned run of 16 that holds it,
+// as Linux's fault-around does (ADR 0799): a process that reads 64 pages
+// another mapping made takes a fault for each run, not for each page, and
+// both mappings reach the same memory. A page past the object's end is
+// never among them: once the object is cut, a read past its new end is
+// SIGBUS still, right after a read of its last page.
+static void fault_around(void) {
+	enum { PAGES = 64, CUT = 40 };
+	int fd = shm_open(NAME, O_RDWR | O_CREAT | O_EXCL, 0600);
+	CHECK(fd >= 0 && ftruncate(fd, PAGES * PAGE) == 0);
+	char *made = mmap(NULL, PAGES * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	CHECK(made != MAP_FAILED);
+	for(int i = 0; i < PAGES; i++)
+		made[i * PAGE] = (char)(i + 1);
+	char *reader = mmap(NULL, PAGES * PAGE, PROT_READ, MAP_SHARED, fd, 0);
+	CHECK(reader != MAP_FAILED);
+	long before = check_page_faults();
+	int matched = 0;
+	for(int i = 0; i < PAGES; i++)
+		matched += reader[i * PAGE] == (char)(i + 1);
+	long faults = check_page_faults() - before;
+	CHECK(matched == PAGES);
+	printf("%s: %ld faults for %d pages\n", check_name, faults, PAGES);
+	// Four runs of 16, or five where the mapping starts inside one, and
+	// one more at most for the C library's own memory.
+	CHECK(before >= 0 && faults >= PAGES / 16 && faults <= PAGES / 16 + 2);
+	made[5 * PAGE + 1] = 'x';
+	CHECK(reader[5 * PAGE + 1] == 'x');
+	CHECK(munmap(reader, PAGES * PAGE) == 0 && munmap(made, PAGES * PAGE) == 0);
+	CHECK(ftruncate(fd, CUT * PAGE) == 0);
+	char *past = mmap(NULL, PAGES * PAGE, PROT_READ, MAP_SHARED, fd, 0);
+	CHECK(past != MAP_FAILED);
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		CHECK(past[(CUT - 1) * PAGE] == (char)CUT);
+		// Within the run the read above faulted on, past the end.
+		volatile char beyond = past[(CUT + 1) * PAGE];
+		(void)beyond;
+		check_exit_child();
+	}
+	int status = 0;
+	CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && killed_by(status, SIGBUS));
+	CHECK(munmap(past, PAGES * PAGE) == 0);
+	CHECK(close(fd) == 0 && shm_unlink(NAME) == 0);
+}
+
 int main(void) {
 	check_start("shm");
 	RUN(objects);
@@ -504,5 +551,6 @@ int main(void) {
 	RUN(segments);
 	RUN(sets);
 	RUN(huge_pages);
+	RUN(fault_around);
 	return check_end();
 }

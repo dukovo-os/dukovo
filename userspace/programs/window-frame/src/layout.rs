@@ -26,6 +26,8 @@ pub enum Shape {
     Normal,
     /// Over the whole of its screen, with a title bar alone.
     Maximized,
+    /// Over the whole of its screen, with no frame at all: full screen.
+    Full,
 }
 
 /// Whose the title bar is.
@@ -131,11 +133,11 @@ impl Margins {
     pub const fn of(theme: &Theme, shape: Shape, bar: Bar) -> Margins {
         let side = match shape {
             Shape::Normal => theme.border,
-            Shape::Maximized => 0,
+            Shape::Maximized | Shape::Full => 0,
         };
-        let top = match bar {
-            Bar::Full => theme.bar,
-            Bar::Shared => 0,
+        let top = match (shape, bar) {
+            (Shape::Full, _) | (_, Bar::Shared) => 0,
+            (_, Bar::Full) => theme.bar,
         };
         Margins { left: side, top, right: side, bottom: side }
     }
@@ -187,7 +189,7 @@ impl Layout {
     /// sides for them to stand off from.
     const fn pulled_in(theme: &Theme, shape: Shape) -> i32 {
         match shape {
-            Shape::Normal => 0,
+            Shape::Normal | Shape::Full => 0,
             Shape::Maximized => theme.border,
         }
     }
@@ -220,6 +222,30 @@ impl Layout {
         (parts - 2 * theme.border, rows)
     }
 
+    /// The layout of a full-screen window whose surface is `surface`
+    /// wide and high: the surface is the whole of it, and of a frame
+    /// there is nothing.
+    fn full(surface: (i32, i32), bar: Bar) -> Layout {
+        let all = Rect::new(0, 0, surface.0, surface.1);
+        Layout {
+            shape: Shape::Full,
+            bar,
+            frame: all,
+            surface: all,
+            content: all,
+            region: None,
+            icon: Rect::default(),
+            title: Rect::default(),
+            buttons: [Rect::default(); 3],
+            grab: 0,
+            corner: 0,
+            top_edge: 0,
+            border: 0,
+            radius: 0,
+            shadow_rows: 0,
+        }
+    }
+
     /// The layout of the frame of a window of `shape` whose surface is
     /// `surface` wide and high. `region` is what the window's program
     /// asked to draw of a shared title bar, from the surface's corner.
@@ -230,6 +256,9 @@ impl Layout {
         bar: Bar,
         region: Option<Rect>,
     ) -> Layout {
+        if shape == Shape::Full {
+            return Layout::full(surface, bar);
+        }
         let margins = Margins::of(theme, shape, bar);
         let (width, height) = margins.around(surface);
         let surface = Rect::new(margins.left, margins.top, surface.0, surface.1);
@@ -289,19 +318,23 @@ impl Layout {
         self.buttons[button as usize]
     }
 
-    /// The rows of the frame that are the title bar.
+    /// The rows of the frame that are the title bar: none of a
+    /// full-screen window.
     pub fn bar_rows(&self) -> i32 {
-        self.title.h + 1
+        if self.shape == Shape::Full { 0 } else { self.title.h + 1 }
     }
 
     /// The rectangles the frame is drawn in, which together hold every
     /// pixel of it and leave out the middle of the window: the strip
     /// with the title bar, and for a window that is not maximized the
-    /// two sides and the bottom with its corners and the shadow.
+    /// two sides and the bottom with its corners and the shadow. A
+    /// full-screen window has none.
     pub fn strips(&self) -> Vec<Rect> {
         let (width, height, bar) = (self.frame.w, self.frame.h, self.bar_rows());
-        if self.shape == Shape::Maximized {
-            return vec![Rect::new(0, 0, width, bar)];
+        match self.shape {
+            Shape::Normal => {}
+            Shape::Maximized => return vec![Rect::new(0, 0, width, bar)],
+            Shape::Full => return Vec::new(),
         }
         // The line outside the box is 1 wide.
         let bottom_from = (height - self.radius).max(bar);
@@ -319,7 +352,7 @@ impl Layout {
     /// surface.
     pub fn bounds(&self) -> Rect {
         match self.shape {
-            Shape::Maximized => self.frame,
+            Shape::Maximized | Shape::Full => self.frame,
             Shape::Normal => {
                 Rect::new(-1, -1, self.frame.w + 2, self.frame.h + 2 + self.shadow_rows)
             }
@@ -329,6 +362,9 @@ impl Layout {
     /// Which part of the window the point (`x`, `y`) is in.
     pub fn part_at(&self, x: i32, y: i32) -> Part {
         let inside = self.frame.contains(x, y);
+        if self.shape == Shape::Full {
+            return if inside { Part::Content } else { Part::Outside };
+        }
         if inside
             && let Some(button) = Button::ALL.into_iter().find(|b| self.button(*b).contains(x, y))
         {
@@ -386,6 +422,25 @@ mod tests {
 
     fn normal(surface: (i32, i32)) -> Layout {
         Layout::of(&Theme::basic(), surface, Shape::Normal, Bar::Full, None)
+    }
+
+    #[test]
+    fn a_full_screen_window_is_its_surface_and_nothing_else() {
+        let theme = Theme::basic();
+        for bar in [Bar::Full, Bar::Shared] {
+            let layout = Layout::of(&theme, (800, 600), Shape::Full, bar, None);
+            let all = Rect::new(0, 0, 800, 600);
+            assert_eq!((layout.frame, layout.surface, layout.content), (all, all, all));
+            assert_eq!(layout.bar_rows(), 0);
+            assert_eq!(layout.strips(), []);
+            assert_eq!(layout.bounds(), all);
+            assert_eq!(layout.part_at(0, 0), Part::Content);
+            assert_eq!(layout.part_at(799, 2), Part::Content);
+            assert_eq!(layout.part_at(-1, 0), Part::Outside);
+            assert_eq!(layout.part_at(400, 600), Part::Outside);
+            let margins = Margins::of(&theme, Shape::Full, bar);
+            assert_eq!(margins.around((800, 600)), (800, 600));
+        }
     }
 
     #[test]

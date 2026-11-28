@@ -35,7 +35,7 @@ pub const KERNEL_POLICY: &str = "kernel/deny.toml";
 const BOOTLOADER_ALLOW: &[&str] = &["GPL-2.0-only", "GPL-3.0-or-later"];
 
 /// Licenses of closed firmware, which only a local build adds (ADR 0007).
-const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
+const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode", "LicenseRef-AMD-Microcode"];
 
 /// Licenses a ported program, and what is built into it, may use beyond
 /// the kernel area's: it runs as a process of its own, so its terms reach
@@ -228,14 +228,37 @@ impl Package {
 /// [`Package::download`].
 const CRATES_DOWNLOAD: &str = "https://crates.io/api/v1/crates/";
 
+/// The processor makers whose microcode an image carries, each listed in
+/// its manifest under its own license.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Microcode {
+    pub intel: bool,
+    pub amd: bool,
+}
+
+impl Microcode {
+    /// The makers of the updates in `data`, the boot module of
+    /// [`crate::image::read_microcode`]; none for no module.
+    pub fn of(data: Option<&[u8]>) -> Self {
+        let mut found = Self::default();
+        for piece in data.map(radix_microcode::pieces).into_iter().flatten().flatten() {
+            match piece {
+                radix_microcode::Piece::Intel(_) => found.intel = true,
+                radix_microcode::Piece::Amd(_) => found.amd = true,
+            }
+        }
+        found
+    }
+}
+
 /// What besides the kernel's crates goes into an image.
 pub struct Extras<'a> {
     /// The GRUB the image boots with, built from its pinned source.
     pub grub: &'a crate::grub::Grub,
     /// The memory test on its start menu, built from its pinned source.
     pub memtest: &'a crate::memtest::Memtest,
-    /// Whether the image carries Intel microcode.
-    pub microcode: bool,
+    /// The processor makers whose microcode the image carries.
+    pub microcode: Microcode,
     /// The ports, when the image carries the user programs: the test
     /// image and the boot archive, with the C programs and what the
     /// ports put there.
@@ -275,8 +298,11 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
     }
     packages.push(grub(extras.grub));
     packages.push(memtest(extras.memtest));
-    if extras.microcode {
-        packages.push(microcode());
+    if extras.microcode.intel {
+        packages.push(intel_microcode());
+    }
+    if extras.microcode.amd {
+        packages.push(amd_microcode());
     }
     let kernel_allow = kernel_allow_list(ctx)?;
     check(&packages, &kernel_allow)?;
@@ -1609,7 +1635,7 @@ fn memtest(memtest: &crate::memtest::Memtest) -> Package {
     }
 }
 
-fn microcode() -> Package {
+fn intel_microcode() -> Package {
     Package {
         name: "intel-microcode".into(),
         version: "NOASSERTION".into(),
@@ -1621,6 +1647,24 @@ fn microcode() -> Package {
         comment: "Closed Intel CPU microcode, added to this local build with \
                   image.microcode or --microcode. It may be redistributed only unmodified; \
                   release images never carry it (ADR 0007)."
+            .into(),
+    }
+}
+
+fn amd_microcode() -> Package {
+    Package {
+        name: "amd-microcode".into(),
+        version: "NOASSERTION".into(),
+        license: "LicenseRef-AMD-Microcode".into(),
+        area: Area::Firmware,
+        download: "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/amd-ucode"
+            .into(),
+        sha256: None,
+        notices: Vec::new(),
+        comment: "Closed AMD CPU microcode, added to this local build with \
+                  image.microcode or --microcode. It may be redistributed only in binary \
+                  form, with its copyright notice and license; release images never carry \
+                  it (ADR 0007)."
             .into(),
     }
 }

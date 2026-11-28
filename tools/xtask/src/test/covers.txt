@@ -343,6 +343,25 @@ consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/progr
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
 copy kernel/arch/x86_64/src/copy.rs
+cpu-flaws kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/ kernel/radix/src/fs/sysfs.rs
+cpu-flaws userspace/programs/systools/src/check/health.rs userspace/programs/systools/src/lscpu.rs
+cpu-idle kernel/arch/x86_64/src/idle.rs kernel/radix/src/acpi/processor.rs kernel/sched/src/idle.rs
+cpu-idle kernel/hal/src/idle.rs kernel/lib/acpi/src/processor.rs kernel/radix/src/fs/sysfs.rs
+cpu-pti kernel/arch/x86_64/src/pti.rs kernel/arch/x86_64/src/interrupts.rs kernel/arch/x86_64/src/user.rs
+cpu-pti kernel/arch/x86_64/src/percpu.rs kernel/arch/x86_64/src/paging.rs kernel/arch/x86_64/src/space.rs
+cpu-pti kernel/arch/x86_64/src/speculation.rs kernel/arch/x86_64/linker.ld kernel/lib/cpuflaws/ kernel/mm/src/asid.rs
+cpu-pti-invpcid kernel/arch/x86_64/src/pti.rs kernel/arch/x86_64/src/interrupts.rs kernel/arch/x86_64/src/user.rs
+cpu-pti-invpcid kernel/arch/x86_64/src/percpu.rs kernel/arch/x86_64/src/paging.rs kernel/arch/x86_64/src/space.rs
+cpu-pti-invpcid kernel/arch/x86_64/src/speculation.rs kernel/arch/x86_64/linker.ld kernel/lib/cpuflaws/ kernel/mm/src/asid.rs
+cpu-pti-pcid kernel/arch/x86_64/src/pti.rs kernel/arch/x86_64/src/interrupts.rs kernel/arch/x86_64/src/user.rs
+cpu-pti-pcid kernel/arch/x86_64/src/percpu.rs kernel/arch/x86_64/src/paging.rs kernel/arch/x86_64/src/space.rs
+cpu-pti-pcid kernel/arch/x86_64/src/speculation.rs kernel/arch/x86_64/linker.ld kernel/lib/cpuflaws/ kernel/mm/src/asid.rs
+cpu-thunks kernel/arch/x86_64/src/thunks.rs kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/
+cpu-thunks kernel/lib/thunks/ tools/xtask/src/kthunks.rs
+cpu-thunks-its kernel/arch/x86_64/src/thunks.rs kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/
+cpu-thunks-its kernel/lib/thunks/ tools/xtask/src/kthunks.rs
+cpu-thunks-zen2 kernel/arch/x86_64/src/thunks.rs kernel/arch/x86_64/src/speculation.rs kernel/lib/cpuflaws/
+cpu-thunks-zen2 kernel/lib/thunks/ tools/xtask/src/kthunks.rs
 crash-dump kernel/lib/klog/ kernel/radix/src/crashlog.rs kernel/radix/src/panic.rs
 crash-dump kernel/radix/src/fs/crashdump.rs kernel/radix/src/fs/devfs.rs
 crash-dump userspace/defaults/spark/services/dumps.toml userspace/programs/accounts/
@@ -362,6 +381,12 @@ desktop-firmware userspace/programs/windowd/ userspace/programs/window-test/ use
 desktop-firmware userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
 desktop-firmware kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
 desktop-firmware ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/ tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
+desktop-screens userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
+desktop-screens userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
+desktop-screens kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
+desktop-screens kernel/drivers/virtio/ ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/
+desktop-screens tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
+desktop-screens userspace/programs/systools/src/signals.rs
 desktop-window userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
 desktop-window userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
 desktop-window kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/

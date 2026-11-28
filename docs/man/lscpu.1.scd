@@ -17,33 +17,41 @@ lscpu shows the machine's processor as util-linux's lscpu shows it on
 Linux: its architecture and address sizes, how many CPUs the kernel runs
 (_/kernel/cpus_, *radix-sysfs*(5)), its vendor, model name, family, model
 and stepping, its threads per core, cores per socket and sockets, its
-flags, whether it can run virtual machines or runs in one, and its
-caches, each with its size summed over every instance.
+flags, whether it can run virtual machines or runs in one, its
+caches, each with its size summed over every instance, and, last, a line
+for each speculative-execution flaw saying how the processor stands
+against it, as the kernel says in _/kernel/devices/system/cpu/vulnerabilities_
+(*radix-sysfs*(5)): *Vulnerability Spectre v2:* and the file's line, in
+Linux's words. The name is the file's, with its underscores made spaces and
+its first letter a capital. The lines are left out where the kernel has no such files.
 
 ```
 $ lscpu
-Architecture:             x86_64
-  CPU op-mode(s):         32-bit, 64-bit
-  Address sizes:          39 bits physical, 48 bits virtual
-  Byte Order:             Little Endian
-CPU(s):                   8
-  On-line CPU(s) list:    0-7
-Vendor ID:                GenuineIntel
-  Model name:             Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz
-    CPU family:           6
-    Model:                142
-    Thread(s) per core:   2
-    Core(s) per socket:   4
-    Socket(s):            1
-    Stepping:             10
-    Flags:                fpu vme de pse tsc msr pae mce cx8 ...
+Architecture:                x86_64
+  CPU op-mode(s):            32-bit, 64-bit
+  Address sizes:             39 bits physical, 48 bits virtual
+  Byte Order:                Little Endian
+CPU(s):                      8
+  On-line CPU(s) list:       0-7
+Vendor ID:                   GenuineIntel
+  Model name:                Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz
+    CPU family:              6
+    Model:                   142
+    Thread(s) per core:      2
+    Core(s) per socket:      4
+    Socket(s):               1
+    Stepping:                10
+    Flags:                   fpu vme de pse tsc msr pae mce cx8 ...
 Virtualization features:
-  Virtualization:         VT-x
+  Virtualization:            VT-x
 Caches (sum of all):
-  L1d:                    128 KiB (4 instances)
-  L1i:                    128 KiB (4 instances)
-  L2:                     1 MiB (4 instances)
-  L3:                     8 MiB (1 instance)
+  L1d:                       128 KiB (4 instances)
+  L1i:                       128 KiB (4 instances)
+  L2:                        1 MiB (4 instances)
+  L3:                        8 MiB (1 instance)
+Vulnerability Itlb multihit: Not affected
+Vulnerability L1tf:          Not affected
+Vulnerability Spectre v2:    Mitigation: Retpolines; IBPB: conditional
 ```
 
 It reads the processor with the CPUID instruction, which a program may
@@ -51,7 +59,7 @@ run itself. The flags are the CPUID bits that Linux's _/proc/cpuinfo_
 names, with Linux's names, without the flags that Linux's kernel adds
 of its own, such as *constant_tsc*. The topology comes from CPUID too:
 leaf 0xB where the processor has it. Linux's lscpu also shows clock
-speeds, NUMA nodes and vulnerabilities, which this does not.
+speeds and NUMA nodes, which this does not.
 
 # EXIT STATUS
 

@@ -41,7 +41,7 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
-use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::utils::{send_frames_surface_tree, with_surfaces_surface_tree};
 use smithay::desktop::{
     PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
     Window, find_popup_root_surface,
@@ -63,10 +63,14 @@ use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
-    is_sync_subsurface, with_states,
+    CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, SurfaceData,
+    get_parent, is_sync_subsurface, with_states,
 };
+use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::presentation::{
+    PresentationFeedbackCachedState, PresentationFeedbackCallback, PresentationState,
+};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
@@ -74,20 +78,25 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::viewporter::ViewporterState;
 use smithay::{
-    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_fractional_scale, delegate_output, delegate_presentation,
+    delegate_seat, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
 };
 use sysapi::time::monotonic_ns;
 use window_frame::{Bar, Edge};
 
 use crate::clients::Peer;
+use crate::constraints::{self, Held};
 use crate::manager::Asked;
+use crate::places::{self, Key, Places};
 use crate::settings::TitleBars;
+use crate::shm::Files;
 use crate::stamps::Stamps;
+use crate::tearing;
 use crate::titlebar::{self, TitleBar};
-use crate::windows::Windows;
 use crate::windows::resize::answered;
+use crate::windows::{Desk, Windows};
 
 /// What the programs' requests changed since the desktop last looked.
 #[derive(Clone, Copy, Debug, Default)]
@@ -111,8 +120,19 @@ pub struct Shell {
     /// Kept for as long as programs may ask who draws a window's
     /// decorations.
     _decorations: XdgDecorationState,
-    /// Kept for as long as programs may ask for a part of a title bar.
+    _views: ViewporterState,
+    _fractions: FractionalScaleManagerState,
+    /// Kept for as long as programs may ask when their frames showed,
+    /// and say that their frames need not wait for a beat.
+    _presentation: PresentationState,
+    _tearing: GlobalId,
+    /// Kept for as long as programs may ask to hold the pointer, and
+    /// for a mouse's own motion.
+    _constraints: constraints::Offered,
+    /// Kept for as long as programs may ask for a part of a title bar,
+    /// and name their windows.
     _title_bars: GlobalId,
+    _session: GlobalId,
     /// Where events of windowd's own protocols are sent from.
     display: DisplayHandle,
     popups: PopupManager,
@@ -139,6 +159,13 @@ pub struct Shell {
     pub chosen: Vec<(String, bool)>,
     /// The programs' objects for the times of input events.
     pub stamps: Stamps,
+    /// The files the programs' pixels are in.
+    pub files: Files,
+    /// The surface that holds the pointer, locked or confined, as the
+    /// desktop last settled it.
+    pub held: Option<Held>,
+    /// Where the windows their programs named were.
+    pub places: Places,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -153,16 +180,31 @@ impl Shell {
         let mut seats = SeatState::new();
         let mut seat = seats.new_wl_seat(display, "seat0");
         seat.add_pointer();
-        let does = [WmCapabilities::WindowMenu, WmCapabilities::Maximize, WmCapabilities::Minimize];
+        let does = [
+            WmCapabilities::WindowMenu,
+            WmCapabilities::Maximize,
+            WmCapabilities::Minimize,
+            WmCapabilities::Fullscreen,
+        ];
         Shell {
-            compositor: CompositorState::new::<Shell>(display),
+            compositor: CompositorState::new_v6::<Shell>(display),
             xdg: XdgShellState::new_with_capabilities::<Shell>(display, does),
             shm: ShmState::new::<Shell>(display, Vec::new()),
             seats,
             _outputs: OutputManagerState::new_with_xdg_output::<Shell>(display),
             _decorations: XdgDecorationState::new::<Shell>(display),
+            _views: ViewporterState::new::<Shell>(display),
+            _fractions: FractionalScaleManagerState::new::<Shell>(display),
+            // The times are the monotonic clock's, as the layer's are.
+            _presentation: PresentationState::new::<Shell>(display, libc::CLOCK_MONOTONIC as u32),
+            _tearing: tearing::offer(display),
+            _constraints: constraints::offer(display),
             _title_bars: titlebar::offer(display),
+            _session: places::offer(display),
             stamps: Stamps::offer(display),
+            files: Files::default(),
+            held: None,
+            places: Places::default(),
             display: display.clone(),
             popups: PopupManager::default(),
             grabbed: None,
@@ -177,6 +219,17 @@ impl Shell {
             changed: Changed::default(),
             lights: None,
         }
+    }
+
+    /// Whether a window there is, drawn or not yet, has `key`.
+    pub fn has_key(&self, key: &Key) -> bool {
+        let drawn = self.windows.by_use().into_iter().map(|framed| &framed.window);
+        drawn.chain(&self.waiting).any(|window| places::key_of(window).as_ref() == Some(key))
+    }
+
+    /// Where the window `window`, which is known by a key, was before.
+    fn before(&self, window: &Window) -> Option<places::Place> {
+        self.places.of(&places::key_of(window)?).cloned()
     }
 
     /// The window whose own surface is `surface`, drawn or not yet.
@@ -246,7 +299,7 @@ impl Shell {
     }
 
     /// Where the pointer is.
-    fn pointer_at(&self) -> Point<f64, Logical> {
+    pub fn pointer_at(&self) -> Point<f64, Logical> {
         self.seat.get_pointer().map_or_default(|pointer| pointer.current_location())
     }
 
@@ -319,6 +372,21 @@ impl Shell {
         self.changed.windows = true;
     }
 
+    /// Changes the desktops of the screen the pointer is on as
+    /// `change` says, with the window the person works in for `along`
+    /// (ADR 0726). The window last used on the desktop that shows then
+    /// has the keyboard. If that desktop has no window, the window that
+    /// had the keyboard keeps it if it still shows, on another screen.
+    pub fn desk(&mut self, change: Desk, along: bool) {
+        let at = self.pointer_at();
+        let along = self.active.clone().filter(|_| along);
+        if self.windows.desk(at, change, along.as_ref()) {
+            let last = self.windows.last_used_at(at);
+            let still = self.active.clone().filter(|window| self.windows.showing(window));
+            self.focus(last.or(still).as_ref());
+        }
+    }
+
     /// Takes `window` off the screens. If it had the keyboard, the
     /// window then in front has it.
     pub fn minimize(&mut self, window: &Window) {
@@ -333,9 +401,20 @@ impl Shell {
         let Some(at) = self.waiting.iter().position(waits) else { return };
         let Some(toplevel) = self.waiting[at].toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
+            // The program draws its first frame for the screen the
+            // window shows on: the one it was on, for a window that is
+            // known again, as large and of the shape it was.
             let bar = TitleBar::of(&self.waiting[at]).told();
-            let room = self.windows.room(self.pointer_at(), bar);
-            toplevel.with_pending_state(|state| state.bounds = Some(room));
+            let pointer = self.pointer_at();
+            let on = match self.before(&self.waiting[at]) {
+                Some(place) => self.windows.ask_as_before(&toplevel, &place, pointer, bar),
+                None => {
+                    let room = self.windows.room(pointer, bar);
+                    toplevel.with_pending_state(|state| state.bounds = Some(room));
+                    pointer
+                }
+            };
+            self.windows.tell_at(surface, on);
             toplevel.send_configure();
             return;
         }
@@ -346,7 +425,8 @@ impl Shell {
             return;
         }
         let window = self.waiting.remove(at);
-        self.windows.show(window.clone(), self.pointer_at());
+        let before = self.before(&window);
+        self.windows.show(window.clone(), self.pointer_at(), before.as_ref());
         self.focus(Some(&window));
     }
 
@@ -404,16 +484,45 @@ impl Shell {
     }
 
     /// Whether a program with a window on `screen` waits to hear that a
-    /// frame was shown.
+    /// frame was shown, or when.
     pub fn owes_frame(&self, screen: &Output) -> bool {
         self.windows_on(screen).any(|window| {
             let mut owed = false;
             window.with_surfaces(|_, states| {
                 let mut attributes = states.cached_state.get::<SurfaceAttributes>();
                 owed |= !attributes.current().frame_callbacks.is_empty();
+                let mut asked = states.cached_state.get::<PresentationFeedbackCachedState>();
+                owed |= !asked.current().callbacks.is_empty();
             });
             owed
         })
+    }
+
+    /// Takes what the programs asked to be told of when the frame that
+    /// is handed over for `screen` shows: of every surface of the
+    /// windows on it and of the pointer's, or of `only` alone while
+    /// that surface is all the screen shows.
+    pub fn feedback(
+        &self,
+        screen: &Output,
+        only: Option<&WlSurface>,
+    ) -> Vec<PresentationFeedbackCallback> {
+        let mut taken = Vec::new();
+        let mut take = |_: &WlSurface, states: &SurfaceData| {
+            let mut asked = states.cached_state.get::<PresentationFeedbackCachedState>();
+            taken.append(&mut asked.current().callbacks);
+        };
+        if let Some(only) = only {
+            with_surfaces_surface_tree(only, &mut take);
+            return taken;
+        }
+        for window in self.windows_on(screen) {
+            window.with_surfaces(&mut take);
+        }
+        if let CursorImageStatus::Surface(surface) = &self.pointer {
+            with_surfaces_surface_tree(surface, &mut take);
+        }
+        taken
     }
 
     /// A frame showed on `screen` at `time` on the monotonic clock: the
@@ -488,6 +597,7 @@ impl CompositorHandler for Shell {
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
         {
+            self.windows.tell_at(surface, self.pointer_at());
             // A popup that was destroyed meanwhile has nobody to
             // configure.
             let _ = popup.send_configure();
@@ -508,7 +618,9 @@ impl CompositorHandler for Shell {
 }
 
 impl BufferHandler for Shell {
-    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
+    fn buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        self.files.forget(buffer);
+    }
 }
 
 impl ShmHandler for Shell {
@@ -606,7 +718,7 @@ impl XdgShellHandler for Shell {
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         match self.window(&surface) {
-            Some(window) => self.windows.restore(&window),
+            Some(window) => self.windows.unmaximize(&window),
             None => surface.with_pending_state(|state| {
                 state.states.unset(State::Maximized);
                 state.size = None;
@@ -617,10 +729,47 @@ impl XdgShellHandler for Shell {
         }
     }
 
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        let named = output.as_ref().and_then(Output::from_resource).map(|screen| screen.name());
+        match self.window(&surface) {
+            Some(window) => self.windows.full(&window, named.as_deref()),
+            // A window that has not shown yet shows full screen, on the
+            // screen its program named or the one the pointer is on.
+            None => {
+                let screens = self.windows.screens();
+                let on = named.as_ref().and_then(|name| {
+                    screens.iter().find(|(screen, _)| screen == name).map(|(_, area)| *area)
+                });
+                let size = on.unwrap_or_else(|| self.windows.screen_at(self.pointer_at())).size;
+                if let Some(window) = self.window_with(surface.wl_surface()) {
+                    Windows::full_when_shown(&window, named);
+                }
+                surface.with_pending_state(|state| {
+                    state.states.set(State::Fullscreen);
+                    state.size = Some(size);
+                });
+            }
+        }
         if surface.is_initial_configure_sent() {
             surface.send_configure();
         }
+        self.changed.windows = true;
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        match self.window(&surface) {
+            Some(window) => self.windows.unfull(&window),
+            None => surface.with_pending_state(|state| {
+                state.states.unset(State::Fullscreen);
+                if !state.states.contains(State::Maximized) {
+                    state.size = None;
+                }
+            }),
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+        self.changed.windows = true;
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
@@ -693,6 +842,9 @@ impl SeatHandler for Shell {
         // Asked for again whenever the pointer comes to another
         // program's surface, mostly for what it shows already.
         self.changed.pointer |= image != self.pointer;
+        if let CursorImageStatus::Surface(surface) = &image {
+            self.windows.tell_at(surface, self.pointer_at());
+        }
         self.pointer = image;
     }
 
@@ -730,8 +882,21 @@ fn answer_decoration(toplevel: &ToplevelSurface) {
 }
 
 delegate_compositor!(Shell);
-delegate_shm!(Shell);
 delegate_xdg_shell!(Shell);
 delegate_seat!(Shell);
 delegate_output!(Shell);
 delegate_xdg_decoration!(Shell);
+delegate_viewporter!(Shell);
+delegate_presentation!(Shell);
+delegate_fractional_scale!(Shell);
+
+impl FractionalScaleHandler for Shell {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        match self.window_of(&surface) {
+            Some(window) => self.windows.tell(&window),
+            // A window to come, a popup or a pointer's picture: where
+            // the pointer is is where it shows.
+            None => self.windows.tell_at(&surface, self.pointer_at()),
+        }
+    }
+}

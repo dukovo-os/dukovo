@@ -28,7 +28,7 @@ pub mod trace;
 pub use text::TextBuf;
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use radix_sync::{Once, SpinLock};
 
@@ -217,6 +217,10 @@ static STATE: SpinLock<State> = SpinLock::new(State {
 static PLATFORM: Once<&'static dyn Platform> = Once::new();
 static CONSOLE_LEVEL: AtomicU8 = AtomicU8::new(Level::Info as u8);
 
+/// The sequence number the next record will have, as the locked state
+/// has it, for [`next_seq`].
+static NEXT_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Registers the architecture's services. Only the first call counts.
 pub fn set_platform(platform: &'static dyn Platform) {
     let _ = PLATFORM.set(platform);
@@ -352,6 +356,7 @@ pub fn log_from(level: Level, origin: Origin, args: fmt::Arguments<'_>) {
         for line in message.as_str().trim_end_matches('\n').split('\n') {
             let seq = state.next_seq;
             state.next_seq += 1;
+            NEXT_SEQ.store(state.next_seq, Ordering::Release);
             let record = &mut state.records[(seq % RECORDS as u64) as usize];
             record.seq = seq;
             record.time_ns = time_ns;
@@ -397,6 +402,14 @@ pub fn print(style: Style, args: fmt::Arguments<'_>) {
 /// Sequence numbers of the records still in the ring: `first..next`.
 pub fn record_range() -> core::ops::Range<u64> {
     with_state(|state| state.next_seq.saturating_sub(RECORDS as u64)..state.next_seq)
+}
+
+/// The sequence number the next record will have, read without the
+/// log's lock: a timer interrupt may ask, which must not wait for a CPU
+/// that is writing a record to the consoles. A record numbered below it
+/// may still be on its way into the ring; [`record`] waits for it.
+pub fn next_seq() -> u64 {
+    NEXT_SEQ.load(Ordering::Acquire)
 }
 
 /// A copy of record `seq`, if it is still in the ring.
@@ -502,6 +515,17 @@ mod tests {
         let last = record(record_range().end - 1).unwrap();
         assert!(last.text().len() <= RECORD_TEXT);
         assert!(last.text().chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn the_next_sequence_number_is_read_without_the_lock() {
+        let _serial = SERIAL.lock().unwrap();
+        let before = next_seq();
+        assert_eq!(before, record_range().end);
+        // A record for each line of a message.
+        info!("one\ntwo");
+        assert_eq!(next_seq(), before + 2);
+        assert_eq!(next_seq(), record_range().end);
     }
 
     #[test]

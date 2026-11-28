@@ -6,6 +6,10 @@
 //! - `fpu`: three threads on every CPU fill the vector registers with their
 //!   own pattern and switch away, by yielding, sleeping and being
 //!   preempted, about a thousand times each; every pattern must survive.
+//!   Then one thread moves back and forth between two CPUs, filling them on
+//!   each: on each arrival it must hold what it filled on the other CPU,
+//!   though the registers of the one it comes to still hold what it filled
+//!   there before.
 //! - `sched-fair`: threads spinning on one CPU share it by weight: equally
 //!   at equal nice levels, about 3:1 between nice 0 and nice 5, and by CPU
 //!   weight between resource domains, however many threads each has.
@@ -225,10 +229,57 @@ fn fpu_thread(index: usize) {
     }
 }
 
+const FPU_MOVES: u64 = 200;
+/// How many times the moving thread found the wrong pattern.
+static FPU_STALE: AtomicU64 = AtomicU64::new(0);
+/// Set if the moving thread could not move.
+static FPU_STUCK: AtomicBool = AtomicBool::new(false);
+
+/// Moves between CPUs `cpus & 0xffff` and `cpus >> 16`, filling the vector
+/// registers on each and sleeping there, so that only idle runs on the
+/// other meanwhile and leaves its registers holding the last pattern.
+fn fpu_mover(cpus: usize) {
+    let Some(me) = sched::current() else {
+        FPU_STUCK.store(true, Ordering::Relaxed);
+        return;
+    };
+    let ends = [cpus & 0xffff, cpus >> 16];
+    let mut last = None;
+    for round in 0..FPU_MOVES {
+        let cpu = ends[(round % 2) as usize];
+        if sched::set_affinity(&me, CpuSet::single(cpu)).is_err() {
+            FPU_STUCK.store(true, Ordering::Relaxed);
+            return;
+        }
+        let mut tries = 0;
+        while me.cpu() != cpu {
+            tries += 1;
+            if tries > 1000 {
+                FPU_STUCK.store(true, Ordering::Relaxed);
+                return;
+            }
+            sched::yield_now();
+        }
+        if last.is_some_and(|seed| !Arch::self_test_vectors_hold(seed)) {
+            FPU_STALE.fetch_add(1, Ordering::Relaxed);
+        }
+        let seed = (1 << 63) | round;
+        Arch::self_test_fill_vectors(seed);
+        // Only idle runs here meanwhile: the registers stay as they are.
+        sched::sleep_ns(50_000);
+        if !Arch::self_test_vectors_hold(seed) {
+            FPU_STALE.fetch_add(1, Ordering::Relaxed);
+        }
+        last = Some(seed);
+    }
+}
+
 /// `selftest=fpu`.
 pub fn fpu() {
     let mut outcome = Outcome::new("fpu");
     FPU_BAD.store(0, Ordering::Relaxed);
+    FPU_STALE.store(0, Ordering::Relaxed);
+    FPU_STUCK.store(false, Ordering::Relaxed);
     let mut crew = Crew::new();
     let mut index = 0;
     for cpu in sched::online().iter() {
@@ -247,8 +298,37 @@ pub fn fpu() {
     outcome.check(!failed, format_args!("not every thread started"));
     let bad = FPU_BAD.load(Ordering::Relaxed);
     outcome.check(bad == 0, format_args!("{bad} vector-register patterns were lost in a switch"));
+
+    // Alone now, so that the CPU it comes back to has run no other thread
+    // with registers of its own since it left.
+    let online = sched::online();
+    let mut online = online.iter();
+    let moved = match (online.next(), online.next()) {
+        (Some(a), Some(b)) => {
+            let mut crew = Crew::new();
+            crew.spawn("fpu-mover", fpu_mover, a | (b << 16), Options::new().pinned(a));
+            for thread in crew.threads() {
+                sched::join(thread);
+            }
+            let failed = crew.failed;
+            crew.join();
+            outcome.check(!failed, format_args!("the moving thread did not start"));
+            outcome.check(
+                !FPU_STUCK.load(Ordering::Relaxed),
+                format_args!("the moving thread could not move between CPUs {a} and {b}"),
+            );
+            let stale = FPU_STALE.load(Ordering::Relaxed);
+            outcome.check(
+                stale == 0,
+                format_args!("a thread moving between CPUs found the wrong pattern {stale} times"),
+            );
+            true
+        }
+        _ => false,
+    };
     outcome.finish(format_args!(
-        "{threads} threads kept their vector registers through {switches} switches ({})",
+        "{threads} threads kept their vector registers through {switches} switches{} ({})",
+        if moved { ", and one through moves between two CPUs" } else { "" },
         <Arch as Threads>::extended_state()
     ));
 }

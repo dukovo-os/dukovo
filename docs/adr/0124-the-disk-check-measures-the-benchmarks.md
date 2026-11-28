@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0124. The disk check also measures the benchmarks on the machine
 
-- Status: Accepted
+- Status: Accepted; the live system keeps its default protections against CPU flaws since [0790](0790-the-kernel-finds-the-processor-s-speculation-flaws-closes-them-by-default-and-reports-them-as-linux-does.md)
 - Date: 2026-10-27
 
 ## Context
@@ -50,9 +50,10 @@ systems, and carries Dukovo's numbers to Linux in its report.
 - `ob bench --from FILE` reads such a file and writes the report of
   `ob bench`, with Linux on the same machine as the baseline, the ratio
   of each operation, and the operations over 1.00 named.
-- The live system is booted with `mitigations=off`, as the virtual
-  machine's Linux is, since Dukovo has no mitigations of CPU
-  vulnerabilities yet; `run.sh` says in the file whether it was.
+- The live system is booted with its default protections against CPU
+  vulnerabilities, as the virtual machine's Linux is and Dukovo is
+  (amended 2026-11-27 by ADR 0790; before that Linux ran with
+  `mitigations=off`); `run.sh` says in the file whether it was.
 - Linux measures as Dukovo runs, the harder baseline, for the disk's
   transfers as for the benchmarks. Dukovo sets no CPU performance states
   before Phase 11c (Intel HWP), so its processor runs at the clock the

@@ -5,7 +5,7 @@ windowd.json(5) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-windowd.json - how the desktop's title bars, pointer and keys are set
+windowd.json - how the desktop's screens, title bars, pointer and keys are set
 
 # SYNOPSIS
 
@@ -21,10 +21,17 @@ person's own, which is laid over it key by key (ADR 0722). A key the
 person's file does not have keeps what the system's says, and a key
 neither has is as built. Neither file has to be there.
 
-Each is one JSON object of three groups:
+Each is one JSON object of five groups:
 
 ```
 {
+  "screens": {
+    "DEL U2720Q": {"scale": 1.5},
+    "virtio0/1": {"mode": "1920x1080@60", "turn": 90}
+  },
+  "layouts": [
+    {"screens": {"DEL U2720Q": [0, 0], "virtio0/1": [2560, 0]}}
+  ],
   "title_bars": {
     "apps": "decide",
     "full": ["org.example.editor"],
@@ -41,8 +48,55 @@ Each is one JSON object of three groups:
 }
 ```
 
-The example names every key with the value it has as built, but for
-the one application in *full*.
+The example names every key of the last three groups with the value
+it has as built, but for the one application in *full*. As built no
+screen has an entry and there is no layout.
+
+# SCREENS
+
+*screens* has an entry for a screen, by one of two keys: the screen's
+name, as programs are told it and as the display layer has it
+(_virtio0/1_: the card and the number of its plug), or its monitor's
+maker and model as the monitor says them (_DEL U2720Q_). A setting by
+the monitor follows it to whatever plug it is in. A screen with both
+entries has the one by its name laid over the one by its monitor, key
+by key (ADR 0725).
+
+*screens.*_key_*.mode*
+	The mode the screen runs in: its width and height in pixels, as
+	*"1920x1080"*, with the frames a second after an *@* if the monitor
+	has that size at several, as *"1920x1080@60"*. Without it, or if the
+	monitor has no such mode, the one the monitor prefers.
+
+*screens.*_key_*.scale*
+	How many of the screen's pixels a point of the desktop is across,
+	from 1 to 4 in quarters: at 2 everything is twice as wide and as
+	high. 1 as built.
+
+*screens.*_key_*.turn*
+	How far the picture is turned, clockwise, for a monitor that stands
+	turned: 0, 90, 180 or 270 degrees. 0 as built.
+
+*screens.*_key_*.use*
+	*false* leaves the screen dark, with no desktop on it. If that
+	leaves no screen at all, the desktop shows on every one.
+
+*layouts* is a list of layouts, each for one set of screens: an object
+whose *screens* has, for each screen by one of its keys, the column
+and the row of the desktop its top left corner is at. The layout whose
+keys are exactly the screens in use places them. A screen's area is
+its mode's size, turned, divided by its scale: a monitor of 3840 by
+2160 at scale 1.5 takes 2560 by 1440 of the desktop. For a set with no
+layout the screens are side by side in the display layer's order,
+their tops level.
+
+A layout has to leave the desktop in one piece: one in which two
+screens overlap, or a screen touches no other, is not used and is
+said (*MISTAKES*).
+
+An entry of the person's file is laid over the system's for the same
+key, key by key. A layout of the person's file takes the place of the
+system's for the same set of screens.
 
 # TITLE BARS
 
@@ -120,7 +174,12 @@ keeps what it had from before:
 
 ```
 desktop: /users/ada/.config/windowd.json: `pointer.speed` is 3, not a number from -1 to 1
+desktop: /users/ada/.config/windowd.json: `screens.virtio0/1.scale` is 1.1, not a number from 1 to 4 in quarters
 ```
+
+A mode its screen does not have and a layout that cannot be used are
+said when the screens are laid out, and the screen shows in the mode
+its monitor prefers, or the screens side by side.
 
 A file that is not JSON is said so and is as if it were not there. The
 desktop does not write a choice from a window's menu into such a file:

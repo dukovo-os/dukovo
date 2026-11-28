@@ -19,6 +19,7 @@
 //! - [`draw`] is the frame itself.
 //! - [`panel`] is the boxes windowd shows over the windows: its menu
 //!   and its list.
+//! - [`picker`] is the picker of layouts a window snaps to.
 //!
 //! Places are in pixels from the top left corner of the frame's box,
 //! which is what the frame's fill covers: a line and a shadow lie
@@ -30,6 +31,7 @@ pub mod canvas;
 pub mod draw;
 pub mod layout;
 pub mod panel;
+pub mod picker;
 pub mod theme;
 
 pub use canvas::{Canvas, Colour, Rect, shown_over};

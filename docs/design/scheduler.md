@@ -221,7 +221,17 @@ the thread from the waker took the idle CPU's lock and wrote its queue
 and published load there, and the idle CPU then took each of those lines
 back to pick the thread: each line crossed twice, at some 170 ns a
 crossing on CI's Intel runners. A CPU that runs a thread, or the waker's
-own, still gets the thread queued directly. An IPC call or reply
+own, still gets the thread queued directly. A waker whose thread last
+ran on another CPU that may run it, and that placement would choose
+anyway if it were idle, first tries one compare-and-swap of that CPU's
+word from exactly "watched, nothing asked, empty inbox"
+(`hand_over_to_idle`, ADR 0798), with the thread's lock still held: it
+reads nothing of that CPU before, so the word's line comes to it once,
+to own, rather than once to share for the load and again for the swap.
+If the swap fails, the waker chooses a CPU as above. A futex waker
+gives the wake-up its waiter's reference (`wake_given`), which goes to
+the queue or inbox as is, so no reference is counted on the waker's
+CPU. An IPC call or reply
 (`wake_sync`) puts the woken thread on the waker's CPU when it may run
 there, and otherwise hands it over the same way. A driver's thread that
 hands on what an interrupt brought and then waits for the next
@@ -269,8 +279,14 @@ The waker asks for the switch and reads whether the word is watched in
 one atomic read-modify-write; the poller stops watching and reads the
 request in another. The two are ordered on the one word, so either the
 poller sees the request or the waker sees the word unwatched and sends
-the IPI. The TLA+ model `kernel/sched/tla/IdleWake.tla` checks that no
-wake-up is lost with polling, MWAIT and HLT, that every thread handed to
+the IPI. Which state a halt waits in, C1 or one of the deeper states
+the firmware describes, the idle governor picks for each idle period
+(ADR 0795); only MWAIT's states watch the word, so before HLT or a state
+entered through an I/O port the CPU reads `pending` without setting the
+watched bit, and wakers interrupt it. The TLA+ model
+`kernel/sched/tla/IdleWake.tla` checks that no wake-up is lost with
+polling and any mix of MWAIT's states and the others from one sleep to
+the next, that every thread handed to
 the CPU's inbox or queued on it runs, that no switch takes the word while
 the idle thread watches it, and that a request a switch took is acted on
 before the CPU runs on.
@@ -779,6 +795,7 @@ the incoming one). The mapping to the code:
 | `Release`, `Acquire` | the two halves of the context switch around `on_cpu` |
 | `Pull` | `balance` and `enqueue_ready` moving a queued thread |
 | `Wake` then `Hand` | `wake` for an idle CPU: ready under the thread's lock, then `hand_over` |
+| `Wake` into an inbox | `wake` handing over to an idle CPU under the thread's lock (`hand_over_to_idle`) |
 | `Drain` | `take_handed` queuing a thread from the inbox, here or where its affinity allows |
 
 Each action is atomic in the model because the code it stands for runs

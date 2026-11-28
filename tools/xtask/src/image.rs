@@ -55,7 +55,7 @@ pub struct ImageSpec<'a> {
     pub timeout: u32,
     /// Kernel command line.
     pub cmdline: &'a str,
-    /// Intel microcode updates to load as a boot module, if any.
+    /// Intel updates and AMD containers to load as a boot module, if any.
     pub microcode: Option<Vec<u8>>,
     /// The user programs: the test image and the boot archive, each
     /// loaded as a boot module.
@@ -394,50 +394,80 @@ fn check_size(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reads Intel microcode from a file of updates, or from every file in a
-/// directory such as `/lib/firmware/intel-ucode`, and checks that it holds
-/// at least one valid update.
+/// Reads microcode from a file of Intel updates or AMD containers, or
+/// from every file in a directory such as `/lib/firmware/intel-ucode` or
+/// `/lib/firmware/amd-ucode`, or in the directories one level below one
+/// that holds both, and checks that it holds at least one valid piece.
+/// The Intel updates come first in the result: each is a multiple of
+/// 1 KiB long, which keeps the next one's data 16-byte aligned as the
+/// processor wants it, and an AMD container, which has no such size, goes
+/// after them.
 pub fn read_microcode(ctx: &Ctx, path: &Path) -> Result<Vec<u8>> {
     let mut files = Vec::new();
     if path.is_dir() {
-        for entry in std::fs::read_dir(path).context(|| format!("reading {}", path.display()))? {
-            let entry = entry.context(|| format!("reading {}", path.display()))?.path();
-            if entry.is_file() {
-                files.push(entry);
-            }
-        }
-        files.sort();
+        microcode_files(path, true, &mut files)?;
     } else {
         files.push(path.to_path_buf());
     }
-    let mut bytes = Vec::new();
-    let (mut valid, mut invalid) = (0, 0);
+    let (mut intel, mut amd) = (Vec::new(), Vec::new());
+    let (mut intel_updates, mut amd_patches, mut invalid) = (0, 0, 0);
     for file in &files {
         let data =
             std::fs::read(file).context(|| format!("reading microcode {}", file.display()))?;
-        for update in radix_microcode::updates(&data) {
-            match update {
-                Ok(update) => {
-                    bytes.extend_from_slice(update.bytes());
-                    valid += 1;
+        for piece in radix_microcode::pieces(&data) {
+            match piece {
+                Ok(radix_microcode::Piece::Intel(update)) => {
+                    intel.extend_from_slice(update.bytes());
+                    intel_updates += 1;
+                }
+                Ok(radix_microcode::Piece::Amd(container)) => {
+                    amd.extend_from_slice(container.bytes());
+                    amd_patches += container.patches().count();
                 }
                 Err(_) => invalid += 1,
             }
         }
     }
-    if valid == 0 {
-        return Err(Error::new(format!("{} holds no Intel microcode updates", ctx.display(path)))
-            .hint(
-                "give the raw update files, such as /lib/firmware/intel-ucode from the \
-             intel-microcode package, not an initramfs image",
-            ));
+    if intel_updates + amd_patches == 0 {
+        return Err(Error::new(format!(
+            "{} holds no Intel or AMD microcode updates",
+            ctx.display(path)
+        ))
+        .hint(
+            "give the raw update files, such as /lib/firmware/intel-ucode from the \
+             intel-microcode package, and /lib/firmware/amd-ucode from the amd64-microcode \
+             package or linux-firmware, not an initramfs image",
+        ));
     }
     step(&format!(
-        "Adding {valid} microcode updates from {}{}",
+        "Adding {intel_updates} Intel microcode updates and {amd_patches} AMD patches from {}{}",
         ctx.display(path),
         if invalid > 0 { format!(" (skipped {invalid} damaged ones)") } else { String::new() }
     ));
-    Ok(bytes)
+    intel.extend_from_slice(&amd);
+    Ok(intel)
+}
+
+/// Adds the files of `dir` to `files` in name order, and those of the
+/// directories in it if `recurse`. Signatures that ship beside the files
+/// (`*.asc`, `*.md5`) are not microcode.
+fn microcode_files(dir: &Path, recurse: bool, files: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir).context(|| format!("reading {}", dir.display()))? {
+        entries.push(entry.context(|| format!("reading {}", dir.display()))?.path());
+    }
+    entries.sort();
+    for entry in entries {
+        if entry.is_file() {
+            let signature = entry.extension().is_some_and(|ext| ext == "asc" || ext == "md5");
+            if !signature {
+                files.push(entry);
+            }
+        } else if recurse && entry.is_dir() {
+            microcode_files(&entry, false, files)?;
+        }
+    }
+    Ok(())
 }
 
 /// Fills `@VERSION@`, `@TIMEOUT@`, `@CMDLINE@`, `@MODULES@` and
@@ -696,7 +726,7 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
         &licenses::Extras {
             grub: &grub,
             memtest: &memtest,
-            microcode: spec.microcode.is_some(),
+            microcode: licenses::Microcode::of(spec.microcode.as_deref()),
             programs: spec.programs.map(|programs| &programs.ports),
         },
     )?;
@@ -2226,6 +2256,55 @@ mod tests {
         assert_eq!(seconds("boot/grub/grub.cfg"), 1_500_000_000);
         assert_eq!(seconds("boot/grub"), 1_500_000_000);
         assert_eq!(seconds("boot/old"), 1_000_000_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn microcode_of_both_vendors_is_kept_from_a_directory_that_holds_each() {
+        let dir = std::env::temp_dir().join(format!("ob-microcode-both-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("intel-ucode")).unwrap();
+        std::fs::create_dir_all(dir.join("amd-ucode")).unwrap();
+        let mut update = vec![0; 2048];
+        let update_len = radix_microcode::build::update(0x20, 0x806ea, 0xc0, 16, &[], &mut update);
+        update.truncate(update_len);
+        let mut container = vec![0; 8192];
+        let container_len = radix_microcode::build::amd_container(
+            &[(0x00a00f11, 0xa010)],
+            &[(0x30, 0xa010, 1001)],
+            &mut container,
+        );
+        container.truncate(container_len);
+        std::fs::write(dir.join("intel-ucode/06-8e-0a"), &update).unwrap();
+        std::fs::write(dir.join("intel-ucode/06-8e-0a.asc"), b"signature").unwrap();
+        std::fs::write(dir.join("amd-ucode/microcode_amd_fam19h.bin"), &container).unwrap();
+        std::fs::write(dir.join("amd-ucode/microcode_amd_fam19h.bin.md5"), b"sum").unwrap();
+        let ctx = Ctx {
+            out: dir.join("out"),
+            target: dir.join("target"),
+            root: dir.clone(),
+            config: crate::config::Config::default(),
+            verbose: false,
+        };
+
+        let bytes = read_microcode(&ctx, &dir).unwrap();
+        // The Intel update comes first, whatever the order of the names.
+        assert_eq!(bytes, [update.as_slice(), container.as_slice()].concat());
+        assert_eq!(radix_microcode::pieces(&bytes).flatten().count(), 2);
+
+        let both = read_microcode(&ctx, &dir.join("amd-ucode/microcode_amd_fam19h.bin")).unwrap();
+        assert_eq!(both, container);
+        // The manifest lists each maker's microcode under its own license.
+        let makers = |intel, amd| licenses::Microcode { intel, amd };
+        assert_eq!(licenses::Microcode::of(Some(&bytes)), makers(true, true));
+        assert_eq!(licenses::Microcode::of(Some(&container)), makers(false, true));
+        assert_eq!(licenses::Microcode::of(Some(&update)), makers(true, false));
+        assert_eq!(licenses::Microcode::of(None), makers(false, false));
+
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let error = read_microcode(&ctx, &empty).unwrap_err().to_string();
+        assert!(error.contains("no Intel or AMD microcode"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

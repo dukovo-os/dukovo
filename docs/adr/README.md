@@ -32,7 +32,7 @@ their pull requests conflicted.
 | [0011](0011-kernel-target-and-build-std.md) | The kernel has its own target and builds core with -Zbuild-std | Accepted |
 | [0012](0012-crash-log-in-reserved-memory.md) | Keep the console output in reserved memory across warm restarts | Accepted |
 | [0013](0013-own-parsers-for-boot-information-and-acpi.md) | Parse the boot information and static ACPI tables in our own crates | Accepted |
-| [0014](0014-early-microcode-from-an-image-module.md) | Early microcode comes from a boot module added at image build time | Accepted |
+| [0014](0014-early-microcode-from-an-image-module.md) | Early microcode comes from a boot module added at image build time | Accepted; AMD microcode since [0792](0792-amd-processors-load-their-microcode-at-boot-as-intel-s-do.md) |
 | [0015](0015-console-font-spleen.md) | The framebuffer console uses the Spleen fonts | Accepted |
 | [0016](0016-kernel-symbol-table-in-the-image.md) | The kernel carries its own symbol table, written in after linking | Accepted |
 | [0017](0017-explicit-allocation-context.md) | Every kernel allocation states its context, and the global allocator refuses | Accepted |
@@ -57,7 +57,7 @@ their pull requests conflicted.
 | [0036](0036-kernel-started-user-test-programs.md) | Until Phase 6, the kernel starts user-mode test programs from one image the boot loader loads, and the store gains random, ring and kernel_log objects | Accepted |
 | [0037](0037-lazy-timer-and-guest-halt-polling.md) | The timer is written only to fire earlier, and idle virtual CPUs poll before they halt | Accepted |
 | [0038](0038-channel-wake-ups-per-direction.md) | A channel signals the other end only when it says it may sleep, with one word for each way of waiting | Accepted |
-| [0039](0039-linux-in-the-same-virtual-machine-and-a-performance-gate.md) | Radix is held to Linux in the same kind of virtual machine, and CI fails when it is slower | Accepted |
+| [0039](0039-linux-in-the-same-virtual-machine-and-a-performance-gate.md) | Radix is held to Linux in the same kind of virtual machine, and CI fails when it is slower | Accepted; default protections on both sides since [0790](0790-the-kernel-finds-the-processor-s-speculation-flaws-closes-them-by-default-and-reports-them-as-linux-does.md) |
 | [0040](0040-hot-paths-without-hidden-costs.md) | The release kernel is built with link-time optimisation, and its hot paths avoid locked instructions, string moves and 128-bit division | Accepted |
 | [0041](0041-yield-forfeits-its-slice-and-ipis-end-first.md) | A yield gives up the rest of its slice, and a TLB shootdown's interrupt ends before the flush | Accepted |
 | [0042](0042-batched-random-and-lighter-system-calls.md) | Per-CPU random generators work a batch at a time, and system calls and wake-ups skip work they do not need | Accepted |
@@ -142,7 +142,7 @@ their pull requests conflicted.
 | [0121](0121-large-pages-where-frames-line-up.md) | A frame's pages get 2 MiB pages where they line up | Accepted |
 | [0122](0122-disk-checks-on-real-machines.md) | Real machines' disks are checked by serial number, and Linux checks what Dukovo wrote | Accepted |
 | [0123](0123-disks-of-4k-sectors.md) | Disks of 4 KiB sectors keep 512-byte addresses and move whole sectors | Accepted |
-| [0124](0124-the-disk-check-measures-the-benchmarks.md) | The disk check also measures the benchmarks on the machine | Accepted |
+| [0124](0124-the-disk-check-measures-the-benchmarks.md) | The disk check also measures the benchmarks on the machine | Accepted; default protections since [0790](0790-the-kernel-finds-the-processor-s-speculation-flaws-closes-them-by-default-and-reports-them-as-linux-does.md) |
 | [0125](0125-btrfs-blocks-are-checked-before-use.md) | Btrfs is read by checking every block before use | Accepted |
 | [0126](0126-no-age-or-identity-verification.md) | Dukovo never verifies anyone's age or identity | Accepted |
 | [0127](0127-btrfs-files-are-read-through-the-page-cache.md) | Btrfs files are read through the page cache and checked as Linux checks them | Accepted |

@@ -6,8 +6,12 @@
 //! `/kernel/cpus`, laid out as util-linux's lscpu lays it out (ADR 0144).
 //! The flags are the CPUID bits Linux's `/proc/cpuinfo` names, without
 //! the flags Linux's kernel adds of its own (`constant_tsc`, `pti`).
+//! The last lines are the kernel's word on each speculative-execution
+//! flaw, from `/kernel/devices/system/cpu/vulnerabilities`, which
+//! dukovo-check(8) reads through [`vulnerabilities`] too.
 
 use std::io::{self, Write};
+use std::path::Path;
 
 use crate::args::Args;
 use crate::util::{Fail, fail};
@@ -582,20 +586,70 @@ pub(crate) fn cpus() -> Result<u32, Fail> {
     text.trim().parse().map_err(|_| fail(format!("/kernel/cpus: not a number: {}", text.trim())))
 }
 
+/// Where the kernel keeps its word on each flaw of the processor, as Linux
+/// does under `/sys`.
+pub(crate) const VULNERABILITIES: &str = "/kernel/devices/system/cpu/vulnerabilities";
+
+/// The files of the directory `dir`, as (name, first line), by name. A
+/// directory that is not there, as on a kernel that knows no flaws, gives
+/// none; a file that cannot be read is left out.
+pub(crate) fn vulnerabilities(dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<(String, String)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let text = std::fs::read_to_string(entry.path()).ok()?;
+            Some((name, text.lines().next().unwrap_or("").to_string()))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The label of the flaw whose file is `name`, as util-linux writes it:
+/// `spec_store_bypass` is `Vulnerability Spec store bypass:`.
+fn vulnerability_label(name: &str) -> String {
+    let mut words = name.replace('_', " ");
+    if let Some(first) = words.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    format!("Vulnerability {words}:")
+}
+
+/// The lines lscpu prints: each row of `rows` indented by its depth, then
+/// a line for each of `flaws`. The values start in one column, 26 wide
+/// or wider where a label is longer, so that they line up.
+fn layout(rows: &[(usize, &str, String)], flaws: &[(String, String)]) -> Vec<String> {
+    let mut labels: Vec<(String, &str)> = rows
+        .iter()
+        .map(|(depth, name, value)| {
+            (format!("{:indent$}{name}", "", indent = depth * 2), value.as_str())
+        })
+        .collect();
+    labels.extend(flaws.iter().map(|(name, text)| (vulnerability_label(name), text.as_str())));
+    let width = labels.iter().map(|(label, _)| label.len() + 1).fold(26, usize::max);
+    labels
+        .iter()
+        .map(
+            |(label, value)| {
+                if value.is_empty() { label.clone() } else { format!("{label:<width$}{value}") }
+            },
+        )
+        .collect()
+}
+
 /// lscpu(1).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
     let processor = Processor::read(&cpuid);
+    let rows = report(&processor, cpus()?);
+    let flaws = vulnerabilities(Path::new(VULNERABILITIES));
     let mut out = io::stdout().lock();
-    for (depth, name, value) in report(&processor, cpus()?) {
-        let label = format!("{:indent$}{name}", "", indent = depth * 2);
-        if value.is_empty() {
-            writeln!(out, "{label}")?;
-        } else {
-            writeln!(out, "{label:<26}{value}")?;
-        }
+    for line in layout(&rows, &flaws) {
+        writeln!(out, "{line}")?;
     }
     Ok(0)
 }
@@ -750,6 +804,65 @@ mod tests {
             _ => qemu_amd(leaf, sub),
         };
         assert_eq!((summary(&amd).base_mhz, summary(&amd).max_mhz), (None, None));
+    }
+
+    fn flaws(files: &[(&str, &str)]) -> Vec<(String, String)> {
+        files.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect()
+    }
+
+    #[test]
+    fn a_flaws_file_name_is_made_into_its_label() {
+        assert_eq!(vulnerability_label("spec_store_bypass"), "Vulnerability Spec store bypass:");
+        assert_eq!(vulnerability_label("l1tf"), "Vulnerability L1tf:");
+        assert_eq!(vulnerability_label("spectre_v2"), "Vulnerability Spectre v2:");
+        assert_eq!(vulnerability_label("mds"), "Vulnerability Mds:");
+    }
+
+    #[test]
+    fn the_flaws_follow_the_other_lines_and_line_up_with_them() {
+        let rows = [(0, "Architecture:", "x86_64".to_string()), (1, "Flags:", String::new())];
+        let lines = layout(
+            &rows,
+            &flaws(&[
+                ("itlb_multihit", "Not affected"),
+                ("spectre_v2", "Mitigation: Retpolines; IBPB: conditional"),
+            ]),
+        );
+        // The longest label, 28 characters, sets the column for every line.
+        assert_eq!(lines[0], format!("{:<29}x86_64", "Architecture:"));
+        assert_eq!(lines[1], "  Flags:");
+        assert_eq!(lines[2], format!("{:<29}Not affected", "Vulnerability Itlb multihit:"));
+        assert!(lines[3].starts_with("Vulnerability Spectre v2:"));
+        assert_eq!(lines[0].find("x86_64"), lines[2].find("Not affected"));
+    }
+
+    #[test]
+    fn a_label_wider_than_the_column_widens_it_for_every_line() {
+        let rows = [(0, "CPU(s):", "8".to_string())];
+        let lines = layout(&rows, &flaws(&[("reg_file_data_sampling", "Not affected")]));
+        let label = "Vulnerability Reg file data sampling:";
+        assert_eq!(lines[1], format!("{label} Not affected"));
+        assert_eq!(lines[0], format!("{:<38}8", "CPU(s):"));
+    }
+
+    #[test]
+    fn no_flaws_leave_only_the_other_lines() {
+        let rows = [(0, "CPU(s):", "8".to_string())];
+        assert_eq!(layout(&rows, &[]), [format!("{:<26}8", "CPU(s):")]);
+        assert!(vulnerabilities(Path::new("/nonexistent-dukovo-test")).is_empty());
+    }
+
+    #[test]
+    fn a_directory_of_flaws_is_read_by_name_and_first_line() {
+        let dir = std::env::temp_dir().join(format!("lscpu-flaws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("srbds"), "Vulnerable: no microcode\n").unwrap();
+        std::fs::write(dir.join("mds"), "Not affected\n").unwrap();
+        assert_eq!(
+            vulnerabilities(&dir),
+            flaws(&[("mds", "Not affected"), ("srbds", "Vulnerable: no microcode")])
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

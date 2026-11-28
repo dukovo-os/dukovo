@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0468. Firmware sets ride in the slots, and a new set is tried as an update
 
-- Status: Accepted
+- Status: Accepted; AMD microcode since [0792](0792-amd-processors-load-their-microcode-at-boot-as-intel-s-do.md)
 - Date: 2026-11-12
 
 ## Context
@@ -74,8 +74,8 @@ the firmware a machine runs by the way.
   never with a system update.
 - The installer does not yet install the install stick's set, update
   files do not yet carry firmware, cards that load firmware through a
-  driver wait for a driver that does, and AMD microcode waits for AMD's
-  loader: each has a row in `docs/deferred.md`. Disks other than the
+  driver wait for a driver that does: each has a row in
+  `docs/deferred.md`. Disks other than the
   root's are left out of the device record, as their owners plug them in
   and out.
 - The `firmware-fallback` boot test stages a good set, then a newer set

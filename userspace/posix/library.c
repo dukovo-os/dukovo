@@ -14,7 +14,7 @@
 // a stream whose command ended unread closes without a word; and a block
 // that realloc shrinks a long way gives back what it no longer needs, as
 // CPython's pipe reads want; and each thread's cache of freed blocks
-// (ADR 0657).
+// (ADR 0657); and the large blocks kept after free (ADR 0810).
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -53,6 +53,11 @@ static void *(*volatile calloc_)(size_t, size_t) = calloc;
 static void *(*volatile realloc_)(void *, size_t) = realloc;
 static void *(*volatile aligned_alloc_)(size_t, size_t) = aligned_alloc;
 static void *(*volatile memalign_)(size_t, size_t) = memalign;
+
+// memset likewise, where what it fills is freed with nobody having read
+// it: the compiler leaves such a fill out, and the block's pages are
+// then never touched.
+static void *(*volatile memset_)(void *, int, size_t) = memset;
 
 static int aligned(const void *p, size_t alignment) {
 	return ((uintptr_t)p & (alignment - 1)) == 0;
@@ -179,6 +184,109 @@ static void shrinks(void) {
 				&& less[0] == 'l' && less[300 * 1024] == 'l');
 		free(less);
 	}
+}
+
+// Frees four blocks of the smallest size the pool maps by itself, which
+// push out whatever large blocks were kept, and returns the pages of
+// anonymous memory the process then holds.
+static long flushed_kept_blocks(void) {
+	unsigned char *small[4];
+	for(int i = 0; i < 4; i++) {
+		small[i] = malloc_(40000);
+		if(small[i])
+			memset_(small[i], 0x66, 40000);
+	}
+	for(int i = 0; i < 4; i++)
+		free(small[i]);
+	return check_anonymous_pages();
+}
+
+// The last large blocks that were freed are kept, with their pages, and
+// handed out again to a request they fit (ADR 0810): at most four of
+// them and 16 MiB in all, and a kept block holds a request with at most
+// a quarter as much again left over.
+static void kept_blocks(void) {
+	enum { FRAME = 1228800, MIB = 1 << 20 };
+	// One of the size again is the block that was freed, and filling it
+	// takes no page fault: its pages stayed.
+	unsigned char *frame = malloc_(FRAME);
+	CHECK(frame != NULL);
+	if(!frame)
+		return;
+	memset_(frame, 0x11, FRAME);
+	free(frame);
+	unsigned char *again = malloc_(FRAME);
+	CHECK(again == frame);
+	if(again == frame) {
+		long before = check_page_faults();
+		memset_(again, 0x22, FRAME);
+		long faults = check_page_faults() - before;
+		if(faults != 0)
+			fprintf(stderr, "library: %ld page faults filling a kept block\n", faults);
+		CHECK(before >= 0 && faults == 0);
+	}
+	free(again);
+	// A little smaller fits it, and says how much it has; much smaller
+	// or any larger is a block of its own.
+	unsigned char *smaller = malloc_(FRAME - FRAME / 8);
+	CHECK(smaller == frame && malloc_usable_size(smaller) == FRAME);
+	free(smaller);
+	unsigned char *half = malloc_(FRAME / 2);
+	CHECK(half && half != frame && malloc_usable_size(half) == FRAME / 2);
+	unsigned char *larger = malloc_(FRAME + 4096);
+	CHECK(larger && larger != frame && malloc_usable_size(larger) == FRAME + 4096);
+	// calloc of a kept block is zeroes.
+	free(half);
+	free(larger);
+	unsigned char *zeroes = calloc_(1, FRAME);
+	CHECK(zeroes == frame);
+	int dirty = 0;
+	for(size_t i = 0; zeroes && i < FRAME; i++)
+		dirty |= zeroes[i];
+	CHECK(dirty == 0);
+	free(zeroes);
+	// A block that grows by realloc leaves the one it was in to be had
+	// again.
+	unsigned char *grown = malloc_(FRAME);
+	CHECK(grown == frame);
+	if(grown)
+		memset_(grown, 0x33, FRAME);
+	unsigned char *twice = realloc_(grown, 2 * FRAME);
+	CHECK(twice && twice != frame && twice[0] == 0x33 && twice[FRAME - 1] == 0x33);
+	free(twice);
+	unsigned char *back = malloc_(FRAME);
+	CHECK(back == frame);
+	free(back);
+
+	// Six blocks of 3 MiB freed leave four of them, with a page of the
+	// pool's before each; the two freed first went back to the system.
+	enum { EACH = 3 * MIB / 4096 + 1 };
+	long before = flushed_kept_blocks();
+	unsigned char *blocks[6];
+	for(int i = 0; i < 6; i++) {
+		blocks[i] = malloc_(3 * MIB);
+		CHECK(blocks[i] != NULL);
+		if(blocks[i])
+			memset_(blocks[i], 0x44, 3 * MIB);
+	}
+	for(int i = 0; i < 6; i++)
+		free(blocks[i]);
+	long kept = check_anonymous_pages() - before;
+	if(kept > 4 * EACH || kept < 4 * EACH - 64)
+		fprintf(stderr, "library: %ld pages kept of six blocks of 3 MiB\n", kept);
+	CHECK(before > 0 && kept <= 4 * EACH && kept >= 4 * EACH - 64);
+
+	// A block of more than 16 MiB is never kept.
+	before = flushed_kept_blocks();
+	unsigned char *huge = malloc_(17 * MIB);
+	CHECK(huge != NULL);
+	if(huge)
+		memset_(huge, 0x55, MIB);
+	free(huge);
+	kept = check_anonymous_pages() - before;
+	if(kept > 8)
+		fprintf(stderr, "library: %ld pages kept of a block of 17 MiB\n", kept);
+	CHECK(before > 0 && kept <= 8);
 }
 
 // Each thread's cache of freed blocks (ADR 0657). Threads allocate and
@@ -826,6 +934,7 @@ int main(void) {
 	check_start("library");
 	RUN(allocations);
 	RUN(shrinks);
+	RUN(kept_blocks);
 	RUN(thread_caches);
 	RUN(environment);
 	RUN(popens);

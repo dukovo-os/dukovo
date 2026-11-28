@@ -277,10 +277,12 @@ _/kernel/bus/i2c/devices/i2c-_*HID*:*nn*_/name_
 _/kernel/firmware/microcode_
 	What became of the CPU microcode the boot loader gave the kernel,
 	there only when it gave some (ADR 0468), a line each: *size*, the
-	module's bytes; *updates*, how many updates it holds; *result*:
+	module's bytes; *vendor*, whose microcode this CPU reads from it:
+	*intel*, *amd* or *other*; *updates*, how many Intel updates or AMD
+	patches of that vendor it holds; *result*:
 	*applied*, *current* (the processor runs that revision or a newer
 	one), *unmatched* (no update is for this processor), *unsupported*
-	(not an Intel processor), *hypervisor* (the update did not take
+	(neither an Intel nor an AMD processor), *hypervisor* (the update did not take
 	effect under a hypervisor, which keeps its own), *damaged* (data that
 	failed its checks; none of it is used) or *refused* (the processor
 	did not take it); *revision*, the revision the processor runs; and
@@ -709,11 +711,50 @@ _/kernel/devices/system/cpu/possible_, _present_, _online_
 	The CPUs the machine has, and those that run threads, as Linux's
 	lists: *0-7*, which util-linux's lscpu reads.
 
+_/kernel/devices/system/cpu/vulnerabilities/_*flaw*
+	How the processor stands against a speculative-execution flaw, one
+	file for each, named as Linux's files are: *gather_data_sampling*,
+	*itlb_multihit*, *l1tf*, *mds*, *meltdown*, *mmio_stale_data*,
+	*reg_file_data_sampling*, *retbleed*, *spec_rstack_overflow*,
+	*spec_store_bypass*, *spectre_v1*, *spectre_v2*, *srbds*, *tsa*,
+	*tsx_async_abort* and the others the kernel knows (ADR 0790). Each
+	holds one line, in Linux's words: *Not affected*; *Vulnerable*, with
+	what is missing; *Mitigation:* and what the kernel does about it; or
+	*Unknown:* where the processor gives no way to tell. The kernel
+	decides at boot, from the processor's model and what its firmware and
+	microcode say. *Vulnerable* usually means that the processor needs a
+	newer microcode. There is no directory on a machine that is not
+	x86-64. util-linux's lscpu reads them, as does *lscpu*(1).
+
+_/kernel/devices/system/cpu/cpuidle/current_driver_
+	*acpi_idle* where the CPUs have idle states deeper than C1 from the
+	firmware's _\_CST_ (*dukovo-boot*(7)'s *IDLE STATES*), as Linux's
+	driver for them is named; *none* where C1 is all they use.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/name_, _desc_
+	CPU _n_'s idle state _k_, shallowest first from *state0*: its name,
+	*C1*, *C2* and so on, and how it is entered, as Linux's acpi_idle
+	describes it: *ACPI FFH MWAIT 0x20* for MWAIT with that hint, *ACPI
+	IOPORT 0x414* for a read of that I/O port, *ACPI HLT* for HLT.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/latency_, _residency_
+	How long leaving it takes, as the firmware gives it, and how long
+	the CPU must stay in it for it to save power, in microseconds.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/usage_, _time_
+	How many times the CPU entered it since boot, and the microseconds
+	it stayed there in all.
+
+_/kernel/devices/system/cpu/cpu_*n*_/cpuidle/state_*k*_/disable_
+	*0*: no state can be turned off while the system runs; the boot
+	flags *idle* and *max_cstate* limit them.
+
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_driver_
-	Where CPU _n_ picks its own speed (*dukovo-boot*(7)'s *CPU
-	FREQUENCY*): the Linux driver for its control, *intel_pstate* for
-	Intel's HWP or *amd-pstate-epp* for AMD's CPPC. Each CPU has a
-	policy, as with those drivers, and _/kernel/devices/system/cpu/cpu_*n*_/cpufreq_
+	Where CPU _n_'s speed is the kernel's to set (*dukovo-boot*(7)'s
+	*CPU FREQUENCY*): the Linux driver for its control, *intel_pstate*
+	for Intel's HWP, *amd-pstate-epp* for AMD's CPPC, or *acpi-cpufreq*
+	for the P-states its firmware describes. Each CPU has a policy, as
+	with those drivers, and _/kernel/devices/system/cpu/cpu_*n*_/cpufreq_
 	is a link to it. Linux's cpupower and powertop read these.
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/affected_cpus_, _related_cpus_
@@ -735,7 +776,9 @@ _/kernel/devices/system/cpu/cpufreq/policy_*n*_/scaling_governor_, _scaling_avai
 	Linux's drivers call so; *performance* while the CPUs are held at
 	the top of the range (*cpu.speed* *highest*, ADR 0557).
 	_scaling_available_governors_ lists *performance powersave*, as
-	Linux's intel_pstate does.
+	Linux's intel_pstate does. With the firmware's P-states the kernel
+	picks the speed from the load, which Linux's schedutil governor
+	does: *schedutil* takes the place of *powersave* in both files.
 
 _/kernel/devices/system/cpu/cpufreq/policy_*n*_/energy_performance_preference_
 	Where the CPU takes one, the energy preference it is asked for:

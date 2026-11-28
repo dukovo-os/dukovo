@@ -52,7 +52,7 @@ impl Cpu for Arch {
         core::hint::spin_loop();
     }
 
-    fn idle_until(_wake: &AtomicUsize) {
+    fn idle_until(_wake: &AtomicUsize, _state: usize) {
         core::hint::spin_loop();
     }
 
@@ -494,6 +494,14 @@ impl UserMode for Arch {
         _: bool,
     ) -> Result<(), MapPageError> {
         Err(MapPageError::NoMemory)
+    }
+
+    fn empty_pages(_: &Space, _: u64, _: u32) -> u64 {
+        0
+    }
+
+    fn fill_pages(_: &Space, _: u64, _: &[u64], _: u64, _: UserAccess) -> u64 {
+        0
     }
 
     fn frames(_: &Space, _: u64, _: u64, _: bool, _: &mut dyn FnMut(u64) -> bool) {}

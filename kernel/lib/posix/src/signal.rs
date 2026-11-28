@@ -17,12 +17,20 @@ use radix_abi::signal::{
     ActionFlags, DEFAULT, IGNORE, SIGABRT, SIGBUS, SIGCHLD, SIGCONT, SIGFPE, SIGILL, SIGKILL,
     SIGRTMIN, SIGSEGV, SIGSTOP, SIGSYS, SIGTRAP, SIGTSTP, SIGTTIN, SIGTTOU, SIGURG, SIGWINCH,
 };
+use radix_sync::nospec;
 
 pub use radix_abi::signal::SIGNALS;
 
 /// The most real-time signals a thread or process may have pending at
 /// once; sending another then fails, as `sigqueue` fails with EAGAIN.
 pub const QUEUE_MAX: usize = 1024;
+
+/// Where `signal`, a valid signal, has its entry in a table of SIGNALS.
+/// A program chose the number, so the processor that guesses it valid
+/// meanwhile reads entry 0 (Spectre v1, ADR 0790).
+fn place(signal: u32) -> usize {
+    nospec::index(signal.wrapping_sub(1) as usize, SIGNALS as usize)
+}
 
 /// The bit of signal `signal` in a set, or 0 for a number that is not a
 /// signal.
@@ -153,7 +161,7 @@ impl<S: AsRef<[Action]> + AsMut<[Action]>> Actions<S> {
 
     /// The action of `signal`, a valid signal.
     pub fn get(&self, signal: u32) -> Action {
-        self.0.as_ref()[(signal - 1) as usize]
+        self.0.as_ref()[place(signal)]
     }
 
     /// Makes `action` the action of `signal`, and returns the one before.
@@ -166,7 +174,7 @@ impl<S: AsRef<[Action]> + AsMut<[Action]>> Actions<S> {
             return Err(ActionError::Unchangeable);
         }
         action.mask &= !UNBLOCKABLE;
-        Ok(core::mem::replace(&mut self.0.as_mut()[(signal - 1) as usize], action))
+        Ok(core::mem::replace(&mut self.0.as_mut()[place(signal)], action))
     }
 
     /// What `exec` keeps: ignored signals stay ignored, handled ones go
@@ -218,7 +226,7 @@ impl<S: AsRef<[Action]> + AsMut<[Action]>> Actions<S> {
     /// The handler of `signal` has run once: with RESETHAND, its action
     /// goes back to the default.
     pub fn handled(&mut self, signal: u32) {
-        let action = &mut self.0.as_mut()[(signal - 1) as usize];
+        let action = &mut self.0.as_mut()[place(signal)];
         if action.has(ActionFlags::RESET_HAND) {
             *action = Action::default();
         }
@@ -328,7 +336,7 @@ impl<S: AsRef<[Info]> + AsMut<[Info]>, A: Allocator> Pending<S, A> {
         } else if self.set & bit != 0 {
             return false;
         } else {
-            self.info.as_mut()[(signal - 1) as usize] = info;
+            self.info.as_mut()[place(signal)] = info;
         }
         self.set |= bit;
         true

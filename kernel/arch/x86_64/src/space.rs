@@ -58,11 +58,15 @@ const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 /// A software bit of a leaf entry that is not present: the entry still
 /// holds its frame, which a program may not reach for now (a page of
 /// anonymous memory under `PROT_NONE`). The CPU ignores every other bit
-/// of an entry that is not present.
+/// of an entry that is not present, but for L1TF: a processor with it
+/// reads ahead from its cache at the entry's address before it faults, so
+/// the address bits keep the frame inverted, past the top of memory
+/// ([`held_entry`], ADR 0790).
 const HELD: u64 = 1 << 9;
 /// A software bit of a leaf entry that is not present: the page is
-/// swapped out, and the entry's address bits hold its swap slot rather
-/// than a frame (ADR 0152).
+/// swapped out, and the entry holds its swap slot rather than a frame
+/// (ADR 0152): the slot's area in bits 52 to 59, and its page inverted in
+/// the address bits, as [`HELD`]'s frame is ([`swap_entry`]).
 const SWAPPED: u64 = 1 << 10;
 /// The bit the CPU sets in an entry it reads a page through.
 const ACCESSED: u64 = 1 << 5;
@@ -122,14 +126,18 @@ const _: () = assert!(core::mem::size_of::<AddressSpace>() <= PAGE as usize);
 impl AddressSpace {
     /// A new address space with nothing mapped in its lower half.
     pub fn new() -> Result<&'static AddressSpace, AllocError> {
-        let pml4 = paging::new_table(true).map_err(|_| AllocError)?;
+        let pml4 = if crate::pti::on() { paging::new_root(true) } else { paging::new_table(true) }
+            .map_err(|_| AllocError)?;
         let Some(frame) = memory::alloc_pages(1, false, Owner::Kernel) else {
-            memory::free_pages(pml4, 1, Owner::PageTable);
+            memory::free_pages(pml4, pml4_pages(), Owner::PageTable);
             return Err(AllocError);
         };
         let kernel = paging::table(paging::kernel_pml4());
         for (mine, theirs) in paging::table(pml4)[256..].iter().zip(&kernel[256..]) {
             mine.store(theirs.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        if crate::pti::on() {
+            crate::pti::fill_user_view(pml4);
         }
         if let Some(record) = paging::table_record(pml4) {
             record.add_table_lines(u64::MAX << 32);
@@ -343,7 +351,7 @@ impl AddressSpace {
         if entry & PRESENT != 0 {
             Some((entry & ADDRESS, Some(paging::access_of(entry))))
         } else if entry & HELD != 0 {
-            Some((entry & ADDRESS, None))
+            Some((held_frame(entry), None))
         } else {
             None
         }
@@ -374,7 +382,7 @@ impl AddressSpace {
                     }
                     each(virt, Scanned::Frame { phys: entry & ADDRESS, used })
                 } else {
-                    each(virt, Scanned::Swapped((entry & ADDRESS) >> 12))
+                    each(virt, Scanned::Swapped(swap_slot(entry)))
                 }
             });
         }
@@ -420,7 +428,7 @@ impl AddressSpace {
     pub fn swapped(&self, virt: u64) -> Option<u64> {
         let _guard = self.lock.lock();
         let entry = page_entry(self.pml4, virt)?;
-        (entry & (PRESENT | SWAPPED) == SWAPPED).then_some((entry & ADDRESS) >> 12)
+        (entry & (PRESENT | SWAPPED) == SWAPPED).then_some(swap_slot(entry))
     }
 
     /// Takes every swapped-out page from `start` to `end` out of the
@@ -433,7 +441,7 @@ impl AddressSpace {
                 let entry = slot.load(Ordering::Relaxed);
                 if entry & PRESENT == 0 {
                     slot.store(0, Ordering::Relaxed);
-                    each((entry & ADDRESS) >> 12);
+                    each(swap_slot(entry));
                 }
                 true
             });
@@ -499,6 +507,57 @@ impl AddressSpace {
             }
         }
         Ok(())
+    }
+
+    /// Which of the `count` pages from `start`, at most 64 in one page
+    /// table, have an entry that holds nothing, a bit for each from bit 0:
+    /// no frame, with access or without, and no swap slot. All of them
+    /// where their table is not there yet, none under a large page.
+    pub fn empty(&self, start: u64, count: u32) -> u64 {
+        let first = run_in_table(start, count);
+        let _guard = self.lock.lock();
+        match mapping(self.pml4, start) {
+            Some((entries, 1)) => entries[first..first + count as usize]
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.load(Ordering::Relaxed) == 0)
+                .fold(0, |empty, (bit, _)| empty | 1 << bit),
+            Some(_) => 0,
+            None => run_bits(count),
+        }
+    }
+
+    /// Points the entry of the page at `start + i * PAGE` at `frames[i]`
+    /// with `access`, for each bit `i` of `pages` whose entry still holds
+    /// nothing ([`AddressSpace::empty`]), with the lock taken once; the
+    /// pages, at most 64, lie in one page table, which is made if it is
+    /// not there. Returns the bits of the pages it mapped, none if the
+    /// table cannot be made. No CPU caches an entry that is not present,
+    /// so none is shot down.
+    pub fn fill(&self, start: u64, frames: &[u64], pages: u64, access: Access) -> u64 {
+        let count = u32::try_from(frames.len()).unwrap_or(u32::MAX);
+        let first = run_in_table(start, count);
+        let pages = pages & run_bits(count);
+        if pages == 0 {
+            return 0;
+        }
+        let _guard = self.lock.lock();
+        let Ok(table) = paging::table_of(self.pml4, start, 1, true) else { return 0 };
+        let entries = paging::table(table);
+        let mut filled = 0;
+        let mut lines = 0;
+        for (bit, &frame) in frames.iter().enumerate().filter(|&(bit, _)| pages & 1 << bit != 0) {
+            let entry = &entries[first + bit];
+            if entry.load(Ordering::Relaxed) == 0 {
+                entry.store(leaf_entry(frame, Some(access)), Ordering::Relaxed);
+                lines |= paging::line_bit(first + bit);
+                filled |= 1 << bit;
+            }
+        }
+        if let Some(record) = paging::table_record(table) {
+            record.add_table_lines(lines);
+        }
+        filled
     }
 
     /// Visits every entry from `start` to `end` that holds a frame, in
@@ -603,19 +662,33 @@ impl AddressSpace {
         let this = core::ptr::from_ref::<AddressSpace>(self) as usize;
         let here = percpu::current();
         here.lazy.store(false, Ordering::Relaxed);
-        let previous = here.space.swap(this, Ordering::Relaxed);
+        // Only this CPU writes its word: a look sees whether the space is
+        // loaded, without a locked exchange on every switch back to it.
+        let previous = here.space.load(Ordering::Relaxed);
         if previous != this {
+            here.space.store(this, Ordering::Relaxed);
+            crate::speculation::switched_space(me, this);
             self.set_active(me, true);
             fence(Ordering::SeqCst);
             let generation = self.tlb_generation.load(Ordering::SeqCst);
             let stale = self.seen[me].swap(generation, Ordering::Relaxed) != generation;
             let cr3 = if paging::PCID.load(Ordering::Relaxed) {
                 let (pcid, flush_all) = PCIDS.switch(me, &self.context);
-                if flush_all {
+                // Under page-table isolation, a flush of some of the
+                // kernel's pages reached only the PCID running then.
+                let kernel_stale = here.kernel_tlb_stale.swap(false, Ordering::Relaxed);
+                if flush_all || kernel_stale {
                     cpu::flush_tlb_all();
                 }
                 // Bit 63 keeps the PCID's TLB entries.
                 let keep = if stale || flush_all { 0 } else { 1 << 63 };
+                // Under page-table isolation the program's view runs a
+                // PCID of its own, which this write does not flush: the
+                // next exit flushes it if this space's entries are stale.
+                if crate::pti::on() {
+                    leave_user_view(previous, me);
+                    here.entry().set_user_view_flush(stale || flush_all);
+                }
                 self.pml4 | u64::from(pcid) | keep
             } else {
                 self.pml4
@@ -647,6 +720,9 @@ impl AddressSpace {
         if previous != 0 {
             if paging::PCID.load(Ordering::Relaxed) {
                 PCIDS.leave(me);
+                if crate::pti::on() {
+                    leave_user_view(previous, me);
+                }
             }
             // PCID 0, flushed: the kernel's lower half changes (the AP
             // trampoline's identity page) are shot down while CPUs may run
@@ -723,8 +799,9 @@ impl AddressSpace {
             self.active.iter().all(|word| word.load(Ordering::SeqCst) == 0),
             "destroying an address space that a CPU runs"
         );
+        crate::speculation::forget_space(core::ptr::from_ref::<AddressSpace>(self) as usize);
         free_tables(self.pml4, 4, 0..256);
-        memory::free_pages(self.pml4, 1, Owner::PageTable);
+        memory::free_pages(self.pml4, pml4_pages(), Owner::PageTable);
         // Its PCID stays taken until the next rollover, so no CPU uses the
         // PCID's stale entries before they are flushed.
         memory::free_pages(self.frame, 1, Owner::Kernel);
@@ -758,15 +835,68 @@ struct Walk<'a> {
 fn leaf_entry(frame: u64, access: Option<Access>) -> u64 {
     match access {
         Some(access) => frame | paging::user_flags(access),
-        None => frame | HELD,
+        None => held_entry(frame),
     }
 }
 
-/// The entry of a page swapped out to `slot`.
+/// The entry that holds `frame` without access. Its address bits are the
+/// frame's inverted, as Linux keeps those of every entry that is not
+/// present, so that they name no memory for L1TF to read ahead from: the
+/// top half of the physical addresses (ADR 0790).
+const fn held_entry(frame: u64) -> u64 {
+    !frame & ADDRESS | HELD
+}
+
+/// The frame of a [`held_entry`].
+const fn held_frame(entry: u64) -> u64 {
+    !entry & ADDRESS
+}
+
+/// The bits of a swap slot that number its page in its area
+/// (`radix::swap`).
+const SLOT_PAGE: u64 = u32::MAX as u64;
+
+/// The entry of a page swapped out to `slot`: the slot's page inverted in
+/// the address bits, as [`held_entry`] keeps a frame, so that L1TF reads
+/// ahead from none of the lower half's memory while the page is under
+/// half the physical addresses' span, and the area in bits 52 to 59,
+/// which no processor reads ahead from.
 fn swap_entry(slot: u64) -> u64 {
     assert!(slot < 1 << 40, "swap slot {slot:#x} does not fit an entry");
-    slot << 12 | SWAPPED
+    swap_bits(slot)
 }
+
+/// [`swap_entry`], for a slot below 2^40.
+const fn swap_bits(slot: u64) -> u64 {
+    (slot >> 32) << 52 | !((slot & SLOT_PAGE) << 12) & ADDRESS | SWAPPED
+}
+
+/// The slot of a [`swap_entry`].
+const fn swap_slot(entry: u64) -> u64 {
+    (entry >> 52 & 0xff) << 32 | (!entry & ADDRESS) >> 12 & SLOT_PAGE
+}
+
+// Every frame and slot comes back from its entry, which is not present,
+// and the first pages of an area, as the first frames, name the top of
+// the physical addresses.
+const _: () = {
+    let slots = [0, 1, SLOT_PAGE, 1 << 32, 7 << 32 | 0x1234_5678, (1 << 40) - 1];
+    let mut at = 0;
+    while at < slots.len() {
+        let entry = swap_bits(slots[at]);
+        assert!(swap_slot(entry) == slots[at] && entry & (PRESENT | HELD) == 0);
+        at += 1;
+    }
+    let frames = [0, PAGE, 0x1_2345_6000, ADDRESS];
+    let mut at = 0;
+    while at < frames.len() {
+        let entry = held_entry(frames[at]);
+        assert!(held_frame(entry) == frames[at] && entry & (PRESENT | SWAPPED) == 0);
+        at += 1;
+    }
+    assert!(swap_bits(5) & ADDRESS == ADDRESS - (5 << 12));
+    assert!(held_entry(PAGE) & ADDRESS == ADDRESS - PAGE);
+};
 
 /// Calls `each` with the address and entry of every leaf of the table at
 /// `phys`, of `level` (4 for the PML4), mapping from `base`, from `start`
@@ -803,6 +933,22 @@ fn leaves_of(
         }
     }
     true
+}
+
+/// The index in its page table of the entry of `start`, the first of
+/// `count` pages that must lie in that one table, at most 64 of them.
+fn run_in_table(start: u64, count: u32) -> usize {
+    let first = index(start, 1);
+    assert!(
+        start.is_multiple_of(PAGE) && count <= 64 && first + count as usize <= 512,
+        "{count} pages from {start:#x} are not in one page table"
+    );
+    first
+}
+
+/// The bits of a run of `count` pages, at most 64, from bit 0.
+const fn run_bits(count: u32) -> u64 {
+    if count == 0 { 0 } else { u64::MAX >> (64 - count) }
 }
 
 /// The entry of a large page that maps the frames from `frame` on.
@@ -993,7 +1139,7 @@ impl<'a> Walk<'a> {
                     continue;
                 }
                 let virt = base + index as u64 * PAGE;
-                let frame = entry & ADDRESS;
+                let frame = if present { entry & ADDRESS } else { held_frame(entry) };
                 let access = present.then(|| paging::access_of(entry));
                 let (edit, copy) = (self.decide)(virt, frame, access);
                 if let (Some(to), Some(access)) = (self.to, copy) {
@@ -1118,6 +1264,27 @@ pub fn user_access(access: Access) -> UserAccess {
     }
 }
 
+/// Under page-table isolation with PCIDs, as CPU `me` stops running the
+/// space at `previous` (0 for none): entries of its program's view that
+/// were due to go at an exit that has not come stay in the TLB, so this
+/// CPU flushes the space as stale when it next runs it.
+fn leave_user_view(previous: usize, me: usize) {
+    let entry = percpu::current().entry();
+    if previous != 0 && entry.user_view_flush_pending() {
+        // SAFETY: a space stays valid while a CPU marks it as running (see
+        // `AddressSpace::destroy`), and this CPU marks `previous` until its
+        // caller is done.
+        unsafe { (*(previous as *const AddressSpace)).seen[me].store(0, Ordering::Relaxed) };
+        entry.set_user_view_flush(false);
+    }
+}
+
+/// The pages of an address space's PML4: two under page-table isolation,
+/// the kernel's view and the program's (`crate::pti`).
+fn pml4_pages() -> u64 {
+    if crate::pti::on() { 2 } else { 1 }
+}
+
 /// Frees the page tables below entries `range` of the table at `phys`.
 fn free_tables(phys: u64, level: u32, range: Range<usize>) {
     if level == 1 || range.is_empty() {
@@ -1189,6 +1356,10 @@ fn prune(
             let table = entry & PRESENT != 0 && entry & LARGE == 0 && level > 1;
             if table && prune(space, entry & ADDRESS, level - 1, 0..512, unlinked) {
                 slot.store(0, Ordering::Relaxed);
+                if level == 4 {
+                    let index = (core::ptr::from_ref(slot) as usize & (PAGE as usize - 1)) / 8;
+                    crate::pti::mirror(phys, index, 0);
+                }
                 unlinked.add(space, entry & ADDRESS);
                 continue;
             }
@@ -1286,6 +1457,54 @@ fn check_spaces() {
     if were_enabled {
         cpu::enable_interrupts();
     }
+}
+
+/// Checks [`AddressSpace::empty`] and [`AddressSpace::fill`], as a fault
+/// that maps the pages around it uses them, on a space no CPU runs, with
+/// the frames `a` and `b`: a run whose table is not there holds nothing;
+/// a mapped page, a page held without access and a swapped-out page are
+/// not empty and are left as they were, while the rest are mapped; and a
+/// filled run is empty nowhere.
+fn fill_around(a: u64, b: u64) -> Result<(), &'static str> {
+    const RUN: u32 = 16;
+    let space = AddressSpace::new().map_err(|_| "out of memory")?;
+    let end = USER_TEST + u64::from(RUN) * PAGE;
+    let result = (|| {
+        if space.empty(USER_TEST, RUN) != run_bits(RUN) {
+            return Err("a run without a page table was not all empty");
+        }
+        space.map(USER_TEST, a, Access::ReadOnly).map_err(|_| "out of memory")?;
+        space.set(USER_TEST + 3 * PAGE, a, None, false).map_err(|_| "out of memory")?;
+        space.set_swapped(USER_TEST + 5 * PAGE, 7).map_err(|_| "out of memory")?;
+        let taken = 1 | 1 << 3 | 1 << 5;
+        if space.empty(USER_TEST, RUN) != run_bits(RUN) & !taken {
+            return Err("empty pages were not told from mapped, held and swapped ones");
+        }
+        let frames = [b; RUN as usize];
+        // Asked for all but page 1: it stays empty.
+        let filled = space.fill(USER_TEST, &frames, run_bits(RUN) & !2, Access::ReadOnly);
+        if filled != run_bits(RUN) & !taken & !2 {
+            return Err("a fill mapped a page that held something or was not asked for");
+        }
+        let kept = space.entry(USER_TEST) == Some((a, Some(Access::ReadOnly)))
+            && space.entry(USER_TEST + 3 * PAGE) == Some((a, None))
+            && space.swapped(USER_TEST + 5 * PAGE) == Some(7)
+            && space.entry(USER_TEST + 2 * PAGE) == Some((b, Some(Access::ReadOnly)))
+            && space.entry(end - PAGE) == Some((b, Some(Access::ReadOnly)))
+            && space.entry(USER_TEST + PAGE).is_none();
+        if !kept {
+            return Err("a fill changed what was there, or mapped the wrong frame");
+        }
+        if space.empty(USER_TEST, RUN) != 2 {
+            return Err("a filled run still had empty pages");
+        }
+        Ok(())
+    })();
+    space.clear_swapped(USER_TEST, end, &mut |_| {});
+    space.edit(USER_TEST, end, &mut |_, _, _| Edit::Clear, &mut |_| {});
+    // SAFETY: no CPU ever ran the space, and nothing keeps the reference.
+    unsafe { space.destroy() };
+    result
 }
 
 /// Reads `TEST.address` in the first test space (run on every CPU).
@@ -1503,7 +1722,8 @@ pub fn self_test(on_others: &dyn Fn(fn())) -> Result<(), &'static str> {
         // `check_spaces`, and nothing keeps the references.
         unsafe { space.destroy() };
     }
-    let result = result.and_then(|()| large_pages(on_others, b, B));
+    let result =
+        result.and_then(|()| fill_around(a, b)).and_then(|()| large_pages(on_others, b, B));
     memory::free_pages(a, 1, Owner::Kernel);
     memory::free_pages(b, 1, Owner::Kernel);
     result

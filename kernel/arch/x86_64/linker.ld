@@ -16,7 +16,8 @@
  *
  * The section boundaries below are read by the kernel to map the image with
  * the right permissions: text executable, rodata and the symbol table
- * read-only, data and bss writable, nothing writable and executable.
+ * read-only, data and bss writable, nothing writable and executable. The
+ * entry text comes first, in pages of its own.
  * docs/design/boot.md describes the layout.
  */
 
@@ -49,6 +50,13 @@ SECTIONS
     __kernel_text_start = .;
     .text : AT(ADDR(.text) - KERNEL_OFFSET)
     {
+        /* The entry text: the interrupt stubs and the system call entry
+         * and exits, in pages of their own, which programs' page tables
+         * map under page-table isolation (src/pti.rs). */
+        __entry_text_start = .;
+        KEEP(*(.text.entry))
+        . = ALIGN(4K);
+        __entry_text_end = .;
         *(.text .text.*)
     }
     . = ALIGN(4K);
@@ -58,6 +66,14 @@ SECTIONS
     .rodata : AT(ADDR(.rodata) - KERNEL_OFFSET)
     {
         *(.rodata .rodata.*)
+    }
+    /* Where the entry and exit paths' speculation sites are, which the
+     * boot CPU turns on as the processor needs (src/speculation.rs). */
+    .spec_sites : AT(ADDR(.spec_sites) - KERNEL_OFFSET) ALIGN(8)
+    {
+        __spec_sites_start = .;
+        KEEP(*(.spec_sites))
+        __spec_sites_end = .;
     }
     .data.rel.ro : AT(ADDR(.data.rel.ro) - KERNEL_OFFSET)
     {
@@ -77,6 +93,13 @@ SECTIONS
     .krelocs : AT(ADDR(.krelocs) - KERNEL_OFFSET) ALIGN(16)
     {
         KEEP(*(.krelocs))
+    }
+    /* Where the indirect branches and returns are that go through the
+     * thunks, filled the same way; the boot CPU rewrites each
+     * (src/thunks.rs). */
+    .kthunks : AT(ADDR(.kthunks) - KERNEL_OFFSET) ALIGN(16)
+    {
+        KEEP(*(.kthunks))
     }
     . = ALIGN(4K);
     __kernel_rodata_end = .;

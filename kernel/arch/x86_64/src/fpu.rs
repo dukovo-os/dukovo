@@ -7,11 +7,15 @@
 //! The kernel itself never uses these registers (it is built without SSE,
 //! see `kernel/targets`), but threads do once they run user code, and the
 //! FPU self-test does now. Each thread has a save area in its context block
-//! (`thread.rs`), and every switch saves the outgoing thread's registers
-//! and restores the incoming one's. Switching is eager: lazy switching,
-//! which traps a thread's first use instead, leaked one thread's registers
-//! to another through speculative execution (CVE-2018-3665), and costs a
-//! trap per switch on any thread that computes.
+//! (`thread.rs`). A switch saves the outgoing thread's registers if it has
+//! state of its own, and the incoming thread's are loaded unless the CPU's
+//! registers still hold them, as Linux's are: a switch to a kernel thread,
+//! idle among them, and back leaves them alone. Switching is never lazy:
+//! lazy switching, which traps a thread's first use instead, leaves one
+//! thread's registers loaded while another runs, which leaked them through
+//! speculative execution (CVE-2018-3665), and costs a trap per switch on
+//! any thread that computes. Here registers are only ever left loaded
+//! while a kernel thread runs, which never uses them.
 //!
 //! With XSAVE the kernel enables in XCR0 each of x87, SSE, AVX, AVX-512,
 //! protection keys (PKRU) and AMX that the CPU has, and saves with

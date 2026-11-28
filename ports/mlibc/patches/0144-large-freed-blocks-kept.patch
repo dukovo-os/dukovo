@@ -1,0 +1,170 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The last large blocks that were freed are kept, and malloc hands one out
+again to a request it fits (ADR 0810). frigg's slab_pool maps every
+block above 32 KiB by itself and unmaps it when it is freed, so a
+program that allocates a large block, frees it and allocates one of the
+size again, as one that draws a picture a frame does, paid a mapping, a
+page fault for each page and an unmapping every time: 300 faults a
+frame for a window of 640 by 480. glibc pays them once: a freed mapping
+of up to 32 MiB raises its threshold, and blocks of that size come from
+its heap from then on.
+
+The pool keeps at most four freed large blocks, of 16 MiB in all with
+their mappings' padding, the one kept longest going back to the system
+first. A request takes the smallest kept block that holds it with at
+most a quarter as much again left over; malloc_usable_size says what
+the block has. A block larger than 16 MiB, or placed on an alignment
+above a page, is unmapped when it is freed, as before. Meant for
+upstream, in frigg.
+
+--- a/subprojects/frigg/include/frg/slab.hpp
++++ b/subprojects/frigg/include/frg/slab.hpp
+@@ -476,6 +476,18 @@
+ 	void free_huge_(frame *sup, void *p) {
+ 		FRG_ASSERT(sup->address == reinterpret_cast<uintptr_t>(p));
+ 
++		// The block's memory is no longer the program's. Its frame is
++		// still read: below, and by the next allocation if the block is
++		// kept. Poisoned before the block is kept, since another thread
++		// may be handed it from then on.
++		if constexpr (slab::has_poisoning_support<Policy>)
++			_plcy.poison(reinterpret_cast<void *>(sup->address), sup->length);
++
++		// The blocks that go back to the system: this one, unless it is
++		// kept, and the kept ones it pushes out.
++		frame *gone[kept_blocks + 1];
++		size_t gone_count = 0;
++
+ 		// Remove the virtual area from the area-list.
+ 		{
+ 			unique_lock<Mutex> tree_guard(_tree_mutex);
+@@ -484,18 +496,77 @@
+ 			_frame_tree.remove(sup);
+ #endif
+ 			_usedPages -= (sup->length + huge_padding) / page_size;
++
++			if(keeps_(sup)) {
++				while(_keptCount == kept_blocks
++						|| _keptBytes + sup->sb_reservation > kept_bytes)
++					gone[gone_count++] = take_kept_(0);
++				_kept[_keptCount++] = sup;
++				_keptBytes += sup->sb_reservation;
++			}else{
++				gone[gone_count++] = sup;
++			}
+ 		}
+ 
+-		// Note: we cannot access sup after poison().
+-		auto sb_base = sup->sb_base;
+-		auto sb_reservation = sup->sb_reservation;
+-		auto obj_address = sup->address;
+-		auto obj_size = sup->length;
+-		if constexpr (slab::has_poisoning_support<Policy>) {
+-			_plcy.poison(sup, sizeof(frame));
+-			_plcy.poison(reinterpret_cast<void *>(obj_address), obj_size);
++		for(size_t i = 0; i < gone_count; i++) {
++			// Note: we cannot access the frame after poison().
++			auto sb_base = gone[i]->sb_base;
++			auto sb_reservation = gone[i]->sb_reservation;
++			if constexpr (slab::has_poisoning_support<Policy>)
++				_plcy.poison(gone[i], sizeof(frame));
++			_plcy.unmap(sb_base, sb_reservation);
+ 		}
+-		_plcy.unmap(sb_base, sb_reservation);
++	}
++
++	//--------------------------------------------------------------------------------------
++	// Large blocks kept after free().
++	//--------------------------------------------------------------------------------------
++
++	// A program that allocates a large block, frees it and allocates one
++	// of the size again, as one that draws a picture a frame does, would
++	// map the block, take a page fault for each of its pages and unmap
++	// it, every time. The pool keeps the last large blocks that were
++	// freed, mapped and with their pages, and hands one out again to a
++	// request it fits, as glibc's malloc does by serving from its heap
++	// what was once freed as a mapping of its own.
++	//
++	// At most kept_blocks blocks are kept, of kept_bytes in all; the one
++	// kept longest goes back to the system first. A block larger than
++	// that, or placed on an alignment above a page, is never kept.
++	static constexpr size_t kept_blocks = 4;
++	static constexpr size_t kept_bytes = size_t(16) << 20;
++
++	// Whether the block of `sup`, which is being freed, is one to keep.
++	bool keeps_(frame *sup) {
++		return sup->sb_reservation <= kept_bytes
++				&& sup->address == reinterpret_cast<uintptr_t>(sup) + huge_padding;
++	}
++
++	// Takes the kept block at `index` out of the kept ones. Called with
++	// _tree_mutex held.
++	frame *take_kept_(size_t index) {
++		FRG_ASSERT(index < _keptCount);
++		frame *fra = _kept[index];
++		for(size_t i = index + 1; i < _keptCount; i++)
++			_kept[i - 1] = _kept[i];
++		_keptCount--;
++		_keptBytes -= fra->sb_reservation;
++		return fra;
++	}
++
++	// The smallest kept block that holds `area_size` bytes with at most
++	// a quarter as much again left over, taken out of the kept ones, or
++	// nullptr. Called with _tree_mutex held.
++	frame *take_kept_for_(size_t area_size) {
++		size_t best = kept_blocks;
++		for(size_t i = 0; i < _keptCount; i++) {
++			size_t length = _kept[i]->length;
++			if(length < area_size || length - area_size > area_size / 4)
++				continue;
++			if(best == kept_blocks || length < _kept[best]->length)
++				best = i;
++		}
++		return best == kept_blocks ? nullptr : take_kept_(best);
+ 	}
+ 
+ 	//--------------------------------------------------------------------------------------
+@@ -511,6 +582,11 @@
+ 	frame_tree_type _frame_tree;
+ #endif
+ 	size_t _usedPages;
++	// The kept large blocks, the one kept longest first, and the bytes
++	// their mappings take. Guarded by _tree_mutex.
++	frame *_kept[kept_blocks] = {};
++	size_t _keptCount = 0;
++	size_t _keptBytes = 0;
+ 	bucket _bkts[policy_traits::num_buckets];
+ };
+ 
+@@ -617,7 +693,27 @@
+ 		_verify_integrity();
+ 
+ 	auto area_size = (length + page_size - 1) & ~(page_size - 1);
+-	auto fra = _construct_large(area_size, align);
++
++	// A block that was freed and kept, if one fits (free_huge_).
++	frame *fra = nullptr;
++	if(align <= page_size) {
++		unique_lock<Mutex> tree_guard(_tree_mutex);
++		fra = take_kept_for_(area_size);
++		if(fra) {
++#ifdef FRG_SLAB_TRACK_REGIONS
++			_frame_tree.insert(fra);
++#endif
++			_usedPages += (fra->length + huge_padding) / page_size;
++		}
++	}
++	if(fra) {
++		if constexpr (slab::has_poisoning_support<Policy>)
++			_plcy.unpoison(reinterpret_cast<void *>(fra->address), fra->length);
++		slab::trace(_plcy, 'a', reinterpret_cast<void *>(fra->address), length);
++		return reinterpret_cast<void *>(fra->address);
++	}
++
++	fra = _construct_large(area_size, align);
+ 	if(!fra)
+ 		return nullptr;
+ 

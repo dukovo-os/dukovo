@@ -9,11 +9,14 @@
 //! reads, or 0 before its first read, which starts at the oldest record
 //! kept since the log was last cleared ([`CLEARED`]). A read waits for a
 //! record; the kernel log never wakes anyone itself (a record may be
-//! logged with any lock held, even in an interrupt), so a thread of its
-//! own looks for new records every tick's time while a description is
-//! open ([`watch`]), and wakes the readers and `poll`. The tick cannot:
-//! waking takes the wait table's lock, which interrupt handlers must not
-//! take while threads take it around other locks.
+//! logged with any lock held, even in an interrupt). While a description
+//! is open, the timer's tick looks for records logged since the readers
+//! were last woken ([`look`]), and wakes a thread of its own ([`watch`]),
+//! which wakes the readers and `poll`. The tick cannot wake them itself:
+//! that takes the wait table's lock, which interrupt handlers must not
+//! take while threads take it around other locks. The thread sleeps
+//! until there is a record, so a machine that logs nothing is not woken
+//! for its log (ADR 0811).
 
 use core::any::Any;
 use core::fmt::{self, Write};
@@ -24,25 +27,26 @@ use radix_abi::errors::Kernel;
 use radix_abi::file::Whence;
 use radix_abi::kernel_log::WRITE_MAX;
 use radix_klog::{Level, Origin, TextBuf, error};
+use radix_sync::Once;
 use radix_vfs::{Access, In, Kind, Node, NodeRef, Out, Stat};
 
 use super::FileObject;
-use crate::sched::{self, Options, Policy, wait};
+use crate::sched::{self, Options, Policy, ThreadRef, wait};
 use crate::user::posix::poll::{self, Polled};
 use crate::user::posix::signal::{Restart, interrupted};
 
 /// The first record a new reader reads: none before the last clear.
 static CLEARED: AtomicU64 = AtomicU64::new(0);
 /// How many descriptions of `/devices/kmsg` are open: while none is, the
-/// watcher does not look.
+/// watcher is not woken.
 static OPEN: AtomicU32 = AtomicU32::new(0);
-/// The next record's sequence number when the watcher last looked.
+/// The next record's sequence number when the watcher last woke the
+/// readers.
 static SEEN: AtomicU64 = AtomicU64::new(0);
 /// The pollers of `/devices/kmsg`.
 pub static POLLED: Polled = Polled::new();
-
-/// How long the watcher waits between looks: the timer's tick.
-const LOOK_NS: u64 = 10_000_000;
+/// The watcher, for [`look`] to wake.
+static WATCHER: Once<ThreadRef> = Once::new();
 
 /// The node of `/devices/kmsg`, numbered as its id.
 pub struct Kmsg(pub u64);
@@ -94,11 +98,9 @@ pub fn is_kmsg(node: &NodeRef) -> bool {
     radix_vfs::downcast::<Kmsg>(&**node).is_some()
 }
 
-/// A description of it was made: the first wakes the watcher.
+/// A description of it was made.
 pub(super) fn opened() {
-    if OPEN.fetch_add(1, Ordering::AcqRel) == 0 {
-        wait::wake_all(open_key());
-    }
+    OPEN.fetch_add(1, Ordering::AcqRel);
 }
 
 /// A description of it has gone.
@@ -111,14 +113,9 @@ fn key() -> usize {
     core::ptr::addr_of!(SEEN).addr()
 }
 
-/// What the watcher waits on while no description is open.
-fn open_key() -> usize {
-    core::ptr::addr_of!(OPEN).addr()
-}
-
 /// The sequence number the next record logged will have.
 fn next_seq() -> u64 {
-    radix_klog::record_range().end
+    radix_klog::next_seq()
 }
 
 /// The next record a reader at `offset` reads: where the offset says, or
@@ -314,24 +311,40 @@ pub fn events(file: &FileObject) -> u16 {
 
 /// Starts the watcher, which wakes the readers and `poll`.
 pub fn start() {
-    if let Err(err) =
-        sched::spawn("kmsg", watch, 0, Options::new().policy(Policy::Fair { nice: 0 }))
-    {
-        error!("Kernel log: could not start the thread that wakes /devices/kmsg's readers: {err}");
+    match sched::spawn("kmsg", watch, 0, Options::new().policy(Policy::Fair { nice: 0 })) {
+        Ok(watcher) => {
+            let _ = WATCHER.set(watcher);
+        }
+        Err(err) => error!(
+            "Kernel log: could not start the thread that wakes /devices/kmsg's readers: {err}"
+        ),
     }
 }
 
-/// The watcher: while a description is open, looks every tick's time for
-/// records logged since it last looked, and wakes the readers and `poll`
-/// if there are any; while none is, it sleeps.
+/// The watcher: wakes the readers and `poll` if records were logged
+/// since it last did, and sleeps until [`look`] finds one.
 fn watch(_: usize) {
     loop {
-        wait::wait_until(open_key(), "kmsg", || OPEN.load(Ordering::Acquire) > 0);
         let next = next_seq();
         if SEEN.swap(next, Ordering::AcqRel) != next {
             wait::wake_all(key());
             POLLED.changed();
         }
-        sched::sleep_ns(LOOK_NS);
+        // A record logged since the look above has `look` wake the
+        // thread, before it sleeps or after: it then looks once more.
+        sched::block("kmsg");
+    }
+}
+
+/// Wakes the watcher if a description is open and a record was logged
+/// since the readers were last woken. Called from the timer's tick on
+/// every CPU, so within a tick's time of the record: three loads and no
+/// lock when there is none.
+pub fn look() {
+    if OPEN.load(Ordering::Relaxed) == 0 || next_seq() == SEEN.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(watcher) = WATCHER.get() {
+        sched::wake(watcher);
     }
 }

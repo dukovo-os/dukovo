@@ -14,10 +14,11 @@
 #![forbid(unsafe_code)]
 
 mod bar;
+mod named;
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
@@ -25,14 +26,29 @@ use std::time::{Duration, Instant};
 
 use display_pattern::pattern;
 use sysapi::memory::MemoryFile;
+use wayland_client::backend::WaylandError;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
-    wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region,
+    wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
 use wayland_protocols::wp::input_timestamps::zv1::client::{
     zwp_input_timestamps_manager_v1, zwp_input_timestamps_v1,
 };
+use wayland_protocols::wp::pointer_constraints::zv1::client::{
+    zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1,
+};
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
+use wayland_protocols::wp::relative_pointer::zv1::client::{
+    zwp_relative_pointer_manager_v1, zwp_relative_pointer_v1,
+};
+use wayland_protocols::wp::tearing_control::v1::client::{
+    wp_tearing_control_manager_v1, wp_tearing_control_v1,
+};
+use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
@@ -104,6 +120,43 @@ pub enum Heard {
         /// Whether the window is to be drawn maximized.
         maximized: bool,
     },
+    /// The window server asked for the window to be drawn full screen,
+    /// or no longer. The size to draw it at follows ([`Heard::Size`]).
+    Full(bool),
+    /// The window server snapped the window to a side of its screen or
+    /// to a part of one, or the window is no longer snapped. The size
+    /// to draw it at follows ([`Heard::Size`]).
+    Snapped(bool),
+    /// A commit the program asked about ([`Client::ask_shown`]) showed
+    /// on a screen.
+    Shown {
+        /// The time from one beat of the screen to the next, in
+        /// nanoseconds, or 0 if the screen has no steady beat.
+        beat_ns: u32,
+        /// The number of the beat it showed at.
+        beat: u64,
+        /// Whether it showed at a beat, and not at once.
+        at_beat: bool,
+        /// Whether the screen showed the program's pixels from where
+        /// the program drew them.
+        from_own: bool,
+    },
+    /// A commit the program asked about never showed.
+    NotShown,
+    /// The window holds the pointer where it is ([`Client::lock`]), or
+    /// no longer.
+    Locked(bool),
+    /// The window holds the pointer to itself ([`Client::confine`]), or
+    /// no longer.
+    Confined(bool),
+    /// A mouse moved ([`Client::hear_mouse`]).
+    Mouse {
+        /// How far the pointer goes for it, right and down, in
+        /// 256ths of a pixel.
+        by: (i32, i32),
+        /// The mouse's own counts, in 256ths.
+        counts: (i32, i32),
+    },
     /// The popup is done: the person went elsewhere.
     PopupDone,
     /// The window server said who draws the window's frame: itself, or
@@ -125,6 +178,10 @@ pub struct Open {
     /// The program says how it would have the window decorated before
     /// the window is first configured, as a toolkit does.
     pub decoration: Option<Decoration>,
+    /// The program gives the window this name before the window is
+    /// first configured, for the window server to know it again by
+    /// ([`Client::name`]).
+    pub name: Option<&'static str>,
 }
 
 /// How a program would have its window decorated.
@@ -158,6 +215,11 @@ pub struct Screen {
     pub x: i32,
     /// Where its top edge is.
     pub y: i32,
+    /// The whole zoom a program is to draw for it at.
+    pub scale: i32,
+    /// How many quarters, counter-clockwise, the protocol says a
+    /// program's picture is turned by to undo the screen's turn.
+    pub turned: u32,
 }
 
 /// What the window server offers and has said.
@@ -169,8 +231,22 @@ struct Told {
     /// The registry, and the number of the title bar manager's global.
     registry: Option<wl_registry::WlRegistry>,
     title_bars: Option<u32>,
+    /// The number of the global that names windows.
+    names: Option<u32>,
     decorations: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
     times: Option<zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1>,
+    viewporter: Option<wp_viewporter::WpViewporter>,
+    fractions: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    presentation: Option<wp_presentation::WpPresentation>,
+    tearing: Option<wp_tearing_control_manager_v1::WpTearingControlManagerV1>,
+    constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
+    mice: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
+    /// The whole zoom each surface was last told to draw at
+    /// (`wl_surface.preferred_buffer_scale`).
+    zooms: Vec<(wl_surface::WlSurface, i32)>,
+    /// The zoom the window was last told to draw at, in 120ths
+    /// (`wp_fractional_scale_v1.preferred_scale`).
+    fraction: Option<u32>,
     /// The objects that tell the times of the keys and of the pointer,
     /// once the program asked for them.
     told_times: Vec<zwp_input_timestamps_v1::ZwpInputTimestampsV1>,
@@ -179,6 +255,13 @@ struct Told {
     pointer: Option<wl_pointer::WlPointer>,
     /// Each screen, by the number of its global.
     screens: Vec<(u32, Screen)>,
+    /// Each screen's object, by the same number.
+    outputs: Vec<(u32, wl_output::WlOutput)>,
+    /// Whether the window server last asked for the window to be full
+    /// screen.
+    full: bool,
+    /// Whether the window server last said the window is snapped.
+    snapped: bool,
     /// The bytes of the keyboard's layout, once it came.
     layout_bytes: Option<u32>,
     /// How long a held key waits and how often it repeats, once told.
@@ -192,6 +275,9 @@ struct Told {
     asked: (i32, i32, bool),
     /// The serial of the last press of a button.
     pressed: Option<u32>,
+    /// How many times the window server gave a buffer back
+    /// (`wl_buffer.release`).
+    given_back: u32,
     active: bool,
     /// The serial of the pointer's last coming onto the window.
     entered: Option<u32>,
@@ -220,6 +306,25 @@ struct Window {
     /// A second buffer of that size, which the window is drawn into
     /// while the first shows ([`Client::repaint`]).
     spare: Option<(wl_buffer::WlBuffer, File)>,
+    /// The object the window is told its zoom in 120ths through.
+    _fraction: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    /// The object the program says with which part of its buffer
+    /// shows, at which size.
+    view: Option<wp_viewport::WpViewport>,
+    /// The object the program says with that the window's frames need
+    /// not wait for the screen's beat.
+    tearing: Option<wp_tearing_control_v1::WpTearingControlV1>,
+}
+
+/// How a buffer's pixels are a window's points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// As many pixels across and down a point as this
+    /// (`wl_surface.set_buffer_scale`).
+    Zoomed(i32),
+    /// The whole buffer shows this many points wide and tall
+    /// (`wp_viewport.set_destination`).
+    Viewed(i32, i32),
 }
 
 /// A popup of the window, with the buffer it shows and its pixels'
@@ -242,6 +347,25 @@ pub struct Client {
     popup: Option<Popup>,
     /// The pointer's picture over the window, and its pixels' file.
     pointer_shown: Option<(wl_surface::WlSurface, wl_buffer::WlBuffer, File)>,
+    /// Whether the buffers say how much each pixel covers, and if so,
+    /// whether the window says it hides everything under it all the
+    /// same.
+    covers: Option<bool>,
+    /// Whether the program asks, with the window's next commit, to be
+    /// told when that shows.
+    asks_shown: bool,
+    /// The object the window holds the pointer with, where it is or to
+    /// itself.
+    holds: Option<Holds>,
+    /// The object the program hears the mice's own motion through.
+    mouse: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
+}
+
+/// The object a window holds the pointer with.
+#[derive(Debug)]
+enum Holds {
+    Locked(zwp_locked_pointer_v1::ZwpLockedPointerV1),
+    Confined(zwp_confined_pointer_v1::ZwpConfinedPointerV1),
 }
 
 impl Client {
@@ -286,7 +410,21 @@ impl Client {
             return Err(format!("the window server offers no {name}"));
         }
         let connection = connection.clone();
-        Ok(Client { connection, queue, told, window: None, popup: None, pointer_shown: None })
+        let (window, popup, pointer_shown) = (None, None, None);
+        let (covers, asks_shown) = (None, false);
+        let (holds, mouse) = (None, None);
+        Ok(Client {
+            connection,
+            queue,
+            told,
+            window,
+            popup,
+            pointer_shown,
+            covers,
+            asks_shown,
+            holds,
+            mouse,
+        })
     }
 
     /// The screens.
@@ -338,7 +476,14 @@ impl Client {
         if let Some(reading) = self.queue.prepare_read() {
             let came = sysapi::poll::wait_readable(reading.connection_fd(), patience);
             if came.map_err(|err| gone(&err))? {
-                reading.read().map_err(|err| gone(&err))?;
+                match reading.read() {
+                    Ok(_) => {}
+                    // All that came was for the connection itself, as
+                    // that an object's number is free again: nothing
+                    // for the program, which is not the server gone.
+                    Err(WaylandError::Io(err)) if err.kind() == ErrorKind::WouldBlock => {}
+                    Err(err) => return Err(gone(&err)),
+                }
             }
         }
         self.queue.dispatch_pending(&mut self.told).map_err(|err| gone(&err))?;
@@ -364,6 +509,8 @@ impl Client {
         let surface = compositor.create_surface(&handle, ());
         let role = shell.get_xdg_surface(&surface, &handle, Role::Window);
         let toplevel = role.get_toplevel(&handle, ());
+        let fraction = self.told.fractions.as_ref();
+        let fraction = fraction.map(|all| all.get_fractional_scale(&surface, &handle, ()));
         toplevel.set_title("window-test".into());
         toplevel.set_app_id("org.dukovo.window-test".into());
         if how.maximized {
@@ -378,6 +525,9 @@ impl Client {
             shown: None,
             size: (0, 0),
             spare: None,
+            _fraction: fraction,
+            view: None,
+            tearing: None,
         };
         self.window = Some(window);
         if how.shares_bar {
@@ -385,6 +535,9 @@ impl Client {
         }
         if let Some(decoration) = how.decoration {
             self.decorate(decoration)?;
+        }
+        if let Some(name) = how.name {
+            self.name(name)?;
         }
         // A commit with no buffer asks for the first configure.
         self.window()?.surface.commit();
@@ -421,16 +574,270 @@ impl Client {
         self.show_pixels((width, height), &vec![shade; width as usize * 4 * height as usize])
     }
 
-    /// Shows the window with `pixels`, `width` by `height` of them.
-    fn show_pixels(&mut self, (width, height): (u32, u32), pixels: &[u8]) -> Outcome {
+    /// As [`Client::show`], with a buffer of `width` by `height`
+    /// pixels that are the window's points as `drawn` says: for a
+    /// screen that is zoomed, or a picture shown at another size than
+    /// its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::show`], and when the window server does not offer
+    /// what `drawn` needs.
+    pub fn show_as(&mut self, (width, height): (u32, u32), seed: u32, drawn: Drawn) -> Outcome {
+        self.show_pixels_as((width, height), &Client::pattern((width, height), seed), Some(drawn))
+    }
+
+    /// From now on the program's buffers say how much each pixel covers
+    /// (`wl_shm`'s `argb8888`), and the window says of its whole
+    /// surface that it hides what is under it, if `hides_all`, or says
+    /// nothing of the kind.
+    pub fn cover(&mut self, hides_all: bool) {
+        self.covers = Some(hides_all);
+    }
+
+    /// Says of the `width` by `height` points of `surface` what
+    /// [`Client::cover`] was told, if it was told anything.
+    fn say_cover(&self, surface: &wl_surface::WlSurface, (width, height): (u32, u32)) {
+        let (Some(hides_all), Some(compositor)) = (self.covers, &self.told.compositor) else {
+            return;
+        };
+        let region = compositor.create_region(&self.queue.handle(), ());
+        if hides_all {
+            region.add(0, 0, width as i32, height as i32);
+        }
+        surface.set_opaque_region(Some(&region));
+        region.destroy();
+    }
+
+    /// With the window's next commit, the program asks to be told when
+    /// that commit shows ([`Heard::Shown`]) or that it never did
+    /// ([`Heard::NotShown`]).
+    pub fn ask_shown(&mut self) {
+        self.asks_shown = true;
+    }
+
+    /// Asks about the commit of `surface` that comes next, if
+    /// [`Client::ask_shown`] said to.
+    fn ask_about(&mut self, surface: &wl_surface::WlSurface) -> Outcome {
+        if !core::mem::take(&mut self.asks_shown) {
+            return Ok(());
+        }
+        let Some(presentation) = &self.told.presentation else {
+            return Err("the window server offers no wp_presentation".into());
+        };
+        presentation.feedback(surface, &self.queue.handle(), ());
+        Ok(())
+    }
+
+    /// Says that the window's frames need not wait for the screen's
+    /// beat, if `at_once`, or that they do again. It holds from the
+    /// window's next commit on.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, or the window server does not offer
+    /// `wp_tearing_control_manager_v1`.
+    pub fn tear(&mut self, at_once: bool) -> Outcome {
+        use wp_tearing_control_v1::PresentationHint;
+        let handle = self.queue.handle();
+        let Some(tearing) = &self.told.tearing else {
+            return Err("the window server offers no wp_tearing_control_manager_v1".into());
+        };
+        let Some(window) = &mut self.window else { return Err("no window".into()) };
+        let control = window
+            .tearing
+            .get_or_insert_with(|| tearing.get_tearing_control(&window.surface, &handle, ()));
+        control.set_presentation_hint(if at_once {
+            PresentationHint::Async
+        } else {
+            PresentationHint::Vsync
+        });
+        Ok(())
+    }
+
+    /// Asks for the pointer to stay where it is while it is over the
+    /// window and the window is the one the person works in
+    /// ([`Heard::Locked`]): until it first leaves, or, if `lasting`,
+    /// each time it comes back.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, the pointer has not come, or the window
+    /// server does not offer `zwp_pointer_constraints_v1`.
+    pub fn lock(&mut self, lasting: bool) -> Outcome {
+        self.hold(lasting, None, true)
+    }
+
+    /// Asks for the pointer to stay on the window, or on the part
+    /// `region` of it (x, y, width, height), as [`Client::lock`] asks
+    /// for it to stay where it is ([`Heard::Confined`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::lock`].
+    pub fn confine(&mut self, lasting: bool, region: Option<(i32, i32, i32, i32)>) -> Outcome {
+        self.hold(lasting, region, false)
+    }
+
+    /// Asks for the pointer to be held: locked, or confined to `region`
+    /// of the window.
+    fn hold(
+        &mut self,
+        lasting: bool,
+        region: Option<(i32, i32, i32, i32)>,
+        locked: bool,
+    ) -> Outcome {
+        use zwp_pointer_constraints_v1::Lifetime;
+        let handle = self.queue.handle();
+        let (Some(constraints), Some(compositor)) = (&self.told.constraints, &self.told.compositor)
+        else {
+            return Err("the window server offers no zwp_pointer_constraints_v1".into());
+        };
+        let Some(pointer) = &self.told.pointer else { return Err("no pointer yet".into()) };
+        let Some(window) = &self.window else { return Err("no window".into()) };
+        let region = region.map(|(x, y, width, height)| {
+            let region = compositor.create_region(&handle, ());
+            region.add(x, y, width, height);
+            region
+        });
+        let lifetime = if lasting { Lifetime::Persistent } else { Lifetime::Oneshot };
+        let (surface, region) = (&window.surface, region.as_ref());
+        self.holds = Some(if locked {
+            Holds::Locked(constraints.lock_pointer(surface, pointer, region, lifetime, &handle, ()))
+        } else {
+            let confined =
+                constraints.confine_pointer(surface, pointer, region, lifetime, &handle, ());
+            Holds::Confined(confined)
+        });
+        if let Some(region) = region {
+            region.destroy();
+        }
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
+    }
+
+    /// Asks for the pointer to be held a second time, which a window
+    /// may not: the window server refuses it, and the program is
+    /// disconnected.
+    ///
+    /// # Errors
+    ///
+    /// When the window server refuses, as it should.
+    pub fn lock_again(&mut self) -> Outcome {
+        let had = self.holds.take();
+        self.lock(true)?;
+        self.holds = had;
+        self.sent()
+    }
+
+    /// Lets go of the pointer. A window that held it where it was says
+    /// first where it would have it, if `hint` names a place of the
+    /// window.
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone.
+    pub fn let_go(&mut self, hint: Option<(f64, f64)>) -> Outcome {
+        match self.holds.take() {
+            Some(Holds::Locked(locked)) => {
+                if let (Some((x, y)), Some(window)) = (hint, &self.window) {
+                    locked.set_cursor_position_hint(x, y);
+                    // Where the pointer would be is the window's state,
+                    // and holds from its next commit.
+                    window.surface.commit();
+                }
+                locked.destroy();
+            }
+            Some(Holds::Confined(confined)) => confined.destroy(),
+            None => {}
+        }
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
+    }
+
+    /// Asks to hear every motion of a mouse while the pointer is on the
+    /// window, as the mouse made it ([`Heard::Mouse`]).
+    ///
+    /// # Errors
+    ///
+    /// When the pointer has not come, or the window server does not
+    /// offer `zwp_relative_pointer_manager_v1`.
+    pub fn hear_mouse(&mut self) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(mice), Some(pointer)) = (&self.told.mice, &self.told.pointer) else {
+            return Err("no pointer, or no zwp_relative_pointer_manager_v1".into());
+        };
+        self.mouse = Some(mice.get_relative_pointer(pointer, &handle, ()));
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
+    }
+
+    /// Asks for a second object to say the same with, which a window
+    /// may not have: the window server refuses it, and the program is
+    /// disconnected.
+    ///
+    /// # Errors
+    ///
+    /// When the window server refuses, as it should.
+    pub fn tear_again(&mut self) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(tearing), Some(window)) = (&self.told.tearing, &self.window) else {
+            return Err("no window, or no wp_tearing_control_manager_v1".into());
+        };
+        let _second = tearing.get_tearing_control(&window.surface, &handle, ());
+        self.sent()
+    }
+
+    /// The zoom the window was last told to draw at: the whole number
+    /// (`wl_surface.preferred_buffer_scale`) and the 120ths
+    /// (`wp_fractional_scale_v1`), each if it was told.
+    pub fn zoom(&self) -> (Option<i32>, Option<u32>) {
+        let whole = self.window.as_ref().and_then(|window| {
+            let told = self.told.zooms.iter().find(|(surface, _)| *surface == window.surface);
+            told.map(|(_, whole)| *whole)
+        });
+        (whole, self.told.fraction)
+    }
+
+    /// Shows the window with `pixels`, `width` by `height` of them, a
+    /// pixel a point.
+    fn show_pixels(&mut self, size: (u32, u32), pixels: &[u8]) -> Outcome {
+        self.show_pixels_as(size, pixels, None)
+    }
+
+    /// Shows the window with `pixels`, `width` by `height` of them,
+    /// which are its points as `drawn` says, or as they were for
+    /// `None`.
+    fn show_pixels_as(
+        &mut self,
+        (width, height): (u32, u32),
+        pixels: &[u8],
+        drawn: Option<Drawn>,
+    ) -> Outcome {
         if self.window.is_none() {
             self.open(Open::default())?;
         }
         let handle = self.queue.handle();
         let shown = self.buffer((width, height), pixels)?;
+        if let (Some(window), None) = (&self.window, drawn) {
+            self.say_cover(&window.surface, (width, height));
+        }
+        if let Some(surface) = self.window.as_ref().map(|window| window.surface.clone()) {
+            self.ask_about(&surface)?;
+        }
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
             window.role.ack_configure(serial);
+        }
+        match drawn {
+            Some(Drawn::Zoomed(zoom)) => window.surface.set_buffer_scale(zoom),
+            Some(Drawn::Viewed(wide, tall)) => {
+                let Some(viewporter) = &self.told.viewporter else {
+                    return Err("the window server offers no wp_viewporter".into());
+                };
+                let view = window
+                    .view
+                    .get_or_insert_with(|| viewporter.get_viewport(&window.surface, &handle, ()));
+                view.set_destination(wide, tall);
+            }
+            None => {}
         }
         window.surface.attach(Some(&shown.0), 0, 0);
         window.surface.damage_buffer(0, 0, width as i32, height as i32);
@@ -471,6 +878,9 @@ impl Client {
             }
             None => self.buffer((width, height), &pixels)?,
         };
+        if let Some(surface) = self.window.as_ref().map(|window| window.surface.clone()) {
+            self.ask_about(&surface)?;
+        }
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         window.surface.attach(Some(&spare.0), 0, 0);
         window.surface.damage_buffer(0, 0, width as i32, height as i32);
@@ -485,6 +895,20 @@ impl Client {
     fn sent(&mut self) -> Outcome {
         let gone = |err| format!("the window server: {err}");
         self.queue.roundtrip(&mut self.told).map(|_| ()).map_err(gone)
+    }
+
+    /// Waits until the program has read what the window server had to
+    /// say of everything there is now: a screen that came since has
+    /// said its mode and its place.
+    ///
+    /// # Errors
+    ///
+    /// If the window server is gone.
+    pub fn caught_up(&mut self) -> Outcome {
+        // What is offered now, and then what each new thing says of
+        // itself.
+        self.sent()?;
+        self.sent()
     }
 
     /// The window, if it shows.
@@ -565,6 +989,23 @@ impl Client {
         if let Some(window) = &mut self.window {
             window.bar = Some(bar);
         }
+        self.sent()
+    }
+
+    /// Gives the window the name `name`, which the window server knows
+    /// it again by: a window of that name shows where the last one was.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window, the window server does not offer to
+    /// know windows again, or it refuses the name.
+    pub fn name(&mut self, name: &str) -> Outcome {
+        let backend = self.connection.backend();
+        let (Some(registry), Some(global)) = (&self.told.registry, self.told.names) else {
+            return Err("the window server offers no names for windows".into());
+        };
+        let toplevel = self.window()?.toplevel.id();
+        named::name(&backend, &registry.id(), global, &toplevel, name)?;
         self.sent()
     }
 
@@ -674,6 +1115,35 @@ impl Client {
         self.sent()
     }
 
+    /// Asks the window server to show the window full screen, on the
+    /// screen named `on` or on the one the window server chooses, or
+    /// for `full` false to show it as it was before. The window server
+    /// then says so ([`Heard::Full`]) and asks for a size
+    /// ([`Heard::Size`]). The window may be one that is open and not
+    /// yet drawn.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window or no screen of that name, or the
+    /// window server is gone.
+    pub fn full(&mut self, full: bool, on: Option<&str>) -> Outcome {
+        let toplevel = &self.window()?.toplevel;
+        let screen = match on {
+            None => None,
+            Some(name) => {
+                let named = self.told.screens.iter().find(|(_, screen)| screen.name == name);
+                let global = named.ok_or("no screen of that name")?.0;
+                self.told.outputs.iter().find(|(other, _)| *other == global).map(|found| &found.1)
+            }
+        };
+        if full {
+            toplevel.set_fullscreen(screen);
+        } else {
+            toplevel.unset_fullscreen();
+        }
+        self.sent()
+    }
+
     /// Asks the window server to minimize the window.
     ///
     /// # Errors
@@ -768,6 +1238,9 @@ impl Client {
     /// When no window shows, or the window server is gone.
     pub fn ask_frame(&mut self) -> Outcome {
         let handle = self.queue.handle();
+        if let Some(surface) = self.window.as_ref().map(|window| window.surface.clone()) {
+            self.ask_about(&surface)?;
+        }
         let Some(window) = &self.window else { return Err("no window".into()) };
         window.surface.frame(&handle, ());
         window.surface.commit();
@@ -876,7 +1349,11 @@ impl Client {
             return Err("the window server offers no wl_shm".into());
         };
         let pool = shm.create_pool(file.as_fd(), pixels.len() as i32, &handle, ());
-        let (stride, format) = (row_bytes as i32, wl_shm::Format::Xrgb8888);
+        let format = match self.covers {
+            Some(_) => wl_shm::Format::Argb8888,
+            None => wl_shm::Format::Xrgb8888,
+        };
+        let stride = row_bytes as i32;
         let buffer =
             pool.create_buffer(0, width as i32, height as i32, stride, format, &handle, ());
         pool.destroy();
@@ -967,10 +1444,50 @@ impl Client {
         }
     }
 
+    /// The size the window server last asked for the window's own
+    /// pixels to be, where 0 leaves a side to the program, and whether
+    /// it asked for the window to be drawn maximized.
+    pub fn asked(&self) -> (i32, i32, bool) {
+        self.told.asked
+    }
+
+    /// Takes the window away, as a program does that closes it and
+    /// goes on running: the program may ask for another.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window, or the window server is gone.
+    pub fn close_window(&mut self) -> Outcome {
+        let Some(window) = self.window.take() else { return Err("no window".into()) };
+        if let Some(decoration) = window.decoration {
+            decoration.destroy();
+        }
+        if let Some(bar) = window.bar {
+            bar.give_back()?;
+        }
+        window.toplevel.destroy();
+        window.role.destroy();
+        window.surface.destroy();
+        for (buffer, _) in window.shown.into_iter().chain(window.spare) {
+            buffer.destroy();
+        }
+        // The next window is told everything anew.
+        (self.told.asked, self.told.configured) = ((0, 0, false), None);
+        (self.told.active, self.told.full, self.told.snapped) = (false, false, false);
+        (self.holds, self.told.heard) = (None, VecDeque::new());
+        self.sent()
+    }
+
     /// Whether the window is the one the person works in, as the window
     /// server last said.
     pub fn active(&self) -> bool {
         self.told.active
+    }
+
+    /// How many times the window server has given a buffer back to the
+    /// program to draw in again, of those the program still has.
+    pub fn given_back(&self) -> u32 {
+        self.told.given_back
     }
 }
 
@@ -986,7 +1503,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
         match event {
             wl_registry::Event::Global { name, interface, version } => match interface.as_str() {
                 "wl_compositor" => {
-                    told.compositor = Some(registry.bind(name, version.min(4), handle, ()));
+                    told.compositor = Some(registry.bind(name, version.min(6), handle, ()));
                 }
                 "wl_shm" => told.shm = Some(registry.bind(name, 1, handle, ())),
                 "xdg_wm_base" => told.shell = Some(registry.bind(name, version.min(2), handle, ())),
@@ -995,17 +1512,33 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                     told.decorations = Some(registry.bind(name, 1, handle, ()));
                 }
                 "dukovo_title_bar_manager_v1" => told.title_bars = Some(name),
+                "dukovo_session_manager_v1" => told.names = Some(name),
                 "zwp_input_timestamps_manager_v1" => {
                     told.times = Some(registry.bind(name, 1, handle, ()));
                 }
+                "wp_viewporter" => told.viewporter = Some(registry.bind(name, 1, handle, ())),
+                "wp_presentation" => told.presentation = Some(registry.bind(name, 1, handle, ())),
+                "zwp_pointer_constraints_v1" => {
+                    told.constraints = Some(registry.bind(name, 1, handle, ()));
+                }
+                "zwp_relative_pointer_manager_v1" => {
+                    told.mice = Some(registry.bind(name, 1, handle, ()));
+                }
+                "wp_tearing_control_manager_v1" => {
+                    told.tearing = Some(registry.bind(name, 1, handle, ()));
+                }
+                "wp_fractional_scale_manager_v1" => {
+                    told.fractions = Some(registry.bind(name, 1, handle, ()));
+                }
                 "wl_output" => {
-                    let _: wl_output::WlOutput = registry.bind(name, version.min(4), handle, name);
+                    told.outputs.push((name, registry.bind(name, version.min(4), handle, name)));
                     told.screens.push((name, Screen::default()));
                 }
                 _ => {}
             },
             wl_registry::Event::GlobalRemove { name } => {
                 told.screens.retain(|(screen, _)| *screen != name);
+                told.outputs.retain(|(screen, _)| *screen != name);
             }
             _ => {}
         }
@@ -1025,7 +1558,16 @@ impl Dispatch<wl_output::WlOutput, u32> for Told {
             return;
         };
         match event {
-            wl_output::Event::Geometry { x, y, .. } => (screen.x, screen.y) = (x, y),
+            wl_output::Event::Geometry { x, y, transform, .. } => {
+                (screen.x, screen.y) = (x, y);
+                screen.turned = match transform {
+                    WEnum::Value(wl_output::Transform::_90) => 1,
+                    WEnum::Value(wl_output::Transform::_180) => 2,
+                    WEnum::Value(wl_output::Transform::_270) => 3,
+                    _ => 0,
+                };
+            }
+            wl_output::Event::Scale { factor } => screen.scale = factor,
             wl_output::Event::Mode { flags: WEnum::Value(flags), width, height, .. }
                 if flags.contains(wl_output::Mode::Current) =>
             {
@@ -1187,6 +1729,17 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Told {
                     told.active = active;
                     told.heard.push_back(Heard::Active(active));
                 }
+                let full = has(xdg_toplevel::State::Fullscreen);
+                if full != told.full {
+                    told.full = full;
+                    told.heard.push_back(Heard::Full(full));
+                }
+                use xdg_toplevel::State::{TiledBottom, TiledLeft, TiledRight, TiledTop};
+                let snapped = [TiledLeft, TiledRight, TiledTop, TiledBottom].into_iter().any(has);
+                if snapped != told.snapped {
+                    told.snapped = snapped;
+                    told.heard.push_back(Heard::Snapped(snapped));
+                }
                 let asked = (width, height, has(xdg_toplevel::State::Maximized));
                 if asked != told.asked {
                     told.asked = asked;
@@ -1230,6 +1783,110 @@ impl Dispatch<wl_callback::WlCallback, ()> for Told {
     }
 }
 
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _feedback: &wp_presentation_feedback::WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        use wp_presentation_feedback::{Event, Kind};
+        match event {
+            Event::Presented { refresh, seq_hi, seq_lo, flags, .. } => {
+                let flags = flags.into_result().unwrap_or(Kind::empty());
+                told.heard.push_back(Heard::Shown {
+                    beat_ns: refresh,
+                    beat: u64::from(seq_hi) << 32 | u64::from(seq_lo),
+                    at_beat: flags.contains(Kind::Vsync),
+                    from_own: flags.contains(Kind::ZeroCopy),
+                });
+            }
+            Event::Discarded => told.heard.push_back(Heard::NotShown),
+            // Which screen it showed on.
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _locked: &zwp_locked_pointer_v1::ZwpLockedPointerV1,
+        event: zwp_locked_pointer_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        use zwp_locked_pointer_v1::Event;
+        match event {
+            Event::Locked => told.heard.push_back(Heard::Locked(true)),
+            Event::Unlocked => told.heard.push_back(Heard::Locked(false)),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_confined_pointer_v1::ZwpConfinedPointerV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _confined: &zwp_confined_pointer_v1::ZwpConfinedPointerV1,
+        event: zwp_confined_pointer_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        use zwp_confined_pointer_v1::Event;
+        match event {
+            Event::Confined => told.heard.push_back(Heard::Confined(true)),
+            Event::Unconfined => told.heard.push_back(Heard::Confined(false)),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _mouse: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
+        event: zwp_relative_pointer_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let zwp_relative_pointer_v1::Event::RelativeMotion {
+            dx,
+            dy,
+            dx_unaccel,
+            dy_unaccel,
+            ..
+        } = event
+        {
+            let part = |pixels: f64| (pixels * 256.0).round() as i32;
+            told.heard.push_back(Heard::Mouse {
+                by: (part(dx), part(dy)),
+                counts: (part(dx_unaccel), part(dy_unaccel)),
+            });
+        }
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let wl_buffer::Event::Release = event {
+            told.given_back += 1;
+        }
+    }
+}
+
 impl Dispatch<zwp_input_timestamps_v1::ZwpInputTimestampsV1, ()> for Told {
     fn event(
         told: &mut Told,
@@ -1247,10 +1904,47 @@ impl Dispatch<zwp_input_timestamps_v1::ZwpInputTimestampsV1, ()> for Told {
 }
 
 delegate_noop!(Told: wl_compositor::WlCompositor);
+delegate_noop!(Told: wl_region::WlRegion);
+delegate_noop!(Told: ignore wp_presentation::WpPresentation);
+delegate_noop!(Told: wp_tearing_control_manager_v1::WpTearingControlManagerV1);
+delegate_noop!(Told: wp_tearing_control_v1::WpTearingControlV1);
+delegate_noop!(Told: zwp_pointer_constraints_v1::ZwpPointerConstraintsV1);
+delegate_noop!(Told: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1);
 delegate_noop!(Told: xdg_positioner::XdgPositioner);
 delegate_noop!(Told: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Told: zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1);
 delegate_noop!(Told: ignore wl_shm::WlShm);
 delegate_noop!(Told: wl_shm_pool::WlShmPool);
-delegate_noop!(Told: ignore wl_buffer::WlBuffer);
-delegate_noop!(Told: ignore wl_surface::WlSurface);
+delegate_noop!(Told: wp_viewporter::WpViewporter);
+delegate_noop!(Told: wp_viewport::WpViewport);
+delegate_noop!(Told: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+
+impl Dispatch<wl_surface::WlSurface, ()> for Told {
+    fn event(
+        told: &mut Told,
+        surface: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        let wl_surface::Event::PreferredBufferScale { factor } = event else { return };
+        told.zooms.retain(|(other, _)| other != surface);
+        told.zooms.push((surface.clone(), factor));
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _fraction: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            told.fraction = Some(scale);
+        }
+    }
+}

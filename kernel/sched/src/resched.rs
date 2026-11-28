@@ -95,6 +95,24 @@ impl Resched {
         }
     }
 
+    /// Puts `entry`, an address aligned to [`ENTRY_ALIGN`] that links to
+    /// no entry before it, in the inbox of the CPU that owns the word, from
+    /// another CPU, and asks that CPU to switch, if its idle thread watches
+    /// the word with nothing asked for and nothing in the inbox. Returns
+    /// whether it did; no interrupt is needed then.
+    ///
+    /// A waker that would choose that CPU anyway if it were idle needs to
+    /// know nothing else of it, so it reads none of its lines first: the
+    /// exchange brings the word's line here once, to own. Reading the
+    /// CPU's load first brings the line to share, and the exchange then
+    /// takes it from the idle CPU a second time.
+    #[inline]
+    pub fn hand_over_to_idle(&self, entry: usize) -> bool {
+        debug_assert!(entry != 0 && entry & FLAGS == 0, "an inbox entry must be aligned");
+        let handed = entry | WATCHED | PENDING | REMOTE;
+        self.0.compare_exchange(WATCHED, handed, Ordering::SeqCst, Ordering::Relaxed).is_ok()
+    }
+
     /// Withdraws the request, as the switch it asked for begins, and
     /// empties the inbox. Returns `None` if no switch was asked for, else
     /// the address of the inbox's newest entry, or 0 if it was empty. Only
@@ -227,6 +245,68 @@ mod tests {
         assert_eq!(links, [0, 0x1000, 0x2000]);
         assert_eq!(word.take(), Some(0x3000));
         assert_eq!(word.take(), None, "taking empties the inbox");
+    }
+
+    #[test]
+    fn handing_over_to_an_idle_cpu_needs_it_watching_with_nothing_asked() {
+        let word = Resched::new();
+        assert!(!word.hand_over_to_idle(0x1000), "unwatched");
+        assert_eq!(word.take(), None, "a refused hand-over leaves the word");
+        word.watch();
+        assert!(word.hand_over_to_idle(0x1000), "watched, nothing asked");
+        assert!(word.pending() && word.remote());
+        assert!(!word.hand_over_to_idle(0x2000), "the inbox holds an entry");
+        assert!(word.unwatch());
+        assert_eq!(word.take(), Some(0x1000));
+        word.watch();
+        word.request();
+        assert!(!word.hand_over_to_idle(0x2000), "a switch is asked for already");
+        word.unwatch();
+        assert_eq!(word.take(), Some(0), "the refused entry is not in the inbox");
+    }
+
+    /// Wakers race to hand over to an idle CPU, which takes the inbox now
+    /// and then and watches again: each entry is in the inbox alone when
+    /// taken, and none is lost or taken twice.
+    #[test]
+    fn handing_over_to_an_idle_cpu_puts_one_entry_in_at_a_time() {
+        const WAKERS: usize = 4;
+        const EACH: usize = 500;
+        let word = Arc::new(Resched::new());
+        word.watch();
+        let wakers: Vec<_> = (0..WAKERS)
+            .map(|w| {
+                let word = Arc::clone(&word);
+                std::thread::spawn(move || {
+                    for i in 0..EACH {
+                        let entry = (w * EACH + i + 1) * ENTRY_ALIGN;
+                        while !word.hand_over_to_idle(entry) {
+                            std::hint::spin_loop();
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut taken = vec![false; WAKERS * EACH];
+        let mut count = 0;
+        while count < WAKERS * EACH {
+            if !word.pending() {
+                std::hint::spin_loop();
+                continue;
+            }
+            word.unwatch();
+            let entry = word.take().unwrap();
+            let index = entry / ENTRY_ALIGN - 1;
+            assert!(!taken[index], "entry {entry:#x} taken twice");
+            taken[index] = true;
+            count += 1;
+            word.watch();
+        }
+        for waker in wakers {
+            waker.join().unwrap();
+        }
+        word.unwatch();
+        assert_eq!(word.take(), None);
     }
 
     #[test]

@@ -105,9 +105,9 @@ echo "Measuring the benchmarks of ob bench on Linux (a few minutes)."
     echo "machine: $(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')"
     echo "kernel: $(uname -sr)"
     if grep -qw mitigations=off /proc/cmdline; then
-        echo "mitigations: off"
+        echo "mitigations: off; boot the live system without mitigations=off, as the handbook says"
     else
-        echo "mitigations: on; boot the live system with mitigations=off, as the handbook says"
+        echo "mitigations: default"
     fi
     cat "$work/dukovo"
     "$work/linux-bench" --posix-bench "$work/posix-bench" | sed 's/^/linux: /'

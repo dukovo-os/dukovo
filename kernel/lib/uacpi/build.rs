@@ -66,6 +66,11 @@ const KERNEL: &[&str] = &[
     // Every kernel function starts a cache line, as rustc's are made to
     // (ADR 0411).
     "-falign-functions=64",
+    // Indirect branches and returns through the kernel's thunks, as
+    // rustc's are made to (ADR 0793).
+    "-mretpoline-external-thunk",
+    "-mfunction-return=thunk-extern",
+    "-mindirect-branch-cs-prefix",
 ];
 
 /// The flags of the host's build, for the tests.

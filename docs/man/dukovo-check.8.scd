@@ -21,6 +21,7 @@ hurts: whether other machines can reach more than they should, whether
 SSH takes passwords from anyone, whether an account has no password,
 whether an update is waiting, whether the clock was set, whether a
 service gave up, whether an early warning is still active, whether
+the processor's microcode cannot close a flaw, whether
 alerts reach anyone beyond the screen, and whether the people's files
 have snapshots. It says for each thing whether it
 passed, gave a warning, failed, or could not be looked at. It needs an
@@ -125,6 +126,9 @@ its result in the same way.
 |  health
 :  hardware
 :  The last *hardware check* warned or failed: one line for each of its warnings and failures, under its own HW ID. Skipped when none has run: *dukovo-check* does not run one, which takes minutes
+|  health
+:  processor flaws
+:  The kernel says in _/kernel/devices/system/cpu/vulnerabilities_ (*radix-sysfs*(5)) that a speculative-execution flaw is open because the processor's microcode lacks what closes it, naming each as its file does: one line for all of them (*SEC-180*). The fix is a newer microcode, in a newer firmware set or in the BIOS update from the machine's maker. Flaws open for other reasons, and any in a virtual machine, whose host's microcode counts, are named in the line that passes. Skipped where the kernel keeps no such files
 |  alerts
 :  reach
 :  At least one channel is set up (an email account, a webhook or a browser, as *alerts status* lists them), and none took a message in the last 24 hours while each failed in that time: its last failure is within 24 hours and later than its last success, or it has never had one (*SEC-170*). It passes, saying which channels took a message, when one did; when channels are set and have had nothing to send; and, with the words "no channel is set up: alerts reach this server's screens", on a computer with none, which is how every computer is installed. It is skipped, as "alertd did not answer", when *alertd*(8) cannot be asked
@@ -270,6 +274,9 @@ says what it means, why it matters and what to do.
 |  SEC-170
 :  alerts
 :  No alert has reached anyone for a day: each channel that is set up failed, and none took a message
+|  SEC-180
+:  health
+:  The processor's microcode cannot close a speculative-execution flaw
 
 A line of *health* that repeats another tool's finding has that tool's
 ID: *MET-101* to *MET-104* for the early warnings of *metricsd*(8), and

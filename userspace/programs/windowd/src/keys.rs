@@ -14,16 +14,22 @@
 //! console of that number, as it does at a console (consoled(8)).
 //! Ctrl+Alt+Backspace ends the desktop. The window manager's own are
 //! Alt+Tab and Alt+Shift+Tab for the list of windows, Alt+F4 to close
-//! a window, Alt+Space for its menu, and the Super key with the up or
-//! the down arrow to maximize, restore or minimize it; Super pressed
-//! and let go alone shows the list.
+//! a window, Alt+Space for its menu, and the Super key: with an arrow
+//! to snap a window to a side of its screen or a part of one, to
+//! maximize, restore or minimize it; with Shift and the left or the
+//! right arrow to carry it to the next screen; with Ctrl and D, F4 or
+//! an arrow for the screen's desktops. Super pressed and let go alone
+//! shows the list.
 
 use input::abi::{
-    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12, KEY_LEFTALT,
-    KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHTALT, KEY_RIGHTCTRL,
-    KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB, KEY_UP,
+    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_D, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12,
+    KEY_LEFT, KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHT,
+    KEY_RIGHTALT, KEY_RIGHTCTRL, KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB,
+    KEY_UP,
 };
 use smithay::input::keyboard::{LedState, ModifiersState};
+
+use crate::windows::zones::Arrow;
 
 /// The XKB layout and variant of the consoles' layout `name`.
 pub fn xkb_names(name: &str) -> (&str, &str) {
@@ -72,11 +78,29 @@ pub enum Ask {
     Close,
     /// That window's menu.
     Menu,
-    /// That window is to be maximized.
-    Up,
-    /// That window is to be restored if it is maximized, and minimized
-    /// if it is not.
-    Down,
+    /// That window is to do what Super with this arrow has it do
+    /// ([`crate::windows::zones::after`]): fill a side of its screen
+    /// or a part of one, be maximized, restored or minimized.
+    Arrow(Arrow),
+    /// That window is to go to the next screen from left to right, or
+    /// to the one before for `back`.
+    ToScreen {
+        /// Whether to the screen before.
+        back: bool,
+    },
+    /// The screen the pointer is on is to have a new desktop, after
+    /// the one that shows.
+    DeskNew,
+    /// The desktop that shows there is to close.
+    DeskClose,
+    /// The desktop after it is to show, or the one before for `back`;
+    /// that window goes along for `along`.
+    DeskStep {
+        /// Whether the desktop before.
+        back: bool,
+        /// Whether the window the person works in goes along.
+        along: bool,
+    },
 }
 
 /// What pressing the key of Linux code `code` asks of the window
@@ -84,13 +108,23 @@ pub enum Ask {
 pub fn ask(held: &ModifiersState, code: u16) -> Option<Ask> {
     let alt_alone = held.alt && !held.ctrl && !held.logo;
     let super_alone = held.logo && !held.ctrl && !held.alt && !held.shift;
+    let super_shift = held.logo && held.shift && !held.ctrl && !held.alt;
+    let super_ctrl = held.logo && held.ctrl && !held.alt;
     match code {
         KEY_TAB if alt_alone && held.shift => Some(Ask::Previous),
         KEY_TAB if alt_alone => Some(Ask::Next),
         KEY_F4 if alt_alone && !held.shift => Some(Ask::Close),
         KEY_SPACE if alt_alone && !held.shift => Some(Ask::Menu),
-        KEY_UP if super_alone => Some(Ask::Up),
-        KEY_DOWN if super_alone => Some(Ask::Down),
+        KEY_UP if super_alone => Some(Ask::Arrow(Arrow::Up)),
+        KEY_DOWN if super_alone => Some(Ask::Arrow(Arrow::Down)),
+        KEY_LEFT if super_alone => Some(Ask::Arrow(Arrow::Left)),
+        KEY_RIGHT if super_alone => Some(Ask::Arrow(Arrow::Right)),
+        KEY_D if super_ctrl && !held.shift => Some(Ask::DeskNew),
+        KEY_F4 if super_ctrl && !held.shift => Some(Ask::DeskClose),
+        KEY_LEFT if super_ctrl => Some(Ask::DeskStep { back: true, along: held.shift }),
+        KEY_RIGHT if super_ctrl => Some(Ask::DeskStep { back: false, along: held.shift }),
+        KEY_LEFT if super_shift => Some(Ask::ToScreen { back: true }),
+        KEY_RIGHT if super_shift => Some(Ask::ToScreen { back: false }),
         _ => None,
     }
 }
@@ -166,8 +200,15 @@ mod tests {
         assert_eq!(ask(&held(true, false, true), KEY_TAB), Some(Ask::Previous));
         assert_eq!(ask(&held(true, false, false), KEY_F4), Some(Ask::Close));
         assert_eq!(ask(&held(true, false, false), KEY_SPACE), Some(Ask::Menu));
-        assert_eq!(ask(&held(false, true, false), KEY_UP), Some(Ask::Up));
-        assert_eq!(ask(&held(false, true, false), KEY_DOWN), Some(Ask::Down));
+        let arrow = |arrow| Some(Ask::Arrow(arrow));
+        assert_eq!(ask(&held(false, true, false), KEY_UP), arrow(Arrow::Up));
+        assert_eq!(ask(&held(false, true, false), KEY_DOWN), arrow(Arrow::Down));
+        assert_eq!(ask(&held(false, true, false), KEY_LEFT), arrow(Arrow::Left));
+        assert_eq!(ask(&held(false, true, false), KEY_RIGHT), arrow(Arrow::Right));
+        let to_screen = |back| Some(Ask::ToScreen { back });
+        assert_eq!(ask(&held(false, true, true), KEY_LEFT), to_screen(true));
+        assert_eq!(ask(&held(false, true, true), KEY_RIGHT), to_screen(false));
+        assert_eq!(ask(&held(true, true, false), KEY_LEFT), None);
         // Not with another modifier, and not the key alone.
         assert_eq!(ask(&held(false, false, false), KEY_TAB), None);
         assert_eq!(ask(&held(true, true, false), KEY_TAB), None);

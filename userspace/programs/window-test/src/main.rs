@@ -15,10 +15,14 @@
 //! which lent the desktop the screens: the desktop goes on. `alone` goes
 //! through what needs nobody at the keyboard and leaves consoled be, for
 //! a machine in the lab: it also asks for its window to be maximized,
-//! which with its frame then fills the screen, and has it back. `windows` is the boot test of window management
-//! ([`windows`]): the host works two windows with the pointer and the
-//! keys, and the program says what the screen shows after each. `cost`
-//! does the work `ob bench --desktop` measures ([`cost`]).
+//! which with its frame then fills the screen, and has it back.
+//! `windows` is the boot test of window management ([`windows`]): the
+//! host works two windows with the pointer and the keys, and the
+//! program says what the screen shows after each. `screens` is the boot
+//! test of the desktop on two screens ([`screens`]). `cost` does the
+//! work `ob bench --desktop` measures ([`cost`]). `panes` shows three
+//! windows that stay, for a person who tries the desktop by hand
+//! ([`panes`]).
 //!
 //! `in-desktop` starts the desktop itself, with the program in it, once
 //! consoled is there to lend the screens. A boot test's command starts
@@ -28,6 +32,8 @@
 #![forbid(unsafe_code)]
 
 mod cost;
+mod panes;
+mod screens;
 mod windows;
 
 use std::path::Path;
@@ -359,13 +365,15 @@ fn main() -> ExitCode {
         ["alone"] => alone(),
         ["cost"] => cost::run(),
         ["windows"] => windows::run(),
+        ["screens"] => screens::run(),
+        ["panes"] => panes::run(),
         // The program in the desktop has said whether it passed.
         ["in-desktop", ref inside @ ..] => match in_desktop(inside) {
             Ok(()) => return ExitCode::SUCCESS,
             failed => failed,
         },
         _ => {
-            Err("usage: window-test [in-desktop] steps [pointer-drawn] | windows | alone | cost"
+            Err("usage: window-test [in-desktop] steps [pointer-drawn] | windows | screens | panes | alone | cost"
                 .into())
         }
     };

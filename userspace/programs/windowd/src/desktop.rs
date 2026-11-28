@@ -17,6 +17,7 @@
 use std::io;
 use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use display::Holder;
@@ -25,21 +26,24 @@ use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::backend::renderer::Bind;
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::input::keyboard::{FilterResult, XkbConfig};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use sysapi::time::monotonic_ns;
 
 use crate::clients::Clients;
+use crate::constraints::{self, Held, Kind};
 use crate::curve::Curve;
 use crate::keys::{self, Ask, Chord};
 use crate::link::Link;
 use crate::manager::Manager;
+use crate::places::Places;
 use crate::pointer::{Arrows, Picture, Shown};
 use crate::scene::Scene;
 use crate::screens::{Failed, Pointing, Screens, Told};
 use crate::settings::Settings;
+use crate::settings::screens::ScreensSet;
 use crate::shell::Shell;
 use crate::windows::Under;
 
@@ -80,6 +84,11 @@ where
     clients: Clients,
     renderer: PixmanRenderer,
     screens: Screens<L>,
+    /// What the person has set of the screens.
+    screens_set: ScreensSet,
+    /// What of the settings could not be followed, a line for each
+    /// thing, until `main` says it.
+    said: Vec<String>,
     manager: Manager,
     /// What is under the pointer.
     under: Under,
@@ -134,13 +143,18 @@ where
         added.map_err(|err| start("the keyboard's layout", &err))?;
         let mut renderer = PixmanRenderer::new()?;
         let mut screens = Screens::new(holder);
-        screens.arrange(&mut renderer, &mut shell, &display.handle())?;
+        // As built, until the person's settings are laid
+        // ([`Desktop::set`]).
+        let screens_set = ScreensSet::default();
+        screens.arrange(&mut renderer, &mut shell, &display.handle(), &screens_set)?;
         let mut desktop = Desktop {
             display,
             shell,
             clients: Clients::default(),
             renderer,
             screens,
+            screens_set,
+            said: Vec::new(),
             manager: Manager::default(),
             under: Under::Nothing,
             pictures: Arrows::default(),
@@ -160,7 +174,11 @@ where
     /// Has the desktop be as `settings`, the person's, say
     /// (windowd.json(5)): from here on, and for the windows and the
     /// programs that are there.
-    pub fn set(&mut self, settings: &Settings) {
+    ///
+    /// # Errors
+    ///
+    /// What showing on the screens as they are set fails with.
+    pub fn set(&mut self, settings: &Settings) -> Result<(), Failed> {
         self.curve.set_speed(settings.pointer_speed);
         self.manager.double_click_ns = u64::from(settings.double_click_ms) * 1_000_000;
         if let Some(keyboard) = self.shell.seat.get_keyboard() {
@@ -170,7 +188,46 @@ where
         }
         self.shell.title_bars = settings.title_bars.clone();
         self.shell.settle_bars();
+        if self.screens_set != settings.screens {
+            self.screens_set = settings.screens.clone();
+            self.arrange()?;
+        }
         self.settle();
+        Ok(())
+    }
+
+    /// Keeps where the windows their programs name are in `file`, and
+    /// shows those that were there before where the file has them
+    /// ([`crate::places`]).
+    pub fn keep_places(&mut self, file: PathBuf) {
+        let (places, wrong) = Places::read(file);
+        self.shell.places = places;
+        self.said.extend(wrong.map(|wrong| format!("the windows' places: {wrong}")));
+    }
+
+    /// Writes where the windows are to the file they are kept in, if
+    /// they changed since it was written.
+    pub fn write_places(&mut self) {
+        if let Err(why) = self.shell.places.write() {
+            self.said.push(format!("the windows' places are not kept: {why}"));
+        }
+    }
+
+    /// What of the settings could not be followed, and what else the
+    /// person is to read, since this was last asked: a line for each
+    /// thing.
+    pub fn said(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.said)
+    }
+
+    /// Shows on the screens there are now, as the person has set them.
+    fn arrange(&mut self) -> Result<(), Failed> {
+        let display = self.display.handle();
+        let (renderer, shell) = (&mut self.renderer, &mut self.shell);
+        let said = self.screens.arrange(renderer, shell, &display, &self.screens_set)?;
+        self.said.extend(said);
+        self.put_pointer();
+        Ok(())
     }
 
     /// The applications the person chose, from a window's menu, to
@@ -189,6 +246,12 @@ where
     #[cfg(test)]
     pub fn front(&self) -> bool {
         self.screens.front()
+    }
+
+    /// Where the pointer is on the desktop.
+    #[cfg(test)]
+    pub fn pointer_at(&self) -> (f64, f64) {
+        self.shell.pointer_at().into()
     }
 
     /// Puts the pointer in the middle of the first screen.
@@ -242,6 +305,8 @@ where
         let changed = core::mem::take(&mut self.shell.changed);
         if changed.windows {
             self.find_under();
+            let placed = self.shell.windows.placed();
+            self.shell.places.note(placed);
         }
         let stale = self.look() | changed.windows | changed.pointer;
         if changed.pointer {
@@ -250,8 +315,50 @@ where
         if stale {
             self.screens.stale();
         }
+        self.constrain();
         // What the steps above sent, as the first flush.
         let _ = self.display.flush_clients();
+    }
+
+    /// Settles which surface holds the pointer now, locked or confined
+    /// ([`crate::constraints`]): the one under it whose program asked,
+    /// if its window is the one the person works in and the window
+    /// manager has no hold of the pointer. A lock that ended leaves the
+    /// pointer where its program said it would have it, if that is on
+    /// the surface still.
+    fn constrain(&mut self) {
+        let Some(pointer) = self.shell.seat.get_pointer() else { return };
+        let now = match &self.under {
+            Under::Surface { window, surface, at }
+                if !self.manager.takes_pointer()
+                    && self.shell.active() == Some(window)
+                    && pointer.current_focus().as_ref() == Some(surface) =>
+            {
+                let within = pointer.current_location() - *at;
+                let kind = constraints::takes(surface, &pointer, within);
+                kind.map(|kind| Held { surface: surface.clone(), at: *at, kind })
+            }
+            _ => None,
+        };
+        let Some(before) = core::mem::replace(&mut self.shell.held, now) else { return };
+        let held = self.shell.held.as_ref();
+        if held.is_some_and(|held| held.same(&before)) {
+            return;
+        }
+        // The pointer is over the surface still, and its window is not
+        // the person's any more, or the window manager has the pointer.
+        if held.is_none_or(|held| held.surface != before.surface) {
+            constraints::ends(&before.surface, &pointer);
+        }
+        let Kind::Locked { hint: Some(hint) } = before.kind else { return };
+        let to = before.at + hint;
+        let on_it = matches!(
+            self.shell.windows.under(to),
+            Under::Surface { surface, .. } if surface == before.surface
+        );
+        if on_it && !self.manager.takes_pointer() {
+            self.point(monotonic_ns(), to);
+        }
     }
 
     /// Has the frames and the pointer show what they should now: the
@@ -318,11 +425,7 @@ where
                 self.shell.frame_shown(&screen, Duration::from_nanos(time_ns));
             }
             Told::Front => self.put_pointer(),
-            Told::Rearrange => {
-                let display = self.display.handle();
-                self.screens.arrange(&mut self.renderer, &mut self.shell, &display)?;
-                self.put_pointer();
-            }
+            Told::Rearrange => self.arrange()?,
         }
         self.settle();
         Ok(())
@@ -344,6 +447,7 @@ where
         let Some(keyboard) = self.shell.seat.get_keyboard() else { return };
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         let (kept, takes) = (&mut self.kept, self.manager.takes_keys());
+        let offers = self.manager.offers();
         let serial = SERIAL_COUNTER.next_serial();
         // XKB's codes are Linux's and 8.
         let xkb = (u32::from(code) + 8).into();
@@ -360,7 +464,7 @@ where
                     Kept::Chord(chord)
                 } else if keys::modifier(code) {
                     return FilterResult::Forward;
-                } else if takes {
+                } else if takes && !(offers && keys::ask(held, code).is_some()) {
                     Kept::Key { ctrl: held.ctrl, shift: held.shift }
                 } else if let Some(ask) = keys::ask(held, code) {
                     Kept::Ask(ask)
@@ -438,7 +542,24 @@ where
     pub fn moved(&mut self, time_ns: u64, dx: i32, dy: i32) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
         let by: Point<f64, Logical> = self.curve.moved(time_ns, dx, dy).into();
-        self.point(time_ns, pointer.current_location() + by);
+        // The program with the pointer hears the motion as the mouse
+        // made it too, if it asked: how far the pointer goes for it,
+        // held or not, and the mouse's own counts.
+        let own = RelativeMotionEvent {
+            delta: by,
+            delta_unaccel: (f64::from(dx), f64::from(dy)).into(),
+            utime: time_ns / 1000,
+        };
+        let focus = self.focus();
+        pointer.relative_motion(&mut self.shell, focus, &own);
+        if matches!(self.shell.held, Some(Held { kind: Kind::Locked { .. }, .. })) {
+            // The pointer stays, and that motion is all the program
+            // hears.
+            pointer.frame(&mut self.shell);
+            self.settle();
+            return;
+        }
+        self.steer(time_ns, pointer.current_location() + by);
     }
 
     /// A device points at a place of the first screen: `x` of the way
@@ -456,7 +577,32 @@ where
         if let Some(y) = y {
             at.y = first.loc.y + y.clamp(0.0, 1.0) * (first.size.h - 1.0);
         }
-        self.point(time_ns, at);
+        self.steer(time_ns, at);
+    }
+
+    /// Moves the pointer to `to`, or as near to it as the surface that
+    /// holds the pointer lets it go: nowhere, if the pointer is locked.
+    fn steer(&mut self, time_ns: u64, to: Point<f64, Logical>) {
+        let Some(pointer) = self.shell.seat.get_pointer() else { return };
+        let to = match &self.shell.held {
+            None => to,
+            Some(Held { kind: Kind::Locked { .. }, .. }) => return,
+            Some(Held { surface, at, kind: Kind::Confined }) => {
+                // The part of the surface that shows, and of that the
+                // region its program named.
+                let allowed = |place: Point<f64, Logical>| {
+                    let on_it = matches!(
+                        self.shell.windows.under(place),
+                        Under::Surface { surface: under, .. } if under == *surface
+                    );
+                    on_it && constraints::lets(surface, &pointer, place - *at)
+                };
+                let size = constraints::size_of(surface).unwrap_or_default();
+                let bounds = Rectangle::new(*at, size.to_f64());
+                constraints::confined(pointer.current_location(), to, bounds, allowed)
+            }
+        };
+        self.point(time_ns, to);
     }
 
     /// Moves the pointer to the place on a screen nearest to `at`, and
@@ -467,6 +613,7 @@ where
         let at = self.screens.within(at);
         self.manager.motion(&mut self.shell, at);
         self.under = self.shell.windows.under(at);
+        self.manager.rests(&self.under, time_ns);
         let focus = self.focus();
         let serial = SERIAL_COUNTER.next_serial();
         let moved = MotionEvent { location: at, serial, time: ms(time_ns) };
@@ -522,13 +669,18 @@ where
         self.settle();
     }
 
-    /// When the next frame is to be drawn, on the monotonic clock, if
-    /// one is due.
+    /// When the next frame is to be drawn, the pointer has rested long
+    /// enough on a button for what that shows, or the windows have
+    /// stayed long enough for their places to be written, on the
+    /// monotonic clock, if any is due.
     pub fn due(&self, now_ns: u64) -> Option<u64> {
-        self.screens.due(now_ns)
+        let due = [self.screens.due(now_ns), self.manager.due(), self.shell.places.due(now_ns)];
+        due.into_iter().flatten().min()
     }
 
-    /// Draws the frames that are due at `now_ns`.
+    /// Draws the frames that are due at `now_ns`, after what a pointer
+    /// that has rested until then shows, and writes the windows'
+    /// places if they have stayed long enough.
     ///
     /// A frame that cannot be drawn because a program's pixels cannot
     /// be read, as when the program cut their file short, is drawn anew
@@ -539,6 +691,12 @@ where
     /// What the layer's requests fail with, and what the renderer does
     /// [`SPOILED_MOST`] frames in a row.
     pub fn draw(&mut self, now_ns: u64) -> Result<(), Failed> {
+        if self.manager.rested(&mut self.shell, now_ns) {
+            self.settle();
+        }
+        if self.shell.places.due(now_ns).is_some_and(|due| due <= now_ns) {
+            self.write_places();
+        }
         let Some(pointer) = self.shell.seat.get_pointer() else { return Ok(()) };
         let shown = match self.own {
             Some(own) => Shown::Own(own),
@@ -550,7 +708,11 @@ where
             picture: self.pointer_picture,
             own: &self.pictures,
         };
-        let scene = Scene { windows: &self.shell.windows, panel: self.manager.panel() };
+        let scene = Scene {
+            windows: &self.shell.windows,
+            over: self.manager.over(),
+            preview: self.manager.preview(),
+        };
         match self.screens.draw(&mut self.renderer, &self.shell, &scene, &pointing, now_ns) {
             Err(Failed::Renderer(_)) if self.spoiled < SPOILED_MOST => {
                 self.spoiled += 1;
@@ -570,8 +732,17 @@ where
         self.shell.lights.take().map(keys::light_bits)
     }
 
-    /// What the screen at place `at` last showed: its width, and its
-    /// pixels as FORMAT_XRGB8888 rows with nothing between them.
+    /// The picture of a program's buffer the screen at place `at`
+    /// shows, if it shows one, and how many buffers it keeps from
+    /// their programs.
+    #[cfg(test)]
+    pub fn straight(&self, at: usize) -> (Option<u32>, usize) {
+        self.screens.straight(at)
+    }
+
+    /// The frame of windowd's own the screen at place `at` last showed:
+    /// its width, and its pixels as FORMAT_XRGB8888 rows with nothing
+    /// between them.
     #[cfg(test)]
     pub fn shows(&mut self, at: usize) -> (u32, Vec<u8>) {
         use smithay::backend::allocator::Fourcc;

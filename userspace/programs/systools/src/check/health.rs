@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The health checks of dukovo-check(8): the early warnings that are
-//! active, and what the last `hardware check` found. Each repeats what
-//! another tool found, under that tool's own ID, so that one fault has
-//! one page.
+//! active, and what the last `hardware check` found, each repeating what
+//! another tool found under that tool's own ID, so that one fault has
+//! one page; and the processor's flaws that the kernel says are open.
 
 use super::context::Context;
-use super::line::{Outcome, Verdict};
+use super::line::{Outcome, Problem, Verdict};
 use crate::alerts::protocol::Severity;
 use crate::hardware::check::Outcome as Found;
 use crate::hardware::saved::{self, Saved};
+use crate::lscpu;
 
 /// Whether `text` is an error ID, such as `MET-101`: 2 to 5 capitals, a
 /// hyphen and 3 digits.
@@ -102,6 +103,47 @@ pub(super) fn hardware(context: &Context) -> Vec<Outcome> {
         ))];
     }
     found
+}
+
+/// Warns when the kernel says the processor's microcode lacks what it
+/// needs to close a speculative-execution flaw, naming each: newer
+/// microcode closes it, and installing that is the administrator's to do.
+/// A flaw open for another reason, a protection the kernel does not have
+/// yet or one its command line turned off, is named in the line that
+/// passes, as no microcode closes it; so is one in a virtual machine,
+/// which runs the host's microcode. Skipped where the kernel keeps no
+/// such files.
+pub(super) fn processor_flaws(context: &Context) -> Vec<Outcome> {
+    let dir = context.root.join(lscpu::VULNERABILITIES.trim_start_matches('/'));
+    let flaws = lscpu::vulnerabilities(&dir);
+    if flaws.is_empty() {
+        return vec![Outcome::skipped("the kernel does not report the processor's flaws")];
+    }
+    let open = |wants_microcode: bool| -> Vec<&str> {
+        flaws
+            .iter()
+            .filter(|(_, text)| text.starts_with("Vulnerable"))
+            .filter(|(_, text)| {
+                !wants_microcode || text.to_ascii_lowercase().contains("no microcode")
+            })
+            .map(|(name, _)| name.as_str())
+            .collect()
+    };
+    let (wanting, all_open) = (open(true), open(false));
+    if !wanting.is_empty() && !context.virtual_machine {
+        return vec![Outcome::warning(
+            Problem::ProcessorFlaw,
+            format!("the processor's microcode cannot close {}", wanting.join(", ")),
+        )];
+    }
+    if all_open.is_empty() {
+        return vec![Outcome::passed(format!(
+            "none of the {} flaws the kernel knows is open",
+            flaws.len()
+        ))];
+    }
+    let reason = if wanting.is_empty() { "no microcode closes" } else { "the host has to close" };
+    vec![Outcome::passed(format!("open, which {reason}: {}", all_open.join(", ")))]
 }
 
 #[cfg(test)]
@@ -253,5 +295,81 @@ mod tests {
         let outcomes = hardware(&system.context);
         assert_eq!(outcomes[0].verdict, Verdict::Skipped);
         assert!(outcomes[0].detail.contains("is not the result of a hardware check"));
+    }
+
+    fn plant_flaws(system: &System, files: &[(&str, &str)]) {
+        for (name, text) in files {
+            system.plant(&format!("{}/{name}", lscpu::VULNERABILITIES), text);
+        }
+    }
+
+    #[test]
+    fn a_kernel_that_reports_no_flaws_skips_the_check() {
+        let system = System::new(Vec::new());
+        let outcomes = processor_flaws(&system.context);
+        assert_eq!(outcomes[0].verdict, Verdict::Skipped);
+    }
+
+    #[test]
+    fn flaws_that_are_closed_or_not_there_pass() {
+        let system = System::new(Vec::new());
+        plant_flaws(
+            &system,
+            &[
+                ("mds", "Not affected\n"),
+                ("spectre_v2", "Mitigation: Retpolines\n"),
+                ("srbds", "Unknown: Dependent on hypervisor status\n"),
+            ],
+        );
+        let outcomes = processor_flaws(&system.context);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].verdict, Verdict::Passed);
+        assert_eq!(outcomes[0].detail, "none of the 3 flaws the kernel knows is open");
+    }
+
+    #[test]
+    fn each_flaw_that_waits_on_microcode_is_named_in_one_warning() {
+        let system = System::new(Vec::new());
+        plant_flaws(
+            &system,
+            &[
+                ("mds", "Vulnerable: Clear CPU buffers attempted, no microcode; SMT vulnerable\n"),
+                ("spectre_v2", "Vulnerable\n"),
+                ("srbds", "Vulnerable: No microcode\n"),
+            ],
+        );
+        let outcomes = processor_flaws(&system.context);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            (outcomes[0].verdict, outcomes[0].id.as_deref()),
+            (Verdict::Warning, Some("SEC-180"))
+        );
+        assert_eq!(outcomes[0].detail, "the processor's microcode cannot close mds, srbds");
+        assert!(outcomes[0].fix.as_deref().unwrap().contains("BIOS update"));
+    }
+
+    #[test]
+    fn flaws_no_microcode_closes_are_named_in_a_pass() {
+        let system = System::new(Vec::new());
+        plant_flaws(
+            &system,
+            &[("spec_store_bypass", "Vulnerable\n"), ("spectre_v2", "Vulnerable\n")],
+        );
+        let outcomes = processor_flaws(&system.context);
+        assert_eq!(outcomes[0].verdict, Verdict::Passed);
+        assert_eq!(
+            outcomes[0].detail,
+            "open, which no microcode closes: spec_store_bypass, spectre_v2"
+        );
+    }
+
+    #[test]
+    fn a_virtual_machine_leaves_the_microcode_to_its_host() {
+        let mut system = System::new(Vec::new());
+        system.context.virtual_machine = true;
+        plant_flaws(&system, &[("tsa", "Vulnerable: No microcode\n")]);
+        let outcomes = processor_flaws(&system.context);
+        assert_eq!(outcomes[0].verdict, Verdict::Passed);
+        assert_eq!(outcomes[0].detail, "open, which the host has to close: tsa");
     }
 }

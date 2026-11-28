@@ -69,21 +69,29 @@ const REPEAT: (i32, i32) = (400, 12);
 /// The command that has the desktop read its settings again.
 const RELOAD: [&str; 3] = ["/system/commands/pkill", "-USR1", "desktop"];
 
-/// One of the program's windows, as the program reckons the screen
+/// One of the program's windows, as the program reckons its screen
 /// shows it.
-struct Pane {
-    client: Client,
+pub(crate) struct Pane {
+    pub(crate) client: Client,
     title: &'static str,
-    seed: u32,
+    pub(crate) seed: u32,
     /// The size of its own pixels, as it last drew them.
-    size: (u32, u32),
-    /// That size when it was last not maximized.
+    pub(crate) size: (u32, u32),
+    /// That size when the window last filled nothing of its screen.
     normal: (u32, u32),
-    /// Where its frame's corner is on the screen when it is not
-    /// maximized.
-    corner: (i32, i32),
+    /// Which of the desk's screens it is on.
+    pub(crate) on: usize,
+    /// Where its frame's corner is on that screen when it is neither
+    /// maximized nor full screen.
+    pub(crate) corner: (i32, i32),
     maximized: bool,
-    minimized: bool,
+    /// Whether the window server last said it is snapped.
+    pub(crate) snapped: bool,
+    /// Whether the window server last asked for it to be full screen.
+    pub(crate) full: bool,
+    /// Whether it is off the screen: minimized, or on a desktop that
+    /// does not show.
+    pub(crate) away: bool,
     /// Whether the window server last said it is the window the person
     /// works in.
     active: bool,
@@ -93,17 +101,21 @@ struct Pane {
 
 impl Pane {
     /// The frame's layout around the window as it is drawn now.
-    fn layout(&self) -> Layout {
-        let shape = if self.maximized { Shape::Maximized } else { Shape::Normal };
+    pub(crate) fn layout(&self) -> Layout {
+        let shape = match (self.full, self.maximized) {
+            (true, _) => Shape::Full,
+            (false, true) => Shape::Maximized,
+            (false, false) => Shape::Normal,
+        };
         let size = (self.size.0 as i32, self.size.1 as i32);
         Layout::of(&Theme::basic(), size, shape, Bar::Full, None)
     }
 
-    /// Where the window's own pixels are on a screen whose corner the
-    /// frame of a maximized window is at.
+    /// Where the window's own pixels are on its screen, whose corner
+    /// the frame of a window that fills it is at.
     fn rect(&self) -> Outcome<Rect> {
         let layout = self.layout();
-        let corner = if self.maximized { (0, 0) } else { self.corner };
+        let corner = if self.maximized || self.full { (0, 0) } else { self.corner };
         let (x, y) = (corner.0 + layout.surface.x, corner.1 + layout.surface.y);
         ensure(x >= 0 && y >= 0, || format!("{} is off the screen at {x},{y}", self.title))?;
         Ok(Rect { x: x as u32, y: y as u32, width: self.size.0, height: self.size.1 })
@@ -111,14 +123,14 @@ impl Pane {
 
     /// Draws the window at its size, and waits for the frame that shows
     /// it.
-    fn draw(&mut self) -> Outcome {
+    pub(crate) fn draw(&mut self) -> Outcome {
         self.client.show(self.size, self.seed)?;
         self.client.wait(PATIENCE, |heard| matches!(heard, Heard::Frame(_)).then_some(()))
     }
 
     /// Waits until the window server has said that the window is, or is
     /// no longer, the one the person works in.
-    fn await_active(&mut self, active: bool) -> Outcome {
+    pub(crate) fn await_active(&mut self, active: bool) -> Outcome {
         if self.active != active {
             let said = Heard::Active(active);
             self.client.wait(PATIENCE, |heard| (*heard == said).then_some(()))?;
@@ -133,14 +145,23 @@ impl Pane {
         match *heard {
             Heard::Size { width, height, maximized } => {
                 // A side of 0 is the program's to choose: the size the
-                // window had before it was maximized.
+                // window had before it filled anything.
                 let side = |asked: i32, own: u32| if asked > 0 { asked as u32 } else { own };
                 self.size = (side(width, self.normal.0), side(height, self.normal.1));
                 self.maximized = maximized;
-                if !maximized {
+                if !(maximized || self.snapped || self.full) {
                     self.normal = self.size;
                 }
                 self.client.show(self.size, self.seed)
+            }
+            // The size to draw the window at comes next.
+            Heard::Snapped(snapped) => {
+                self.snapped = snapped;
+                Ok(())
+            }
+            Heard::Full(full) => {
+                self.full = full;
+                Ok(())
             }
             Heard::Active(active) => {
                 self.active = active;
@@ -151,17 +172,27 @@ impl Pane {
     }
 }
 
-/// The desktop's one screen and the program's windows on it, from the
+/// The desktop's screens and the program's windows on them, from the
 /// one at the back to the one in front.
-struct Desk {
-    screen: Screen,
+pub(crate) struct Desk {
+    /// The screens that show the desktop.
+    pub(crate) screens: Vec<Screen>,
+    /// The names of the screens that show nothing: their monitors are
+    /// gone.
+    pub(crate) dark: Vec<String>,
     panes: Vec<Pane>,
 }
 
 impl Desk {
-    /// Shows a window of `size` as the `nth` the desktop has shown, and
-    /// waits until it is the one the person works in and has the keys.
-    fn open(&mut self, nth: usize, size: (u32, u32)) -> Outcome {
+    /// A desktop on `screens`, with no window yet.
+    pub(crate) fn on(screens: Vec<Screen>) -> Desk {
+        Desk { screens, dark: Vec::new(), panes: Vec::new() }
+    }
+
+    /// Shows a window of `size` as the `nth` the desktop has shown, on
+    /// the first screen, and waits until it is the one the person works
+    /// in and has the keys.
+    pub(crate) fn open(&mut self, nth: usize, size: (u32, u32)) -> Outcome {
         let mut client = Client::of_environment()?;
         client.open(window_test::Open::default())?;
         client.title(TITLES[nth])?;
@@ -175,9 +206,12 @@ impl Desk {
             seed: SEEDS[nth],
             size,
             normal: size,
+            on: 0,
             corner: (0, 0),
             maximized: false,
-            minimized: false,
+            snapped: false,
+            full: false,
+            away: false,
             active: true,
             hot: None,
         };
@@ -186,40 +220,47 @@ impl Desk {
         let layout = pane.layout();
         let step = nth as i32 * PLACE_STEP;
         let middle = |room: u32, taken: i32| ((room as i32 - taken) / 2 + step).max(0);
-        pane.corner =
-            (middle(self.screen.width, layout.frame.w), middle(self.screen.height, layout.frame.h));
+        let screen = &self.screens[0];
+        pane.corner = (middle(screen.width, layout.frame.w), middle(screen.height, layout.frame.h));
         self.panes.push(pane);
         Ok(())
     }
 
     /// The window in front.
-    fn front(&mut self) -> &mut Pane {
+    pub(crate) fn front(&mut self) -> &mut Pane {
         let last = self.panes.len() - 1;
         &mut self.panes[last]
     }
 
-    /// Says what the screen shows.
+    /// Says what each screen shows: a full-screen window has no frame.
     fn say_screens(&self) -> Outcome {
-        let Screen { name, width, height, .. } = self.screen.clone();
-        say(&Said::Fill { screen: name.clone(), width, height, colour: DESKTOP });
-        for pane in self.panes.iter().filter(|pane| !pane.minimized) {
-            let rect = pane.rect()?;
-            say(&Said::Frame {
-                screen: name.clone(),
-                rect,
-                maximized: pane.maximized,
-                active: pane.active,
-                hot: pane.hot,
-                title: pane.title.to_owned(),
-            });
-            say(&Said::Pointer { screen: name.clone(), rect, seed: pane.seed });
+        for (index, Screen { name, width, height, .. }) in self.screens.iter().enumerate() {
+            let (width, height) = (*width, *height);
+            say(&Said::Fill { screen: name.clone(), width, height, colour: DESKTOP });
+            for pane in self.panes.iter().filter(|pane| pane.on == index && !pane.away) {
+                let rect = pane.rect()?;
+                if !pane.full {
+                    say(&Said::Frame {
+                        screen: name.clone(),
+                        rect,
+                        maximized: pane.maximized,
+                        active: pane.active,
+                        hot: pane.hot,
+                        title: pane.title.to_owned(),
+                    });
+                }
+                say(&Said::Pointer { screen: name.clone(), rect, seed: pane.seed });
+            }
+        }
+        for name in &self.dark {
+            say(&Said::Dark { screen: name.clone() });
         }
         Ok(())
     }
 
     /// Listens to every window, each taking in what it hears, until
     /// `wanted` takes one thing a window heard.
-    fn listen(&mut self, what: &str, mut wanted: impl FnMut(&Heard) -> bool) -> Outcome {
+    pub(crate) fn listen(&mut self, what: &str, mut wanted: impl FnMut(&Heard) -> bool) -> Outcome {
         let until = Instant::now() + STEP_PATIENCE;
         loop {
             for pane in &mut self.panes {
@@ -234,9 +275,30 @@ impl Desk {
         }
     }
 
-    /// Says what the screen shows and that the program is at the step
+    /// Listens to every window for a moment, each taking in what it
+    /// hears, and waits so, for up to as long as a step may take, until
+    /// `holds` says of the desk that it does. `what` names what is
+    /// waited for.
+    pub(crate) fn listen_until(
+        &mut self,
+        what: &str,
+        mut holds: impl FnMut(&mut Desk) -> bool,
+    ) -> Outcome {
+        let until = Instant::now() + STEP_PATIENCE;
+        while !holds(self) {
+            ensure(Instant::now() < until, || format!("{what} did not come in {STEP_PATIENCE:?}"))?;
+            for pane in &mut self.panes {
+                while let Some(heard) = pane.client.heard_within(TURN)? {
+                    pane.take(&heard)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Says what the screens show and that the program is at the step
     /// `name`.
-    fn at_step(&self, name: &str) -> Outcome {
+    pub(crate) fn at_step(&self, name: &str) -> Outcome {
         self.say_screens()?;
         say(&Said::Step(name.to_owned()));
         Ok(())
@@ -244,7 +306,7 @@ impl Desk {
 
     /// As [`Desk::at_step`], and waits for the space bar to go down and
     /// up in whichever window has the keys.
-    fn step(&mut self, name: &str) -> Outcome {
+    pub(crate) fn step(&mut self, name: &str) -> Outcome {
         self.at_step(name)?;
         for pressed in [true, false] {
             let key = Heard::Key { code: KEY_SPACE, pressed };
@@ -270,16 +332,22 @@ impl Desk {
     }
 }
 
+/// Writes `text` as the system's windowd.json and has the desktop read
+/// it.
+pub(crate) fn settle_on(text: &str) -> Outcome {
+    std::fs::write(SETTINGS, text).map_err(|err| format!("{SETTINGS}: {err}"))?;
+    let [command, arguments @ ..] = RELOAD;
+    let ended = Command::new(command).args(arguments).status();
+    let ended = ended.map_err(|err| format!("{command}: {err}"))?;
+    ensure(ended.success(), || format!("{}: {ended}", RELOAD.join(" ")))
+}
+
 /// Has the desktop read a changed windowd.json, and waits until the
 /// window server tells `client` the keys' new repeat.
 fn reload_settings(client: &mut Client) -> Outcome {
     let before = client.repeat();
     ensure(before != Some(REPEAT), || format!("the keys repeat at {REPEAT:?} from the first"))?;
-    std::fs::write(SETTINGS, SETTINGS_TEXT).map_err(|err| format!("{SETTINGS}: {err}"))?;
-    let [command, arguments @ ..] = RELOAD;
-    let ended = Command::new(command).args(arguments).status();
-    let ended = ended.map_err(|err| format!("{command}: {err}"))?;
-    ensure(ended.success(), || format!("{}: {ended}", RELOAD.join(" ")))?;
+    settle_on(SETTINGS_TEXT)?;
     let until = Instant::now() + PATIENCE;
     while client.repeat() != Some(REPEAT) {
         ensure(Instant::now() < until, || {
@@ -296,7 +364,7 @@ pub fn run() -> Outcome {
     let [screen] = &screens[..] else {
         return Err(format!("the steps are for one screen, and the desktop has {screens:?}"));
     };
-    let mut desk = Desk { screen: screen.clone(), panes: Vec::new() };
+    let mut desk = Desk::on(vec![screen.clone()]);
     desk.open(0, FIRST)?;
     desk.step("shown")?;
 
@@ -325,11 +393,11 @@ pub fn run() -> Outcome {
     // The host clicks the minimize button after the key: a window that
     // is put away has no keys to hear, and loses them.
     desk.listen("the keyboard's going", |heard| *heard == Heard::Keyboard(false))?;
-    desk.front().minimized = true;
+    desk.front().away = true;
     desk.at_step("minimized")?;
     desk.listen("the keyboard's coming back", |heard| *heard == Heard::Keyboard(true))?;
     let front = desk.front();
-    front.minimized = false;
+    front.away = false;
     // The pointer is where it clicked, and the button is under it again.
     front.hot = Some(FrameButton::Minimize);
     front.await_active(true)?;

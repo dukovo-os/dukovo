@@ -378,6 +378,7 @@ dependencies = [
  "radix-acpi",
  "radix-amdvi",
  "radix-bootinfo",
+ "radix-cpuflaws",
  "radix-hal",
  "radix-hw",
  "radix-iopt",
@@ -392,6 +393,7 @@ dependencies = [
  "radix-smbios",
  "radix-smbus",
  "radix-sync",
+ "radix-thunks",
  "radix-tty",
  "radix-uart",
  "radix-vtd",
@@ -472,6 +474,10 @@ dependencies = [
  "proptest",
  "radix-sync",
 ]
+
+[[package]]
+name = "radix-cpuflaws"
+version = "1.0.0-alpha.1"
 
 [[package]]
 name = "radix-crosec"
@@ -576,6 +582,7 @@ dependencies = [
 name = "radix-hal"
 version = "1.0.0-alpha.1"
 dependencies = [
+ "radix-cpuflaws",
  "radix-hw",
  "radix-pstate",
  "radix-sensors",
@@ -754,6 +761,7 @@ version = "1.0.0-alpha.1"
 dependencies = [
  "proptest",
  "radix-abi",
+ "radix-sync",
 ]
 
 [[package]]
@@ -851,6 +859,10 @@ name = "radix-sync"
 version = "1.0.0-alpha.1"
 
 [[package]]
+name = "radix-thunks"
+version = "1.0.0-alpha.1"
+
+[[package]]
 name = "radix-tty"
 version = "1.0.0-alpha.1"
 dependencies = [
@@ -862,6 +874,7 @@ dependencies = [
 name = "radix-uacpi"
 version = "1.0.0-alpha.1"
 dependencies = [
+ "radix-acpi",
  "radix-sync",
 ]
 

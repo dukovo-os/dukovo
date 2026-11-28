@@ -38,7 +38,9 @@ unsafe extern "C" {
 /// Size of each of the boot CPU's interrupt stacks.
 const BSP_IST_SIZE: usize = 16 * 1024;
 
-#[repr(C, align(16))]
+/// Page-aligned, so that the top page of each holds nothing else: under
+/// page-table isolation programs' page tables map it (`crate::pti`).
+#[repr(C, align(4096))]
 struct IstStacks([[u8; BSP_IST_SIZE]; IST_STACKS]);
 
 static BSP_IST: TakeOnce<IstStacks> = TakeOnce::new(IstStacks([[0; BSP_IST_SIZE]; IST_STACKS]));
@@ -266,6 +268,7 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
     }
 
     paging::build_and_switch(!flags.has("nopcid"));
+    crate::pti::set_invpcid_allowed(!flags.has("noinvpcid"));
     radix_klog::tracepoint!("boot.paging");
 
     if let Some(rsdp) = info.acpi_rsdp() {

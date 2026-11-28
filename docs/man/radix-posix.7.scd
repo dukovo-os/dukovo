@@ -207,7 +207,12 @@ taken and chooses the next. One emptied some other way, such as a
 capability revoked from outside the program, stays taken until the
 program closes it: a new descriptor is then the lowest free one after
 it, never the same one twice. A program with the dynamic linker shares
-one table between it and the C library, since both open files.
+one table between it and the C library, since both open files. Beside
+it the C library notes which family each descriptor's socket is of, as
+*socket*, *socketpair* and *accept* make them and *dup* and *dup2* copy
+them, so that the calls that differ for network and Unix sockets, such
+as *connect* and *getsockopt*, ask the kernel at most once for a
+descriptor (ADR 0801).
 
 The C library keeps the working directory as a canonical string. It
 hands the kernel an absolute path, or a relative one joined to the
@@ -217,8 +222,10 @@ root. A path relative to a directory descriptor (*openat* and the rest)
 goes to the kernel with that directory's capability, beneath which *..*
 cannot climb. So the C library notes the path each directory descriptor
 was opened by, and a path with *..* in it goes from the root by that
-path instead (ADR 0089). *chdir* and *fchdir* check the directory and
-keep its canonical path.
+path instead (ADR 0089). *chdir* and *fchdir* check the directory,
+learn its canonical path and have the kernel note it for _/processes_
+in one call, *radix-directory*(2)'s *enter* (ADR 0800), and keep the
+path.
 
 A symbolic link with an absolute target, met beneath a directory
 descriptor, goes on from the root as on Linux. The C library opens every
@@ -740,7 +747,10 @@ are not there, as they are not POSIX's. There is no program break:
 blocks of each size up to 4 KiB for its next *malloc*, as glibc's
 tcache does, and, as glibc, ends the process with SIGABRT on a double
 *free* of a block it keeps or on a write to a kept block's link to the
-next. There are no huge pages, and
+next. A block above 32 KiB is a mapping of its own. The last four of
+those that were freed, of up to 16 MiB together, are kept with their
+pages for the next *malloc* of their size or a little less, so *free*
+does not give their memory back at once. There are no huge pages, and
 <sys/mman.h> has no *MAP_HUGETLB*; *mmap* given Linux's number for it
 fails with ENOMEM, or EINVAL for a file, as on Linux when none is
 reserved.

@@ -177,6 +177,11 @@ pub mod feature {
         cpuid(1, 0).ecx & (1 << 17) != 0
     }
 
+    /// The `invpcid` instruction (CPUID 7, EBX bit 10).
+    pub fn invpcid() -> bool {
+        leaf7_ebx() & (1 << 10) != 0
+    }
+
     /// The IA32_TSC_ADJUST MSR (CPUID 7, EBX bit 1).
     pub fn tsc_adjust() -> bool {
         leaf7_ebx() & (1 << 1) != 0
@@ -225,6 +230,12 @@ pub mod feature {
     /// MONITOR and MWAIT (CPUID 1, ECX bit 3).
     pub fn monitor() -> bool {
         cpuid(1, 0).ecx & (1 << 3) != 0
+    }
+
+    /// A local APIC timer that keeps running in every C-state (ARAT,
+    /// CPUID 6, EAX bit 2).
+    pub fn arat() -> bool {
+        super::max_leaf() >= 6 && cpuid(6, 0).eax & (1 << 2) != 0
     }
 
     /// The local APIC timer's TSC-deadline mode (CPUID 1, ECX bit 24).
@@ -280,6 +291,10 @@ pub mod msr {
     pub const PLATFORM_ID: u32 = 0x17;
     pub const BIOS_UPDT_TRIG: u32 = 0x79;
     pub const BIOS_SIGN_ID: u32 = 0x8b;
+    /// AMD's name for the register Intel calls `BIOS_SIGN_ID`: the
+    /// running microcode revision, in the low half.
+    pub const AMD_PATCH_LEVEL: u32 = 0x8b;
+    pub const AMD_PATCH_LOADER: u32 = 0xc001_0020;
     pub const PAT: u32 = 0x277;
     pub const EFER: u32 = 0xc000_0080;
     pub const STAR: u32 = 0xc000_0081;
@@ -328,10 +343,11 @@ pub unsafe fn wrmsr(msr: u32, value: u64) {
     };
 }
 
-// A read of an MSR that may not exist: the #GP an unknown one raises
-// resumes at `radix_rdmsr_safe_fault` ([`rdmsr_fixup`]), which returns
-// false.
+// A read or a write of an MSR that may not exist, or may not take the
+// value: the #GP that raises resumes at the fault label ([`msr_fixup`]),
+// which returns false.
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .section .text
     .balign 64
@@ -345,12 +361,30 @@ radix_rdmsr_safe_insn:
     or rax, rdx
     mov [rsi], rax
     mov eax, 1
-    ret
+    radix_ret
     .global radix_rdmsr_safe_fault
 radix_rdmsr_safe_fault:
     xor eax, eax
-    ret
-"#
+    radix_ret
+
+    .balign 64
+    .global radix_wrmsr_safe
+radix_wrmsr_safe:
+    mov ecx, edi
+    mov eax, esi
+    mov rdx, rsi
+    shr rdx, 32
+    .global radix_wrmsr_safe_insn
+radix_wrmsr_safe_insn:
+    wrmsr
+    mov eax, 1
+    radix_ret
+    .global radix_wrmsr_safe_fault
+radix_wrmsr_safe_fault:
+    xor eax, eax
+    radix_ret
+"#,
+    crate::thunks::asm_end!(),
 );
 
 unsafe extern "sysv64" {
@@ -358,6 +392,10 @@ unsafe extern "sysv64" {
     fn radix_rdmsr_safe(msr: u32, value: *mut u64) -> bool;
     static radix_rdmsr_safe_insn: u8;
     static radix_rdmsr_safe_fault: u8;
+    /// Writes `value` to `msr`; returns whether it could.
+    fn radix_wrmsr_safe(msr: u32, value: u64) -> bool;
+    static radix_wrmsr_safe_insn: u8;
+    static radix_wrmsr_safe_fault: u8;
 }
 
 /// Reads a model-specific register that the processor may not have:
@@ -371,7 +409,7 @@ unsafe extern "sysv64" {
 pub unsafe fn rdmsr_safe(msr: u32) -> Option<u64> {
     let mut value = 0;
     // SAFETY: the caller guarantees a read has no harmful side effect; a
-    // #GP from an unknown MSR resumes at the fault label (`rdmsr_fixup`),
+    // #GP from an unknown MSR resumes at the fault label (`msr_fixup`),
     // and the function writes only `value`.
     unsafe { radix_rdmsr_safe(msr, &raw mut value) }.then_some(value)
 }
@@ -393,10 +431,30 @@ pub fn self_test_rdmsr_safe() -> Result<Option<u64>, &'static str> {
     Ok(unsafe { rdmsr_safe(0x2fff_ffff) })
 }
 
-/// Where a #GP at `rip` resumes, if `rdmsr_safe`'s read raised it.
-pub fn rdmsr_fixup(rip: u64) -> Option<u64> {
-    (rip == &raw const radix_rdmsr_safe_insn as u64)
-        .then_some(&raw const radix_rdmsr_safe_fault as u64)
+/// Writes a model-specific register that the processor may not have, or
+/// that may not take `value`: `false` if the write faulted, as where a
+/// hypervisor says it has a control and refuses its bits.
+///
+/// # Safety
+///
+/// Writing `value` to `msr`, if the write is taken, must not break memory
+/// safety, as for [`wrmsr`].
+pub unsafe fn wrmsr_safe(msr: u32, value: u64) -> bool {
+    // SAFETY: the caller guarantees the write is harmless; a #GP resumes
+    // at the fault label (`msr_fixup`).
+    unsafe { radix_wrmsr_safe(msr, value) }
+}
+
+/// Where a #GP at `rip` resumes, if the read of [`rdmsr_safe`] or the
+/// write of [`wrmsr_safe`] raised it.
+pub fn msr_fixup(rip: u64) -> Option<u64> {
+    if rip == &raw const radix_rdmsr_safe_insn as u64 {
+        Some(&raw const radix_rdmsr_safe_fault as u64)
+    } else if rip == &raw const radix_wrmsr_safe_insn as u64 {
+        Some(&raw const radix_wrmsr_safe_fault as u64)
+    } else {
+        None
+    }
 }
 
 /// Reads CR0.
@@ -468,6 +526,24 @@ pub unsafe fn write_cr4(value: u64) {
 pub fn invlpg(addr: usize) {
     // SAFETY: invalidating a TLB entry only costs a later page walk.
     unsafe { asm!("invlpg [{}]", in(reg) addr, options(nostack, preserves_flags)) };
+}
+
+/// Flushes the TLB entry for one page that PCID `pcid` tagged, whichever
+/// PCID is current. The caller checks that the processor has `invpcid`
+/// ([`feature::invpcid`]) and that PCIDs are on.
+pub fn invpcid_address(pcid: u64, addr: usize) {
+    let descriptor: [u64; 2] = [pcid, addr as u64];
+    // SAFETY: type 0 invalidates one page's entries for one PCID, which
+    // only costs a later page walk; the descriptor is 16 bytes, as the
+    // instruction reads it.
+    unsafe {
+        asm!(
+            "invpcid {kind}, [{descriptor}]",
+            kind = in(reg) 0u64,
+            descriptor = in(reg) &raw const descriptor,
+            options(nostack, preserves_flags, readonly),
+        );
+    };
 }
 
 /// Flushes the non-global TLB entries of the current address space by
@@ -659,12 +735,21 @@ pub fn monitor(addr: usize) {
     };
 }
 
-/// Enables interrupts and waits in C1 until an interrupt arrives or the
-/// monitored line is written. The `sti` takes effect only once MWAIT has
-/// started, so an interrupt cannot slip in between and be missed.
-pub fn sti_mwait() {
-    // SAFETY: MWAIT only waits; the interrupt handlers are installed.
-    unsafe { asm!("sti", "mwait", in("eax") 0u32, in("ecx") 0u32, options(nostack)) };
+/// Enables interrupts and waits in the C-state of MWAIT hint `hint` (0 is
+/// C1) until an interrupt arrives or the monitored line is written. The
+/// `sti` takes effect only once MWAIT has started, so an interrupt cannot
+/// slip in between and be missed.
+pub fn sti_mwait(hint: u32) {
+    // SAFETY: MWAIT only waits; the interrupt handlers are installed, and
+    // a hint the processor does not list waits in C1.
+    unsafe { asm!("sti", "mwait", in("eax") hint, in("ecx") 0u32, options(nostack)) };
+}
+
+/// Takes the interrupts that are pending, and masks them again: `sti`
+/// lets them in only after the instruction that follows it.
+pub fn interrupt_window() {
+    // SAFETY: the interrupt handlers are installed.
+    unsafe { asm!("sti", "nop", "cli", options(nostack)) };
 }
 
 /// Enables interrupts and halts until one arrives, without the window

@@ -16,7 +16,9 @@
 (* blocked thread ready on some CPU's run queue, or, for an idle CPU, lets *)
 (* go of the thread's lock and puts it in that CPU's inbox (ADR 0556),     *)
 (* which the CPU empties into its own queue, or another CPU's, when it     *)
-(* next switches. Blocking, under the thread's lock and its run queue's,   *)
+(* next switches; a thread whose last CPU idles may also go into that      *)
+(* CPU's inbox with its lock still held (ADR 0798). Blocking, under the    *)
+(* thread's lock and its run queue's,                                      *)
 (* sleeps only if no wake came since the thread queued itself.             *)
 (*                                                                         *)
 (* No lock is held across a switch. A CPU that switches picks the next     *)
@@ -247,7 +249,9 @@ Pend ==
 
 \* ... then, under the thread's lock, a blocked thread becomes ready on
 \* the queue of the CPU that placement picks, or, if that CPU is idle,
-\* ready to hand over to it once the lock is let go.
+\* ready to hand over to it once the lock is let go, or goes into an idle
+\* CPU's inbox at once (`hand_over_to_idle`, which the CPU's queuing of
+\* it then waits on the lock for).
 Wake ==
     /\ waker.phase = "lock"
     /\ LET t == waker.t IN
@@ -257,11 +261,15 @@ Wake ==
             /\ \E c \in Cpus :
                   \/ /\ rq' = [rq EXCEPT ![c] = @ \cup {t}]
                      /\ waker' = [waker EXCEPT !.phase = "next", !.t = None]
+                     /\ UNCHANGED inbox
                   \/ /\ waker' = [waker EXCEPT !.phase = "hand", !.to = c]
+                     /\ UNCHANGED <<rq, inbox>>
+                  \/ /\ inbox' = [inbox EXCEPT ![c] = @ \cup {t}]
+                     /\ waker' = [waker EXCEPT !.phase = "next", !.t = None]
                      /\ UNCHANGED rq
        ELSE /\ waker' = [waker EXCEPT !.phase = "next", !.t = None]
-            /\ UNCHANGED <<run, pending, rq>>
-    /\ UNCHANGED <<inbox, cur, sw, oncpu, pc, round, waiters, signals, table>>
+            /\ UNCHANGED <<run, pending, rq, inbox>>
+    /\ UNCHANGED <<cur, sw, oncpu, pc, round, waiters, signals, table>>
 
 \* `hand_over`: the thread goes in the idle CPU's inbox.
 Hand ==

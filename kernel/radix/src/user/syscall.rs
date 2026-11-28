@@ -28,6 +28,7 @@ use radix_cap::{CapError, ObjectKind, Rights, SpaceId};
 use radix_hal::{Cpu, SyscallRegs, UserMode};
 use radix_ipc::info::Info;
 use radix_klog::info;
+use radix_sync::nospec;
 
 use super::ipc::{self, Delivery, Message};
 use super::memory::{FrameObject, access_of, cap_rights};
@@ -269,10 +270,44 @@ fn cap_call(
     answered(args, answer)
 }
 
+/// The system calls' numbers run from 0 to this, less one.
+const SYSCALLS: u64 = sys::DEBUG_LOG + 1;
+
+const _: () = {
+    let numbers = [
+        sys::CAP_CALL,
+        sys::SEND,
+        sys::RECV,
+        sys::REPLY_RECV,
+        sys::NOTIFY,
+        sys::WAIT,
+        sys::YIELD,
+        sys::MAP,
+        sys::UNMAP,
+        sys::RING_SETUP,
+        sys::RING_ENTER,
+        sys::DEBUG_LOG,
+    ];
+    let mut at = 0;
+    while at < numbers.len() {
+        assert!(numbers[at] == at as u64);
+        at += 1;
+    }
+    assert!(numbers.len() as u64 == SYSCALLS);
+};
+
 /// Runs system call `number` on the arguments in `args`, and leaves its
 /// results there.
 fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -> Result<Done> {
     let cspace = user.cspace;
+    // A number the processor guesses in range, while the check is still
+    // to be done, is taken as 0 meanwhile, so the match's jump table is
+    // read in its bounds alone (Spectre v1, ADR 0790).
+    let number = if number < SYSCALLS {
+        nospec::index(number as usize, SYSCALLS as usize) as u64
+    } else {
+        number
+    };
     match number {
         sys::CAP_CALL => {
             let a = sys::CapCallArgs::decode(args)?;

@@ -368,8 +368,8 @@ machine set up the same way (q35, 2 CPUs, 1 GiB, KVM, `-cpu host`), with
 a static `tools/linux-bench` as its only process, for the closest Linux
 operations, and runs `linux-bench` on the host too, for reference
 (ADR 0039). The Linux in the virtual machine is the runner's own kernel,
-booted with `mitigations=off`, since Radix has no mitigations of CPU
-vulnerabilities yet. The method follows lmbench's `lat_syscall`,
+booted with its default protections against CPU vulnerabilities, as
+Radix is. The method follows lmbench's `lat_syscall`,
 `lat_ctx`, `lat_pipe` and `lat_unix`:
 
 - each measurement times a loop of many operations (200,000 system calls,
@@ -423,8 +423,13 @@ through a pipe in 64 KiB writes from a child, both on one CPU, per MiB
 (`posix_signal`); `poll` on a pipe with data to read (`posix_poll`); and
 two threads passing a turn there and back through two semaphores, on
 one CPU and on two
-(`posix_futex_same_cpu`, `posix_futex_cross_cpu`), and two processes
-doing the same through semaphores in shared memory
+(`posix_futex_same_cpu`, `posix_futex_cross_cpu`); the same on two CPUs
+with each thread holding the turn 5 µs before it passes it on, long
+enough for the other to be asleep in the kernel, less those holds
+(`posix_futex_asleep_cross_cpu`): a pair that passes the turn straight
+back can find it passed before it sleeps, when the wake-ups are quick,
+so only this row is sure to time the wake-up of a sleeping thread; and
+two processes doing the same through semaphores in shared memory
 (`posix_futex_shared_same_cpu`, `posix_futex_shared_cross_cpu`, ADR
 0110). Given `--network`, it then uses TCP and UDP on the loopback
 interface, at 127.0.0.1 (ADR 0185): a connection made, accepted and

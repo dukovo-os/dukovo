@@ -86,8 +86,11 @@ impl Session {
     ///
     /// Why the desktop cannot go on, for the person to read.
     pub fn run(&mut self) -> Result<ExitCode, String> {
-        self.lay_settings();
+        self.lay_settings()?;
         loop {
+            for said in self.desktop.said() {
+                eprintln!("desktop: {said}");
+            }
             if let Some(lights) = self.desktop.lights() {
                 self.devices.light(lights);
             }
@@ -112,13 +115,13 @@ impl Session {
 
     /// Reads the settings files and has the desktop be as they say.
     /// What is wrong in them is said on the standard error.
-    fn lay_settings(&mut self) {
+    fn lay_settings(&mut self) -> Result<(), String> {
         let files = [Some(Path::new(settings::SYSTEM)), self.personal.as_deref()];
         let (settings, wrong) = Settings::read(files.into_iter().flatten());
         for wrong in wrong {
             eprintln!("desktop: {wrong}");
         }
-        self.desktop.set(&settings);
+        self.desktop.set(&settings).map_err(|err| err.to_string())
     }
 
     /// Keeps what the person chose from a window's menu in their
@@ -199,7 +202,7 @@ impl Session {
             return Ok(Some(ended));
         }
         if RELOAD.take() {
-            self.lay_settings();
+            self.lay_settings()?;
         }
         if woke.layer {
             self.hear_layer()?;
@@ -261,6 +264,10 @@ impl Session {
     /// Ends the desktop: gives the screens back, and asks the command,
     /// if it still runs, to end.
     pub fn end(&mut self) {
+        self.desktop.write_places();
+        for said in self.desktop.said() {
+            eprintln!("desktop: {said}");
+        }
         // In the back there is nothing to give back.
         let _ = self.desktop.holder().give_back();
         if let Some(command) = self.command.take() {
