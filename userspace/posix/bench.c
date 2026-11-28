@@ -381,7 +381,7 @@ static uint64_t raw_syscall(uint64_t number) {
 	return number;
 }
 
-// The CPU's counters around each diag row, per round, as DIAGPMU lines:
+// The CPU's counters around each diag row, per round, as BENCHPMU lines:
 // instructions and cycles in both modes, then the diag kernel's general
 // events (user.rs, DIAG_EVENTS) in its order. Radix's diag kernel turns
 // them on for the benchmarks' CPU and lets user mode read them (rdpmc);
@@ -396,7 +396,7 @@ static int pmu_count;
 static void pmu_open(void) {
 	uint64_t general = raw_syscall(DIAG_PMU_ON);
 	pmu_count = general ? 2 + (int)general : 0;
-	printf("DIAGPMU counters=%d\n", pmu_count);
+	printf("BENCHPMU counters=%d\n", pmu_count);
 }
 
 static uint64_t rdpmc(uint32_t counter) {
@@ -437,12 +437,12 @@ static void pmu_open(void) {
 		}
 		pmu_fds[i] = (int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
 		if(pmu_fds[i] < 0) {
-			printf("DIAGPMU counter=%s failed: %s\n", pmu_names[i], strerror(errno));
+			printf("BENCHPMU counter=%s failed: %s\n", pmu_names[i], strerror(errno));
 			break;
 		}
 		pmu_count = i + 1;
 	}
-	printf("DIAGPMU counters=%d\n", pmu_count);
+	printf("BENCHPMU counters=%d\n", pmu_count);
 }
 
 // Each count scaled by the share of the row the kernel had it on a
@@ -463,7 +463,7 @@ static void pmu_report(const char *name, const uint64_t *before, const uint64_t 
                        uint64_t rounds) {
 	if(!pmu_count)
 		return;
-	printf("DIAGPMU name=%s", name);
+	printf("BENCHPMU name=%s", name);
 	for(int i = 0; i < pmu_count; i++)
 		printf(" %s=%.2f", pmu_names[i], (double)(after[i] - before[i]) / (double)rounds);
 	printf("\n");
