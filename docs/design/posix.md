@@ -586,22 +586,27 @@ gone.
 A cancellation point is a system call made as musl makes one (ADR
 0104). `ridlc` gives each method's C function a `radix_<object>_<method>_with`
 form that takes the system call function, so the Radix layer makes a
-point's call through `radix::cancellable`, the stub in `x86_64/cancel.S`,
-and every other call through `radix_syscall`, which inlines as before.
-Between its labels `__radix_cancel_begin` and `__radix_cancel_end` the
-stub reads the thread's cancel bits and, if cancellation is enabled and
-a cancel is due, jumps to `__radix_cancel_now` instead of making the
-call. There `__radix_cancel` ends the thread, or, for
-`radix::cancellable_masked`, returns a status that maps to ECANCELED, to
+point's call through `radix::cancellable`, and every other call through
+`radix_syscall`. Both inline: `radix::cancellable` puts the call in its
+registers as `radix_syscall` does and calls a stub in `x86_64/cancel.S`
+from inline assembly, past the red zone, so a point's arguments and
+results never go through memory (ADR 0802). Between its labels
+`__radix_cancel_begin` and `__radix_cancel_end` the stub
+`__radix_cancellable_syscall` reads the thread's cancel bits and, if
+cancellation is enabled and a cancel is due, jumps to
+`__radix_cancel_now` instead of making the call, where `__radix_cancel`
+ends the thread. `radix::cancellable_masked` calls the second stub,
+`__radix_cancellable_syscall_masked`, whose labels are its own and whose
+`__radix_cancel_masked_now` returns a status that maps to ECANCELED, to
 a caller that must first put back what it holds: a condition's mutex,
 `poll`'s copy of the entries.
 
 `pthread_cancel` sets the bit and sends SIGCANCEL. Its handler (patch
 0041) asks the layer's `CancelInContext` about the context it
-interrupted: one whose instruction pointer lies between the labels has
-not made its call, or the kernel has put it back on the `syscall`
+interrupted: one whose instruction pointer lies between a stub's labels
+has not made its call, or the kernel has put it back on the `syscall`
 instruction to make it again (`Restart::Always`, since the handler has
-SA_RESTART), so the handler moves it to `__radix_cancel_now` and
+SA_RESTART), so the handler moves it to that stub's now label and
 returns, and the thread acts on the cancel in its own frame, where
 cleanup handlers may run. A wait that a signal ends for good
 (`NoHandler`) returns interrupted at the end label, where the stub's
