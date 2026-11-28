@@ -24,6 +24,8 @@ sysapi = { path = "../sysapi" }
 # The frame around every window: its sizes and colours, where its parts
 # are, and its pixels (ADR 0718).
 window-frame = { path = "../window-frame" }
+# The tables of the title bar's protocol (ADR 0719).
+window-protocols = { path = "../window-protocols" }
 
 [dev-dependencies]
 # The patterns the test program's window shows, pixel for pixel.

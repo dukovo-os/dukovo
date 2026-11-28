@@ -6,20 +6,28 @@
 //! From the front: the panel windowd shows over the windows, then each
 //! window in the windows' order, and of each window its popups, the
 //! strips of its frame and its own surface. The surface is cut to the
-//! place the frame's layout gives it, so that a program draws nowhere
-//! else, and lies behind the frame, which is see-through where the
-//! surface shows: the content, and the region of a title bar the
-//! program shares (ADR 0719).
+//! places the frame's layout gives it, so that a program draws nowhere
+//! else: the content, and the region of a title bar the program shares
+//! (ADR 0719). It lies behind the frame, which is see-through there.
+//!
+//! A surface is one piece of the frame however many parts it shows in:
+//! the damage tracker knows a piece by its surface, and two pieces of
+//! one surface would each be taken for the other, moved. So a surface
+//! is cut to the rectangle around its parts ([`Cut`]), and drawn in the
+//! parts alone.
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::utils::CropRenderElement;
-use smithay::backend::renderer::element::{Kind, render_elements};
-use smithay::backend::renderer::pixman::{PixmanError, PixmanRenderer};
+use smithay::backend::renderer::element::{
+    Element, Id, Kind, RenderElement, UnderlyingStorage, render_elements,
+};
+use smithay::backend::renderer::pixman::{PixmanError, PixmanFrame, PixmanRenderer};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::desktop::PopupManager;
-use smithay::utils::{Logical, Physical, Point, Rectangle};
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::panel::Panel;
@@ -32,8 +40,114 @@ render_elements! {
     Own=MemoryRenderBufferRenderElement<PixmanRenderer>,
     /// A surface of a popup, whole.
     Popup=WaylandSurfaceRenderElement<PixmanRenderer>,
-    /// A surface of a window, cut to the window's place in its frame.
-    Window=CropRenderElement<WaylandSurfaceRenderElement<PixmanRenderer>>,
+    /// A surface of a window, where the window's frame lets it show.
+    Window=Cut,
+}
+
+/// A surface of a window, which shows in some parts of a screen's frame
+/// and nowhere else.
+#[derive(Debug)]
+pub struct Cut {
+    /// The surface, cut to the rectangle around the parts.
+    around: CropRenderElement<WaylandSurfaceRenderElement<PixmanRenderer>>,
+    /// The parts.
+    parts: [Option<Rectangle<i32, Physical>>; 2],
+}
+
+impl Cut {
+    /// `surface` where it lies in `parts` of a screen's frame, if
+    /// anywhere.
+    fn of(
+        surface: WaylandSurfaceRenderElement<PixmanRenderer>,
+        parts: [Option<Rectangle<i32, Physical>>; 2],
+    ) -> Option<Cut> {
+        let around = parts.into_iter().flatten().reduce(Rectangle::merge)?;
+        let around = CropRenderElement::from_element(surface, 1.0, around)?;
+        Some(Cut { around, parts })
+    }
+
+    /// What of `rects`, which are reckoned from the place `from` of the
+    /// screen's frame, lies in the parts.
+    fn kept(
+        &self,
+        from: Point<i32, Physical>,
+        rects: impl IntoIterator<Item = Rectangle<i32, Physical>>,
+    ) -> impl Iterator<Item = Rectangle<i32, Physical>> {
+        rects.into_iter().flat_map(move |rect| {
+            let on_screen = Rectangle::new(rect.loc + from, rect.size);
+            self.parts.into_iter().flatten().filter_map(move |part| {
+                let kept = on_screen.intersection(part)?;
+                Some(Rectangle::new(kept.loc - from, kept.size))
+            })
+        })
+    }
+}
+
+impl Element for Cut {
+    fn id(&self) -> &Id {
+        self.around.id()
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.around.current_commit()
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        self.around.src()
+    }
+
+    fn transform(&self) -> Transform {
+        self.around.transform()
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.around.geometry(scale)
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        self.around.damage_since(scale, commit)
+    }
+
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        // Between the parts the surface hides nothing: what is under
+        // it there shows wherever the frame over it is see-through.
+        let from = self.geometry(scale).loc;
+        self.kept(from, self.around.opaque_regions(scale)).collect()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.around.alpha()
+    }
+
+    fn kind(&self) -> Kind {
+        self.around.kind()
+    }
+}
+
+impl RenderElement<PixmanRenderer> for Cut {
+    fn draw(
+        &self,
+        frame: &mut PixmanFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), PixmanError> {
+        // The renderer draws in the damage alone.
+        let damage: Vec<_> = self.kept(dst.loc, damage.iter().copied()).collect();
+        if damage.is_empty() {
+            return Ok(());
+        }
+        self.around.draw(frame, src, dst, &damage, opaque_regions)
+    }
+
+    fn underlying_storage(&self, renderer: &mut PixmanRenderer) -> Option<UnderlyingStorage<'_>> {
+        self.around.underlying_storage(renderer)
+    }
 }
 
 /// What the screens show beside the windows.
@@ -119,12 +233,13 @@ fn window(
         )?;
         pieces.push(Piece::Own(own));
     }
-    let shows = framed.surface_shows();
-    let shows = Rectangle::new(on_screen(shows.loc, screen), shows.size.to_physical(1));
+    let mut parts = framed
+        .shows()
+        .map(|part| Rectangle::new(on_screen(part.loc, screen), part.size.to_physical(1)));
+    let parts = [parts.next(), parts.next()];
     let whole: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> =
         render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
-    let cut =
-        whole.into_iter().filter_map(|piece| CropRenderElement::from_element(piece, 1.0, shows));
+    let cut = whole.into_iter().filter_map(|surface| Cut::of(surface, parts));
     pieces.extend(cut.map(Piece::Window));
     Ok(())
 }

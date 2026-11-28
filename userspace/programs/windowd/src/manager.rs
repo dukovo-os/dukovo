@@ -28,7 +28,8 @@ use window_frame::{Button, Edge, Part};
 use crate::keys::Ask;
 use crate::panel::{Panel, Row};
 use crate::pointer::Picture;
-use crate::shell::Shell;
+use crate::shell::{Shell, app_of};
+use crate::titlebar::TitleBar;
 use crate::windows::{Framed, Under};
 
 /// How far the pointer moves with a button held on a title bar before
@@ -48,17 +49,24 @@ enum Item {
     Size,
     Minimize,
     Maximize,
+    /// Whether the window's application has windowd's full title bar
+    /// whatever it asks.
+    FullBar,
     Close,
 }
 
 /// The window menu's rows: what each does, or `None` for the room
-/// between two groups, and what it says.
-const MENU: [(Option<Item>, &str, &str); 7] = [
+/// between two groups, and what it says. The row of
+/// [`Item::FullBar`], with the room after it, is in the menu of a
+/// window whose program asks to share the title bar, and of no other.
+const MENU: [(Option<Item>, &str, &str); 9] = [
     (Some(Item::Restore), "Restore", ""),
     (Some(Item::Move), "Move", ""),
     (Some(Item::Size), "Size", ""),
     (Some(Item::Minimize), "Minimize", ""),
     (Some(Item::Maximize), "Maximize", ""),
+    (None, "", ""),
+    (Some(Item::FullBar), "Full title bar for this app", ""),
     (None, "", ""),
     (Some(Item::Close), "Close", "Alt+F4"),
 ];
@@ -99,8 +107,8 @@ enum Hold {
     /// A window is resized by the pointer, which was at `pressed` when
     /// it began.
     Resize { window: Window, edge: Edge, code: u16, pressed: Point<f64, Logical> },
-    /// The window menu shows.
-    Menu { window: Window, panel: Panel },
+    /// The window menu shows: `items` is what each row does.
+    Menu { window: Window, panel: Panel, items: Vec<Option<Item>> },
     /// The list of windows shows: `listed` is the window of each row.
     /// With `held`, letting Alt go chooses.
     List { panel: Panel, listed: Vec<Window>, held: bool },
@@ -472,21 +480,38 @@ impl Manager {
     fn menu(&mut self, shell: &mut Shell, window: Window, at: Point<i32, Logical>) {
         let Some(framed) = shell.windows.framed(&window) else { return };
         let maximized = framed.maximized();
-        let rows = MENU.iter().map(|(item, words, key)| match item {
-            None => Row::Gap,
-            Some(item) => {
-                let off = match item {
-                    Item::Restore => !maximized,
-                    Item::Move | Item::Size | Item::Maximize => maximized,
-                    Item::Minimize | Item::Close => false,
-                };
-                Row::Line { words: (*words).to_owned(), key, mark: Mark::None, off }
+        // An application of no name has no entry in the settings to
+        // change.
+        let app = window.toplevel().map(app_of).filter(|app| !app.is_empty());
+        let shares = app.filter(|_| TitleBar::of(&window).asked());
+        let full = shares.as_ref().map(|app| !shell.title_bars.lets(app));
+        let mut items = Vec::new();
+        let mut rows = Vec::new();
+        for (index, (item, words, key)) in MENU.iter().enumerate() {
+            let after_bar =
+                index.checked_sub(1).is_some_and(|before| MENU[before].0 == Some(Item::FullBar));
+            if (*item == Some(Item::FullBar) || after_bar) && full.is_none() {
+                continue;
             }
-        });
+            items.push(*item);
+            rows.push(match item {
+                None => Row::Gap,
+                Some(item) => {
+                    let off = match item {
+                        Item::Restore => !maximized,
+                        Item::Move | Item::Size | Item::Maximize => maximized,
+                        Item::Minimize | Item::FullBar | Item::Close => false,
+                    };
+                    let ticked = *item == Item::FullBar && full == Some(true);
+                    let mark = if ticked { Mark::Tick } else { Mark::None };
+                    Row::Line { words: (*words).to_owned(), key, mark, off }
+                }
+            });
+        }
         let theme = shell.windows.theme();
         let screen = shell.windows.screen_at(at.to_f64());
-        let panel = Panel::new(theme, theme.panel.menu_width, rows.collect(), None, at, screen);
-        self.hold = Hold::Menu { window, panel };
+        let panel = Panel::new(theme, theme.panel.menu_width, rows, None, at, screen);
+        self.hold = Hold::Menu { window, panel, items };
         shell.changed.windows = true;
     }
 
@@ -522,13 +547,20 @@ impl Manager {
     fn choose(&mut self, shell: &mut Shell, row: usize) {
         match core::mem::replace(&mut self.hold, Hold::None) {
             Hold::List { listed, .. } => shell.focus(listed.get(row)),
-            Hold::Menu { window, .. } => match MENU.get(row).and_then(|(item, ..)| *item) {
+            Hold::Menu { window, items, .. } => match items.get(row).copied().flatten() {
                 Some(Item::Restore) => shell.windows.restore(&window),
                 Some(Item::Maximize) => shell.windows.maximize(&window),
                 Some(Item::Minimize) => shell.minimize(&window),
                 Some(Item::Close) => close(&window),
-                Some(Item::Move | Item::Size) => {
-                    let size = MENU[row].0 == Some(Item::Size);
+                Some(Item::FullBar) => {
+                    let Some(app) = window.toplevel().map(app_of) else { return };
+                    let lets = shell.title_bars.lets(&app);
+                    shell.title_bars.set(&app, !lets);
+                    shell.settle_bars();
+                    shell.changed.title_bars = true;
+                }
+                Some(item @ (Item::Move | Item::Size)) => {
+                    let size = item == Item::Size;
                     let Some(start) = shell.windows.framed(&window).map(Framed::at) else {
                         return;
                     };

@@ -26,6 +26,13 @@
 //! popup's program is told it is done, and the keyboard goes where it
 //! was to go.
 //!
+//! Every window has windowd's frame, whatever its program asks: a
+//! program that asks who draws the window's decorations
+//! (xdg-decoration) is answered that the window server does. A program
+//! may ask to draw a part of the title bar itself
+//! ([`crate::titlebar`]); [`Shell::settle_bar`] says whether it does,
+//! by the person's settings.
+//!
 //! Nothing here reaches the screens or a device. What a request of a
 //! program changes is kept in [`Changed`] and [`Shell::lights`], which
 //! the desktop reads after it has let the programs speak.
@@ -43,9 +50,11 @@ use smithay::input::keyboard::LedState;
 use smithay::input::pointer::{CursorImageStatus, Focus};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{
-    ResizeEdge, State, WmCapabilities,
+    ResizeEdge, State, WmCapabilities, XdgToplevel,
 };
+use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -55,23 +64,29 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
-    is_sync_subsurface,
+    is_sync_subsurface, with_states,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{
-    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 use sysapi::time::monotonic_ns;
-use window_frame::Edge;
+use window_frame::{Bar, Edge};
 
 use crate::clients::Peer;
 use crate::manager::Asked;
+use crate::settings::TitleBars;
+use crate::titlebar::{self, TitleBar};
 use crate::windows::Windows;
+use crate::windows::resize::answered;
 
 /// What the programs' requests changed since the desktop last looked.
 #[derive(Clone, Copy, Debug, Default)]
@@ -81,6 +96,9 @@ pub struct Changed {
     pub windows: bool,
     /// The picture the pointer shows.
     pub pointer: bool,
+    /// Which applications may draw a part of their title bars: the
+    /// person chose for one, and their settings are to be written.
+    pub title_bars: bool,
 }
 
 /// The state of the protocols, and the windows.
@@ -92,6 +110,13 @@ pub struct Shell {
     seats: SeatState<Shell>,
     /// Kept for as long as the screens' globals are offered.
     _outputs: OutputManagerState,
+    /// Kept for as long as programs may ask who draws a window's
+    /// decorations.
+    _decorations: XdgDecorationState,
+    /// Kept for as long as programs may ask for a part of a title bar.
+    _title_bars: GlobalId,
+    /// Where events of windowd's own protocols are sent from.
+    display: DisplayHandle,
     popups: PopupManager,
     /// The popups that have the keyboard and the pointer, with the
     /// surface of the window they are of.
@@ -108,6 +133,8 @@ pub struct Shell {
     pub asked: Vec<Asked>,
     /// What the pointer shows over a program's surface.
     pub pointer: CursorImageStatus,
+    /// Which applications may draw a part of their title bars.
+    pub title_bars: TitleBars,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -129,6 +156,9 @@ impl Shell {
             shm: ShmState::new::<Shell>(display, Vec::new()),
             seats,
             _outputs: OutputManagerState::new_with_xdg_output::<Shell>(display),
+            _decorations: XdgDecorationState::new::<Shell>(display),
+            _title_bars: titlebar::offer(display),
+            display: display.clone(),
             popups: PopupManager::default(),
             grabbed: None,
             waiting: Vec::new(),
@@ -137,8 +167,64 @@ impl Shell {
             windows: Windows::default(),
             asked: Vec::new(),
             pointer: CursorImageStatus::default_named(),
+            title_bars: TitleBars::default(),
             changed: Changed::default(),
             lights: None,
+        }
+    }
+
+    /// The window whose own surface is `surface`, drawn or not yet.
+    pub fn window_with(&self, surface: &WlSurface) -> Option<Window> {
+        let waits = |window: &&Window| window.wl_surface().is_some_and(|its| *its == *surface);
+        self.windows.of_surface(surface).or_else(|| self.waiting.iter().find(waits)).cloned()
+    }
+
+    /// The window `toplevel` is the protocol's object of, drawn or not
+    /// yet.
+    pub fn window_of_toplevel(&self, toplevel: &XdgToplevel) -> Option<Window> {
+        self.window_with(self.xdg.get_toplevel(toplevel)?.wl_surface())
+    }
+
+    /// Settles whose the title bar of `window` is: shared with its
+    /// program if the program asks and the person's settings let its
+    /// application, and windowd's whole otherwise. A program that has
+    /// that to hear is told, and asked to draw the window so: with the
+    /// bar's rows more or fewer of its own, for the same frame.
+    pub fn settle_bar(&mut self, window: &Window) {
+        let Some(toplevel) = window.toplevel().filter(|toplevel| toplevel.alive()) else { return };
+        let theme = *self.windows.theme();
+        let mut bar = TitleBar::of(window);
+        let shared = bar.asked() && self.title_bars.lets(&app_of(toplevel));
+        let wanted = if shared { Bar::Shared } else { Bar::Full };
+        if !bar.owes(wanted) {
+            return;
+        }
+        let grows = match (bar.told(), wanted) {
+            (Bar::Full, Bar::Shared) => theme.bar,
+            (Bar::Shared, Bar::Full) => -theme.bar,
+            _ => 0,
+        };
+        bar.tell(&self.display, &theme, wanted);
+        toplevel.with_pending_state(|state| {
+            if let Some(size) = &mut state.size {
+                size.h = (size.h + grows).max(1);
+            }
+        });
+        // A window with no configure yet has its first when its
+        // program commits, after what it was told here.
+        let serial = toplevel.is_initial_configure_sent().then(|| toplevel.send_configure());
+        bar.sent(wanted, serial);
+        drop(bar);
+        self.windows.bar_told(window, grows);
+    }
+
+    /// Settles whose every window's title bar is: the person's
+    /// settings changed.
+    pub fn settle_bars(&mut self) {
+        let drawn = self.windows.by_use().into_iter().map(|framed| framed.window.clone());
+        let all: Vec<Window> = drawn.chain(self.waiting.iter().cloned()).collect();
+        for window in &all {
+            self.settle_bar(window);
         }
     }
 
@@ -241,7 +327,8 @@ impl Shell {
         let Some(at) = self.waiting.iter().position(waits) else { return };
         let Some(toplevel) = self.waiting[at].toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
-            let room = self.windows.room(self.pointer_at());
+            let bar = TitleBar::of(&self.waiting[at]).told();
+            let room = self.windows.room(self.pointer_at(), bar);
             toplevel.with_pending_state(|state| state.bounds = Some(room));
             toplevel.send_configure();
             return;
@@ -352,6 +439,14 @@ fn root_of(surface: &WlSurface) -> WlSurface {
     root
 }
 
+/// The name the program of `toplevel` gave its application, or none.
+pub fn app_of(toplevel: &ToplevelSurface) -> String {
+    with_states(toplevel.wl_surface(), |states| {
+        let role = states.data_map.get::<XdgToplevelSurfaceData>();
+        role.and_then(|role| role.lock().ok()?.app_id.clone()).unwrap_or_default()
+    })
+}
+
 /// The edge of a frame a program names with `edges`.
 fn edge_of(edges: ResizeEdge) -> Option<Edge> {
     Some(match edges {
@@ -391,6 +486,11 @@ impl CompositorHandler for Shell {
             // configure.
             let _ = popup.send_configure();
         }
+        if let Some(window) = self.window_with(surface)
+            && let Some(toplevel) = window.toplevel()
+        {
+            TitleBar::of(&window).committed(answered(toplevel));
+        }
         if let Some(window) = self.window_of(surface) {
             window.on_commit();
             self.windows.committed(&window);
@@ -426,6 +526,12 @@ impl XdgShellHandler for Shell {
         let Some(window) = self.window(&surface) else { return };
         self.windows.gone(&window);
         self.pass_on(&window);
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_with(surface.wl_surface()) {
+            self.settle_bar(&window);
+        }
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -467,8 +573,7 @@ impl XdgShellHandler for Shell {
         let _ = self.pressed_on(&surface, serial);
         let Some(window) = self.window(&surface) else { return };
         let Some(framed) = self.windows.framed(&window) else { return };
-        // The place is from the corner of the window's own geometry.
-        let at = framed.surface_shows().loc + location;
+        let at = framed.geometry_at() + location;
         self.asked.push(Asked::Menu(window, at));
     }
 
@@ -477,7 +582,9 @@ impl XdgShellHandler for Shell {
             Some(window) => self.windows.maximize(&window),
             // A window that has not shown yet shows maximized.
             None => {
-                let size = self.windows.filling(self.pointer_at());
+                let bar = self.window_with(surface.wl_surface());
+                let bar = bar.map_or(Bar::Full, |window| TitleBar::of(&window).told());
+                let size = self.windows.filling(self.pointer_at(), bar);
                 surface.with_pending_state(|state| {
                     state.states.set(State::Maximized);
                     state.size = Some(size);
@@ -590,8 +697,35 @@ impl SeatHandler for Shell {
 
 impl OutputHandler for Shell {}
 
+impl XdgDecorationHandler for Shell {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        answer_decoration(&toplevel);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: Mode) {
+        answer_decoration(&toplevel);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        answer_decoration(&toplevel);
+    }
+}
+
+/// Answers the program of `toplevel`, which said how it would have the
+/// window decorated, or that it can leave that to the window server:
+/// whatever it asks, the frame is windowd's (ADR 0718). The protocol
+/// has the program wait for a configure, which for a window that has
+/// had none yet is its first.
+fn answer_decoration(toplevel: &ToplevelSurface) {
+    toplevel.with_pending_state(|state| state.decoration_mode = Some(Mode::ServerSide));
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_configure();
+    }
+}
+
 delegate_compositor!(Shell);
 delegate_shm!(Shell);
 delegate_xdg_shell!(Shell);
 delegate_seat!(Shell);
 delegate_output!(Shell);
+delegate_xdg_decoration!(Shell);

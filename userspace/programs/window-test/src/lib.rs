@@ -13,6 +13,8 @@
 
 #![forbid(unsafe_code)]
 
+mod bar;
+
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
@@ -26,11 +28,16 @@ use wayland_client::protocol::{
     wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
     wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
+};
 pub use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
+
+pub use bar::{BarSaid, Mode};
 
 /// How a test's failure is told.
 pub type Outcome<T = ()> = Result<T, String>;
@@ -91,6 +98,36 @@ pub enum Heard {
     },
     /// The popup is done: the person went elsewhere.
     PopupDone,
+    /// The window server said who draws the window's frame: itself, or
+    /// the program.
+    Decorated {
+        /// Whether the window server does.
+        by_server: bool,
+    },
+}
+
+/// How a window is asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Open {
+    /// The program asks for the window to be maximized from the first.
+    pub maximized: bool,
+    /// The program asks for a part of the window's title bar before the
+    /// window is first configured.
+    pub shares_bar: bool,
+    /// The program says how it would have the window decorated before
+    /// the window is first configured, as a toolkit does.
+    pub decoration: Option<Decoration>,
+}
+
+/// How a program would have its window decorated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decoration {
+    /// By itself.
+    Own,
+    /// By the window server.
+    Servers,
+    /// As the window server likes.
+    Either,
 }
 
 /// Which of the program's surfaces a configure is for.
@@ -121,6 +158,10 @@ struct Told {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     shell: Option<xdg_wm_base::XdgWmBase>,
+    /// The registry, and the number of the title bar manager's global.
+    registry: Option<wl_registry::WlRegistry>,
+    title_bars: Option<u32>,
+    decorations: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
     seat: Option<wl_seat::WlSeat>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -155,6 +196,11 @@ struct Window {
     surface: wl_surface::WlSurface,
     role: xdg_surface::XdgSurface,
     toplevel: xdg_toplevel::XdgToplevel,
+    /// The object the program says with how it would be decorated.
+    decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+    /// The window's title bar object, while the program asks for a
+    /// part of the bar.
+    bar: Option<bar::TitleBar>,
     /// The buffer that shows, and its pixels' file.
     shown: Option<(wl_buffer::WlBuffer, File)>,
 }
@@ -172,6 +218,7 @@ struct Popup {
 /// The program.
 #[derive(Debug)]
 pub struct Client {
+    connection: Connection,
     queue: EventQueue<Told>,
     told: Told,
     window: Option<Window>,
@@ -205,8 +252,8 @@ impl Client {
     fn start(connection: &Connection) -> Outcome<Client> {
         let mut queue = connection.new_event_queue();
         let handle = queue.handle();
-        connection.display().get_registry(&handle, ());
-        let mut told = Told::default();
+        let registry = connection.display().get_registry(&handle, ());
+        let mut told = Told { registry: Some(registry), ..Told::default() };
         // What is offered, and then what each thing offered says of
         // itself: a screen's mode, the seat's keyboard and pointer.
         for _ in 0..3 {
@@ -221,7 +268,8 @@ impl Client {
         if let Some((name, _)) = missing.iter().find(|(_, missing)| *missing) {
             return Err(format!("the window server offers no {name}"));
         }
-        Ok(Client { queue, told, window: None, popup: None, pointer_shown: None })
+        let connection = connection.clone();
+        Ok(Client { connection, queue, told, window: None, popup: None, pointer_shown: None })
     }
 
     /// The screens.
@@ -265,14 +313,14 @@ impl Client {
 
     /// Asks for the window, which shows once it is drawn
     /// ([`Client::show`]), and waits for the window server's answer.
-    /// With `maximized` the program asks for it to be maximized from
-    /// the first, and the answer has the size to draw it
-    /// ([`Heard::Size`]).
+    /// A window that is asked for maximized is answered with the size
+    /// to draw it ([`Heard::Size`]); one that asks for a part of its
+    /// title bar, with whose the bar is ([`Client::bar`]).
     ///
     /// # Errors
     ///
     /// When the window server is gone or does not answer.
-    pub fn open(&mut self, maximized: bool) -> Outcome {
+    pub fn open(&mut self, how: Open) -> Outcome {
         let handle = self.queue.handle();
         let (Some(compositor), Some(shell)) = (&self.told.compositor, &self.told.shell) else {
             return Err("the window server offers no windows".into());
@@ -282,12 +330,19 @@ impl Client {
         let toplevel = role.get_toplevel(&handle, ());
         toplevel.set_title("window-test".into());
         toplevel.set_app_id("org.dukovo.window-test".into());
-        if maximized {
+        if how.maximized {
             toplevel.set_maximized();
         }
+        let window = Window { surface, role, toplevel, decoration: None, bar: None, shown: None };
+        self.window = Some(window);
+        if how.shares_bar {
+            self.share_bar()?;
+        }
+        if let Some(decoration) = how.decoration {
+            self.decorate(decoration)?;
+        }
         // A commit with no buffer asks for the first configure.
-        surface.commit();
-        self.window = Some(Window { surface, role, toplevel, shown: None });
+        self.window()?.surface.commit();
         let until = Instant::now() + Duration::from_secs(10);
         while self.told.configured.is_none() {
             if Instant::now() >= until {
@@ -308,7 +363,7 @@ impl Client {
     /// When the window server is gone or does not answer.
     pub fn show(&mut self, (width, height): (u32, u32), seed: u32) -> Outcome {
         if self.window.is_none() {
-            self.open(false)?;
+            self.open(Open::default())?;
         }
         let handle = self.queue.handle();
         let shown = self.buffer((width, height), seed)?;
@@ -391,6 +446,93 @@ impl Client {
     pub fn ask_menu(&mut self, x: i32, y: i32) -> Outcome {
         let (seat, serial) = self.pressed()?;
         self.window()?.toplevel.show_window_menu(seat, serial, x, y);
+        self.sent()
+    }
+
+    /// Asks the window server for a part of the window's title bar. The
+    /// window server says whose the bar then is ([`Client::bar`]), and
+    /// with a shared bar the program draws the window the bar's rows
+    /// higher, from the answer to the configure that follows.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window, the window server does not offer title
+    /// bars to share, or it is gone.
+    pub fn share_bar(&mut self) -> Outcome {
+        let backend = self.connection.backend();
+        let (Some(registry), Some(global)) = (&self.told.registry, self.told.title_bars) else {
+            return Err("the window server offers no title bars to share".into());
+        };
+        let toplevel = self.window()?.toplevel.id();
+        let bar = bar::TitleBar::of(&backend, &registry.id(), global, &toplevel)?;
+        if let Some(window) = &mut self.window {
+            window.bar = Some(bar);
+        }
+        self.sent()
+    }
+
+    /// What the window server last said of the window's title bar, if
+    /// the program asks for a part of it, once the program has all the
+    /// window server sent.
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone.
+    pub fn bar(&mut self) -> Outcome<Option<BarSaid>> {
+        self.sent()?;
+        Ok(self.window.as_ref().and_then(|window| window.bar.as_ref()?.said()))
+    }
+
+    /// Names the part of the title bar the program draws, as its left
+    /// edge, its top, its width and its height from the window's
+    /// corner. It is the window's when the window is next drawn
+    /// ([`Client::show`]).
+    ///
+    /// # Errors
+    ///
+    /// When the program has not asked for a part of the bar, or the
+    /// window server is gone.
+    pub fn region(&mut self, region: (i32, i32, i32, i32)) -> Outcome {
+        let bar = self.window()?.bar.as_ref().ok_or("the program shares no title bar")?;
+        bar.region(region)?;
+        self.sent()
+    }
+
+    /// Gives the title bar back to the window server, which then asks
+    /// for the window to be drawn under its full bar.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::region`].
+    pub fn give_bar_back(&mut self) -> Outcome {
+        let bar = self.window.as_mut().and_then(|window| window.bar.take());
+        bar.ok_or("the program shares no title bar")?.give_back()?;
+        self.sent()
+    }
+
+    /// Says how the program would have its window decorated. The
+    /// window server answers who draws the frame ([`Heard::Decorated`]).
+    ///
+    /// # Errors
+    ///
+    /// When there is no window, the window server does not offer the
+    /// choice, or it is gone.
+    pub fn decorate(&mut self, how: Decoration) -> Outcome {
+        let handle = self.queue.handle();
+        let Some(decorations) = &self.told.decorations else {
+            return Err("the window server offers no choice of decorations".into());
+        };
+        let window = self.window.as_mut().ok_or("no window")?;
+        let decoration = window.decoration.get_or_insert_with(|| {
+            decorations.get_toplevel_decoration(&window.toplevel, &handle, ())
+        });
+        match how {
+            Decoration::Own => decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ClientSide),
+            Decoration::Servers => {
+                decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            }
+            Decoration::Either => decoration.unset_mode(),
+        }
         self.sent()
     }
 
@@ -696,6 +838,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                 "wl_shm" => told.shm = Some(registry.bind(name, 1, handle, ())),
                 "xdg_wm_base" => told.shell = Some(registry.bind(name, version.min(2), handle, ())),
                 "wl_seat" => told.seat = Some(registry.bind(name, version.min(8), handle, ())),
+                "zxdg_decoration_manager_v1" => {
+                    told.decorations = Some(registry.bind(name, 1, handle, ()));
+                }
+                "dukovo_title_bar_manager_v1" => told.title_bars = Some(name),
                 "wl_output" => {
                     let _: wl_output::WlOutput = registry.bind(name, version.min(4), handle, name);
                     told.screens.push((name, Screen::default()));
@@ -897,6 +1043,22 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Told {
     }
 }
 
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _decoration: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            let by_server = mode == WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            told.heard.push_back(Heard::Decorated { by_server });
+        }
+    }
+}
+
 impl Dispatch<wl_callback::WlCallback, ()> for Told {
     fn event(
         told: &mut Told,
@@ -914,6 +1076,7 @@ impl Dispatch<wl_callback::WlCallback, ()> for Told {
 
 delegate_noop!(Told: wl_compositor::WlCompositor);
 delegate_noop!(Told: xdg_positioner::XdgPositioner);
+delegate_noop!(Told: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Told: ignore wl_shm::WlShm);
 delegate_noop!(Told: wl_shm_pool::WlShmPool);
 delegate_noop!(Told: ignore wl_buffer::WlBuffer);

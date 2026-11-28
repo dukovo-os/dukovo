@@ -7,6 +7,7 @@
 
 mod managed;
 mod rig;
+mod shared;
 
 use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
@@ -178,14 +179,15 @@ impl World {
 
     /// Fails unless the first screen shows `drawn`, the pixels of
     /// `rect` as [`window_frame`] draws them, with the place (0, 0) of
-    /// `rect`'s plane at `corner`. A pixel in `left_out` is not looked
-    /// at. One that covers a part or nothing shows over the desktop's
-    /// own colour if `on_desktop`, and is not looked at otherwise.
+    /// `rect`'s plane at `corner`. A pixel in one of `left_out` is not
+    /// looked at. One that covers a part or nothing shows over the
+    /// desktop's own colour if `on_desktop`, and is not looked at
+    /// otherwise.
     fn shows_drawn(
         &mut self,
         (rect, drawn): (Rect, &[u8]),
         corner: (i32, i32),
-        left_out: Option<Rect>,
+        left_out: &[Rect],
         on_desktop: bool,
     ) {
         let (width, shows) = self.desktop.shows(0);
@@ -193,7 +195,7 @@ impl World {
         for (index, [blue, green, red, cover]) in pixels.iter().enumerate() {
             let (x, y) = (rect.x + index as i32 % rect.w, rect.y + index as i32 / rect.w);
             let whole = *cover == 255;
-            if left_out.is_some_and(|left_out| left_out.contains(x, y)) || !(whole || on_desktop) {
+            if left_out.iter().any(|left_out| left_out.contains(x, y)) || !(whole || on_desktop) {
                 continue;
             }
             let at = (((corner.1 + y) as u32 * width + (corner.0 + x) as u32) * 4) as usize;
@@ -205,7 +207,8 @@ impl World {
 
     /// Fails unless the first screen shows the frame of `layout`, with
     /// the corner of its box at `corner`, as [`window_frame`] draws it
-    /// for `look`, with the desktop's own colour behind it.
+    /// for `look`, with the desktop's own colour behind it. Where the
+    /// window's own pixels show is not looked at.
     fn shows_frame(&mut self, layout: &Layout, corner: (i32, i32), look: &Look<'_>) {
         let bounds = layout.bounds();
         let mut drawn = vec![0; Canvas::bytes_of(&bounds)];
@@ -215,7 +218,27 @@ impl World {
             look,
             &mut Canvas::over(bounds, &mut drawn),
         );
-        self.shows_drawn((bounds, &drawn), corner, Some(layout.surface), true);
+        let own = [layout.content, layout.region.unwrap_or_default()];
+        self.shows_drawn((bounds, &drawn), corner, &own, true);
+    }
+
+    /// Fails unless the first screen shows the pattern of `seed`, as a
+    /// window draws it from the corner of its surface, in every pixel
+    /// `layout` has for the window's own: the content, and the region
+    /// of a shared title bar. The corner of the frame's box is at
+    /// `corner`.
+    fn shows_own(&mut self, layout: &Layout, corner: (i32, i32), seed: u32) {
+        let (width, shows) = self.desktop.shows(0);
+        for part in [Some(layout.content), layout.region].into_iter().flatten() {
+            for (x, y) in
+                (part.y..part.bottom()).flat_map(|y| (part.x..part.right()).map(move |x| (x, y)))
+            {
+                let at = (((corner.1 + y) as u32 * width + (corner.0 + x) as u32) * 4) as usize;
+                let own = ((x - layout.surface.x) as u32, (y - layout.surface.y) as u32);
+                let shows = [shows[at + 2], shows[at + 1], shows[at]];
+                assert_eq!(shows, pattern::colour(seed, own.0, own.1), "({x}, {y})");
+            }
+        }
     }
 
     /// Fails unless the first screen shows the panel of `entries`,
@@ -239,7 +262,7 @@ impl World {
             chosen,
             &mut Canvas::over(all, &mut drawn),
         );
-        self.shows_drawn((all, &drawn), corner, None, false);
+        self.shows_drawn((all, &drawn), corner, &[], false);
     }
 
     /// Moves the pointer to the middle of the pixel (`x`, `y`) of the
@@ -313,6 +336,13 @@ impl World {
     fn tap(&mut self, code: u16) {
         self.key(code, true);
         self.key(code, false);
+    }
+
+    /// Presses the key of `code` with the key of `held` down.
+    fn chord(&mut self, held: u16, code: u16) {
+        self.key(held, true);
+        self.tap(code);
+        self.key(held, false);
     }
 }
 

@@ -17,6 +17,15 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgToplevelSurfaceData};
 use window_frame::Edge;
 
+/// The serial of the newest configure the program of `toplevel` had
+/// answered when it last committed the window.
+pub fn answered(toplevel: &ToplevelSurface) -> Option<Serial> {
+    with_states(toplevel.wl_surface(), |states| {
+        let role = states.data_map.get::<XdgToplevelSurfaceData>();
+        role.and_then(|role| role.lock().ok()?.current_serial)
+    })
+}
+
 /// A resize of one window.
 #[derive(Debug)]
 pub struct Resize {
@@ -71,6 +80,13 @@ impl Resize {
         self.ask(toplevel);
     }
 
+    /// The window's surface is to be `rows` higher than the size that
+    /// is wanted has it, for the same frame: its title bar changed
+    /// hands. The program has been asked for it already.
+    pub fn grow(&mut self, rows: i32) {
+        self.wanted.h = (self.wanted.h + rows).max(1);
+    }
+
     /// The person let go. Returns whether the resize is over: the
     /// program has nothing left to draw.
     pub fn end(&mut self, toplevel: &ToplevelSurface) -> bool {
@@ -82,11 +98,7 @@ impl Resize {
     /// The program drew the window anew. Returns whether the resize is
     /// over.
     pub fn committed(&mut self, toplevel: &ToplevelSurface) -> bool {
-        let drawn = with_states(toplevel.wl_surface(), |states| {
-            let role = states.data_map.get::<XdgToplevelSurfaceData>();
-            role.and_then(|role| role.lock().ok()?.current_serial)
-        });
-        if let (Some(out), Some(drawn)) = (self.out, drawn)
+        if let (Some(out), Some(drawn)) = (self.out, answered(toplevel))
             && drawn.is_no_older_than(&out)
         {
             self.out = None;

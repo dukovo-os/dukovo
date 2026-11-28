@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+-->
+<protocol name="dukovo_title_bar_v1">
+  <copyright>
+    Copyright 2026 The Dukovo contributors.
+
+    Licensed under the Apache License, Version 2.0, or the MIT license,
+    at your option.
+  </copyright>
+
+  <description summary="a program's own part of its window's title bar">
+    Dukovo's window server draws a frame around every window: a title
+    bar with the window's icon, its title and three buttons, and a
+    border. A program that wants a part of the title bar for itself, for
+    tabs or a search box, asks for it with this protocol. The window
+    server keeps the frame, the icon, the buttons and a strip to move
+    the window by; the program draws the rest of the bar.
+
+    Whether a program gets the part it asks for is the person's choice,
+    kept by the window server. A program is told which it is with the
+    bar event and draws its window accordingly.
+  </description>
+
+  <interface name="dukovo_title_bar_manager_v1" version="1">
+    <description summary="gives windows a title bar object">
+      The global a program binds to share title bars with the window
+      server.
+    </description>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+             summary="the toplevel has a title bar object already"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        The title bar objects made with the manager stay as they are.
+      </description>
+    </request>
+
+    <request name="get_title_bar">
+      <description summary="make the title bar object of a toplevel">
+        Makes the title bar object of a toplevel. A toplevel has one at
+        the most: asking for a second while the first is alive is the
+        already_exists error.
+
+        The window server answers with a bar event, before the
+        toplevel's next configure event.
+      </description>
+      <arg name="id" type="new_id" interface="dukovo_title_bar_v1"/>
+      <arg name="toplevel" type="object" interface="xdg_toplevel"/>
+    </request>
+  </interface>
+
+  <interface name="dukovo_title_bar_v1" version="1">
+    <description summary="a toplevel's title bar, shared with its program">
+      While a toplevel has a title bar object, the window server may
+      share the toplevel's title bar with the program. The bar event
+      says whether it does.
+
+      When the toplevel is destroyed, the object does nothing more.
+    </description>
+
+    <enum name="mode">
+      <description summary="whose the title bar is">
+        In the full mode the title bar is the window server's whole,
+        above the toplevel's window geometry. The program draws nothing
+        of it and its region is not used.
+
+        In the shared mode the title bar lies over the top rows of the
+        toplevel's window geometry: the geometry is as much higher as
+        the bar is high. The window server draws the bar over those
+        rows and leaves open the program's region, where the program's
+        own pixels show and the program has the pointer.
+      </description>
+      <entry name="full" value="0" summary="the window server's whole"/>
+      <entry name="shared" value="1"
+             summary="the program draws its region of it"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="give the title bar back">
+        The toplevel has the window server's full title bar again, from
+        the commit that answers the next configure event.
+      </description>
+    </request>
+
+    <request name="set_region">
+      <description summary="say which part of the bar the program draws">
+        The rectangle of the title bar the program draws, in the
+        coordinates of the toplevel's window geometry. The window
+        server uses of it what lies in the bar's rows below the first
+        and in the columns from the bar event's left to the geometry's
+        width less its right.
+
+        A rectangle whose width or height is not more than 0 is no
+        region: the program draws nothing of the bar.
+
+        The region is double-buffered state: it takes effect with the
+        next wl_surface.commit of the toplevel's surface.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <event name="bar">
+      <description summary="whose the title bar is, and its sizes">
+        Sent once after the object is made and again whenever a value
+        changes, each time before an xdg_surface.configure event of the
+        toplevel. The program draws its window as the event says from
+        the commit that answers that configure event.
+
+        The height is that of the title bar. The left and the right are
+        the columns at the two ends of the bar the window server keeps:
+        the icon's at the left, and at the right the buttons' with a
+        strip the window is moved by.
+      </description>
+      <arg name="mode" type="uint" enum="mode"/>
+      <arg name="height" type="uint"/>
+      <arg name="left" type="uint"/>
+      <arg name="right" type="uint"/>
+    </event>
+  </interface>
+</protocol>

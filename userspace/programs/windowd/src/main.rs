@@ -25,8 +25,10 @@ mod pointer;
 mod scene;
 mod screens;
 mod session;
+mod settings;
 mod shell;
 mod socket;
+mod titlebar;
 mod windows;
 
 #[cfg(test)]

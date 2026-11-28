@@ -15,6 +15,11 @@
 //! content never differ on the screen. A resize asks for one size at a
 //! time ([`resize`]).
 //!
+//! A window's title bar is windowd's whole or shared with the window's
+//! program ([`crate::titlebar`]). A window keeps its frame's box when
+//! the bar changes hands: its own surface is the bar's rows higher
+//! while the bar is shared.
+//!
 //! Nothing here reaches the seat: who has the keyboard is the
 //! [`Shell`](crate::shell::Shell)'s to say.
 
@@ -34,6 +39,8 @@ use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData};
 use window_frame::{Bar, Button, Canvas, Edge, Layout, Look, Margins, Part, Rect, Shape, Theme};
 
 use resize::Resize;
+
+use crate::titlebar::TitleBar;
 
 /// How far down and to the right of the window before it a new window
 /// shows.
@@ -95,9 +102,9 @@ struct Restore {
     /// The corner of the frame's box, or `None` for the middle of the
     /// screen: the window was maximized when it first showed.
     at: Option<Point<i32, Logical>>,
-    /// The size of the content, or `None` for the size the program
+    /// The size of the frame's box, or `None` for the size the program
     /// chooses.
-    size: Option<Size<i32, Logical>>,
+    frame: Option<Size<i32, Logical>>,
 }
 
 /// What a frame's strips were last drawn to show.
@@ -176,10 +183,19 @@ impl Framed {
         self.at + within - self.window.geometry().loc
     }
 
-    /// The part of the desktop the window's own surface shows in.
-    pub fn surface_shows(&self) -> Rectangle<i32, Logical> {
-        let surface = self.layout.surface;
-        Rectangle::new(self.at + Point::from((surface.x, surface.y)), (surface.w, surface.h).into())
+    /// Where the top left corner of the window's geometry is on the
+    /// desktop: what the program reckons its window's places from.
+    pub fn geometry_at(&self) -> Point<i32, Logical> {
+        self.at + Point::from((self.layout.surface.x, self.layout.surface.y))
+    }
+
+    /// The parts of the desktop the window's own surface shows in: the
+    /// content, and the region of a shared title bar.
+    pub fn shows(&self) -> impl Iterator<Item = Rectangle<i32, Logical>> {
+        let parts = [Some(self.layout.content), self.layout.region];
+        parts.into_iter().flatten().map(|part| {
+            Rectangle::new(self.at + Point::from((part.x, part.y)), (part.w, part.h).into())
+        })
     }
 
     /// Whether the program was asked to draw the window maximized, or
@@ -203,10 +219,11 @@ impl Framed {
     }
 
     /// The size nearest to `width` by `height`, which may be less than
-    /// nothing, that the window's content can have.
-    fn fitted(&self, theme: &Theme, (width, height): (i32, i32)) -> Size<i32, Logical> {
+    /// nothing, that the window's surface can have under a title bar
+    /// that is `bar`'s.
+    fn fitted(&self, theme: &Theme, bar: Bar, (width, height): (i32, i32)) -> Size<i32, Logical> {
         let (least, most) = self.limits();
-        let own = Layout::least(theme);
+        let own = Layout::least(theme, bar);
         let fit = |wanted: i32, least: i32, most: i32, own: i32| {
             let most = if most > 0 { most } else { i32::MAX };
             wanted.min(most).max(least).max(own)
@@ -274,8 +291,9 @@ impl Framed {
     }
 }
 
-/// The size of the own pixels of a window of `shape` whose frame's box
-/// is `frame`: a pixel each way at the least.
+/// The size of the surface of a window of `shape` whose frame's box is
+/// `frame` and whose title bar is `bar`'s: a pixel each way at the
+/// least.
 fn inside(theme: &Theme, shape: Shape, bar: Bar, frame: Size<i32, Logical>) -> Size<i32, Logical> {
     let (width, height) = Margins::of(theme, shape, bar).within((frame.w, frame.h));
     Size::from((width.max(1), height.max(1)))
@@ -366,16 +384,17 @@ impl Windows {
         screen.and_then(|screen| self.space.output_geometry(screen)).unwrap_or_default()
     }
 
-    /// The size a program is told its window has room for on the
-    /// screen the pointer, at `pointer`, is on.
-    pub fn room(&self, pointer: Point<f64, Logical>) -> Size<i32, Logical> {
-        inside(&self.theme, Shape::Normal, Bar::Full, self.screen_at(pointer).size)
+    /// The size a program is told the surface of its window, whose
+    /// title bar is `bar`'s, has room for on the screen the pointer, at
+    /// `pointer`, is on.
+    pub fn room(&self, pointer: Point<f64, Logical>, bar: Bar) -> Size<i32, Logical> {
+        inside(&self.theme, Shape::Normal, bar, self.screen_at(pointer).size)
     }
 
-    /// The size of the own pixels of a window that fills the screen
-    /// the pointer, at `pointer`, is on.
-    pub fn filling(&self, pointer: Point<f64, Logical>) -> Size<i32, Logical> {
-        inside(&self.theme, Shape::Maximized, Bar::Full, self.screen_at(pointer).size)
+    /// The size of the surface of a window, whose title bar is `bar`'s,
+    /// that fills the screen the pointer, at `pointer`, is on.
+    pub fn filling(&self, pointer: Point<f64, Logical>, bar: Bar) -> Size<i32, Logical> {
+        inside(&self.theme, Shape::Maximized, bar, self.screen_at(pointer).size)
     }
 
     /// Puts the surface of the window at `index` where its frame has
@@ -404,7 +423,8 @@ impl Windows {
     /// it now.
     fn layout_of(theme: &Theme, window: &Window, shape: Shape) -> Layout {
         let size = window.geometry().size;
-        Layout::of(theme, (size.w, size.h), shape, Bar::Full, None)
+        let (bar, region) = TitleBar::of(window).drawn();
+        Layout::of(theme, (size.w, size.h), shape, bar, region)
     }
 
     /// Where the corner of a frame `frame` wide and high first goes on
@@ -591,11 +611,11 @@ impl Windows {
         let Some(toplevel) = framed.window.toplevel() else { return };
         framed.fills = fills;
         if framed.layout.shape == Shape::Normal {
-            let size = framed.window.geometry().size;
-            framed.restore = Restore { at: Some(framed.at), size: Some(size) };
+            framed.restore = Restore { at: Some(framed.at), frame: Some(framed.frame().size) };
         }
         framed.resize = None;
-        let size = inside(&theme, Shape::Maximized, framed.layout.bar, framed.fills.size);
+        let bar = TitleBar::of(window).told();
+        let size = inside(&theme, Shape::Maximized, bar, framed.fills.size);
         toplevel.with_pending_state(|state| {
             state.states.set(State::Maximized);
             state.states.unset(State::Resizing);
@@ -607,12 +627,14 @@ impl Windows {
     /// Asks the program of `window`, which is maximized, to draw it as
     /// it was before.
     pub fn restore(&mut self, window: &Window) {
+        let theme = self.theme;
         let Some(framed) = self.framed_mut(window) else { return };
         if !framed.maximized() {
             return;
         }
         let Some(toplevel) = framed.window.toplevel() else { return };
-        let size = framed.restore.size;
+        let bar = TitleBar::of(window).told();
+        let size = framed.restore.frame.map(|frame| inside(&theme, Shape::Normal, bar, frame));
         toplevel.with_pending_state(|state| {
             state.states.unset(State::Maximized);
             state.size = size;
@@ -623,10 +645,7 @@ impl Windows {
     /// The width of the frame of `window`, which is maximized, once it
     /// is restored, if its program does not choose it.
     pub fn restored_width(&self, window: &Window) -> Option<i32> {
-        let framed = self.framed(window)?;
-        let size = framed.restore.size?;
-        let margins = Margins::of(&self.theme, Shape::Normal, framed.layout.bar);
-        Some(margins.around((size.w, size.h)).0)
+        Some(self.framed(window)?.restore.frame?.w)
     }
 
     /// Takes `window` off the screens. It stays in the list.
@@ -666,12 +685,22 @@ impl Windows {
         let theme = self.theme;
         let Some(framed) = self.framed_mut(window) else { return };
         let Some(frame) = framed.resize.as_ref().map(|resize| resize.dragged(by)) else { return };
-        let margins = Margins::of(&theme, Shape::Normal, framed.layout.bar);
-        let wanted = framed.fitted(&theme, margins.within((frame.w, frame.h)));
+        let bar = TitleBar::of(window).told();
+        let margins = Margins::of(&theme, Shape::Normal, bar);
+        let wanted = framed.fitted(&theme, bar, margins.within((frame.w, frame.h)));
         let (Some(resize), Some(toplevel)) = (&mut framed.resize, framed.window.toplevel()) else {
             return;
         };
         resize.want(toplevel, wanted);
+    }
+
+    /// The program of `window` was told that its title bar changes
+    /// hands, and that its surface is to be `grows` higher for it: a
+    /// resize that is under way is for a surface as much higher.
+    pub fn bar_told(&mut self, window: &Window, grows: i32) {
+        if let Some(resize) = self.framed_mut(window).and_then(|framed| framed.resize.as_mut()) {
+            resize.grow(grows);
+        }
     }
 
     /// The resize of `window` is over: its program is told so with the

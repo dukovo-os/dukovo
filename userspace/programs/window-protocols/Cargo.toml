@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "window-protocols"
+description = "The Wayland protocols that are Dukovo's own, as the tables the window server (windowd(1)) and a program speak them from: a window's title bar shared between the two"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# What a table of a Wayland interface is made of. No feature is asked
+# for: the protocol is spoken by the crate's own Rust code on both
+# sides, with no C library.
+wayland-backend = "0.3.17"
+
+[dev-dependencies]
+# Reads the protocols' XML, which the tests hold the tables to.
+quick-xml = "0.41.0"
+
+[lints]
+workspace = true

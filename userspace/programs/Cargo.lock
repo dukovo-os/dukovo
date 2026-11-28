@@ -6093,6 +6093,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "window-protocols"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "quick-xml",
+ "wayland-backend",
+]
+
+[[package]]
 name = "window-test"
 version = "1.0.0-alpha.1"
 dependencies = [
@@ -6103,6 +6111,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "window-frame",
+ "window-protocols",
 ]
 
 [[package]]
@@ -6119,6 +6128,7 @@ dependencies = [
  "smithay",
  "sysapi",
  "window-frame",
+ "window-protocols",
  "window-test",
 ]
 

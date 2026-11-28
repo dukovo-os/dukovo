@@ -195,24 +195,29 @@ impl Layout {
     /// The columns of a shared title bar that stay windowd's, counted
     /// from the left and from the right edge of the window's surface:
     /// the icon's, and the buttons' with the strip to move the window
-    /// by.
-    pub fn insets(theme: &Theme, shape: Shape) -> (i32, i32) {
-        let margins = Margins::of(theme, shape, Bar::Shared);
-        let pulled = Layout::pulled_in(theme, shape);
-        let left = theme.icon_at.0 - pulled + theme.icon_side + theme.title_gap - margins.left;
+    /// by. They are the same for a maximized window as for another: its
+    /// surface reaches as much further out as the frame's parts are
+    /// pulled in.
+    pub fn insets(theme: &Theme) -> (i32, i32) {
         let buttons: i32 = theme.button_widths.iter().sum();
-        let right = theme.buttons_right - pulled + buttons + theme.title_gap + theme.drag_strip
-            - margins.right;
+        let left = theme.icon_at.0 + theme.icon_side + theme.title_gap - theme.border;
+        let right =
+            theme.buttons_right + buttons + theme.title_gap + theme.drag_strip - theme.border;
         (left, right)
     }
 
-    /// The least width and height of a window's content: what leaves
-    /// the icon and the buttons room in the title bar.
-    pub fn least(theme: &Theme) -> (i32, i32) {
+    /// The least width and height of the surface of a window whose
+    /// title bar is `bar`: what leaves the icon and the buttons room in
+    /// the title bar, and a row of content below it.
+    pub fn least(theme: &Theme, bar: Bar) -> (i32, i32) {
         let buttons: i32 = theme.button_widths.iter().sum();
-        let bar =
+        let parts =
             theme.icon_at.0 + theme.icon_side + theme.title_gap + buttons + theme.buttons_right;
-        (bar - 2 * theme.border, 1)
+        let rows = match bar {
+            Bar::Full => 1,
+            Bar::Shared => theme.bar + 1,
+        };
+        (parts - 2 * theme.border, rows)
     }
 
     /// The layout of the frame of a window of `shape` whose surface is
@@ -248,7 +253,7 @@ impl Layout {
         let title = Rect::new(title_from, 0, (title_to - title_from).max(0), theme.bar - 1);
         let region = match (bar, region) {
             (Bar::Shared, Some(asked)) => {
-                let (left, right) = Layout::insets(theme, shape);
+                let (left, right) = Layout::insets(theme);
                 let allowed = Rect::new(
                     surface.x + left,
                     1,
@@ -396,7 +401,8 @@ mod tests {
     #[test]
     fn the_least_content_leaves_the_icon_and_the_buttons_room() {
         let theme = Theme::basic();
-        assert_eq!(Layout::least(&theme), (152, 1));
+        assert_eq!(Layout::least(&theme, Bar::Full), (152, 1));
+        assert_eq!(Layout::least(&theme, Bar::Shared), (152, 37));
         let layout = Layout::of(&theme, (152, 1), Shape::Normal, Bar::Full, None);
         assert_eq!(layout.button(Button::Minimize).x, layout.icon.right() + theme.title_gap);
         assert_eq!(layout.title.w, 0);
@@ -555,8 +561,7 @@ mod tests {
         assert_eq!(layout.content, Rect::new(5, 36, 600, 400));
         // With no region the whole bar is windowd's.
         assert_eq!(layout.part_at(200, 20), Part::Title);
-        assert_eq!(Layout::insets(&theme, Shape::Normal), (30, 226));
-        assert_eq!(Layout::insets(&theme, Shape::Maximized), (30, 226));
+        assert_eq!(Layout::insets(&theme), (30, 226));
     }
 
     #[test]

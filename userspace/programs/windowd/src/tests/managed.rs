@@ -12,7 +12,7 @@ use input::abi::{
 };
 use window_frame::panel::{Entry, Mark};
 use window_frame::{Bar, Button, Layout, Look, Shape, Theme};
-use window_test::{Client, Heard, ResizeEdge};
+use window_test::{Client, Heard, Open, ResizeEdge};
 
 use super::{PATIENCE, World, framed, look, middle};
 use crate::screens::BACKGROUND;
@@ -80,13 +80,6 @@ fn key_but(heard: &Heard, but: &[u16]) -> bool {
 }
 
 impl World {
-    /// Presses the key of `code` with the key of `held` down.
-    fn chord(&mut self, held: u16, code: u16) {
-        self.key(held, true);
-        self.tap(code);
-        self.key(held, false);
-    }
-
     /// The seed of the window in front, of windows that showed one
     /// after another with the seeds 7, 8 and 9.
     fn front(&mut self) -> u32 {
@@ -210,7 +203,7 @@ fn an_edge_resizes_its_window_one_size_at_a_time_and_the_other_sides_stay() {
     world.shows_frame(&frame_of((390, 220), Shape::Normal), (left - 10, top - 20), &look(true));
 
     // No window is narrower than its title bar's parts take.
-    let least = Layout::least(&Theme::basic()).0 as u32;
+    let least = Layout::least(&Theme::basic(), Bar::Full).0 as u32;
     world.point(left - 8, top + 100);
     world.button(BTN_LEFT, true);
     world.point(1023, top + 100);
@@ -607,7 +600,7 @@ fn a_program_asks_for_its_window_to_be_maximized_restored_and_minimized() {
     let mut world = World::one_screen();
     let program = world.program();
     // Before the window shows: it shows maximized.
-    world.ask(&program, |client| client.open(true)).unwrap();
+    world.ask(&program, |client| client.open(Open { maximized: true, ..Open::default() })).unwrap();
     assert_eq!(world.follow(&program, SIZE, 7), (FILLS, true));
     world.settle();
     let fills = frame_of(FILLS, Shape::Maximized);
