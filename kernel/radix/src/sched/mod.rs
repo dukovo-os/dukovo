@@ -38,7 +38,8 @@
 //! suggest (`radix_sched::haltpoll`): up to 200 µs in a virtual machine
 //! without MWAIT, where halting and the interrupt that ends it are each an
 //! exit to the hypervisor, and up to 8 µs elsewhere, where leaving MWAIT or
-//! HLT takes a microsecond or two.
+//! HLT takes a microsecond or two. It polls only while another CPU has
+//! work, whose threads are what would wake it (ADR 0813).
 //!
 //! Exited threads are freed by the reaper thread once their CPU has
 //! switched away. The correctness argument, and the TLA+ model of blocking
@@ -2202,7 +2203,7 @@ fn idle_loop(cpu: usize) -> ! {
         let limit_ns = haltpoll.limit_ns();
         // When the poll ended, if a wake-up did not end it.
         let mut polled_until = None;
-        if poll(slot, started.saturating_add(limit_ns)) {
+        if poll(cpu, slot, started.saturating_add(limit_ns)) {
             bump(&slot.polls, 1);
         } else {
             // The deepest state that pays before the timer, unless recent
@@ -2282,18 +2283,28 @@ pub fn cpu_to_itself() -> bool {
     slot.running.load(Ordering::Relaxed) <= 1 && !slot.resched.pending()
 }
 
-/// Polls for a switch to be asked for until `until`, and returns whether
-/// one was. Wakers see the word watched and skip the interrupt. Interrupts
-/// are on while it polls, so timers and devices are served, but preemption
-/// is off: the idle loop switches, not the interrupt's way out.
-fn poll(slot: &CpuSched, until: u64) -> bool {
+/// Whether CPU `cpu` has work: a thread to run, or one on its way to it.
+/// Its threads are what wakes a thread of another CPU's.
+fn has_work(cpu: usize) -> bool {
+    let slot = CPUS.get(cpu);
+    slot.running.load(Ordering::Relaxed) > 0 || slot.resched.pending()
+}
+
+/// Polls on CPU `cpu`, whose state is `slot`, for a switch to be asked
+/// for, until `until` or until no other CPU has work to wake it from
+/// (ADR 0813), and returns whether one was. Wakers see the word watched
+/// and skip the interrupt. Interrupts are on while it polls, so timers and
+/// devices are served, but preemption is off: the idle loop switches, not
+/// the interrupt's way out.
+fn poll(cpu: usize, slot: &CpuSched, until: u64) -> bool {
     if until <= Arch::now_ns() {
         return false;
     }
     slot.resched.watch();
     Arch::preempt_disable();
     Arch::enable_interrupts();
-    while !slot.resched.pending() && Arch::now_ns() < until {
+    let mut others = haltpoll::Others::of(cpu, Arch::cpu_count().min(MAX_CPUS));
+    while !slot.resched.pending() && others.may_wake(has_work) && Arch::now_ns() < until {
         core::hint::spin_loop();
     }
     Arch::disable_interrupts();

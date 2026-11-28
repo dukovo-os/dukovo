@@ -35,6 +35,16 @@
 //! a round trip. So it polls too, by the same rule, within the bounds of
 //! [`HARDWARE`]: a few microseconds, as Linux polls before C1 when its
 //! governor expects the CPU to be woken that soon (ADR 0551).
+//!
+//! A wake-up from another CPU comes from a thread that runs there. So a
+//! CPU polls only while some other CPU has work, a thread to run or one
+//! on its way to it, and halts once none has ([`Others`], ADR 0813): what
+//! would end its idle period then is an interrupt, its own or another
+//! CPU's, and polling for one burns the limit, in a virtual machine the
+//! host's processor, each time. A program and the one that answers it
+//! keep each other polling as before; two that take turns with a timer,
+//! as a window's program and the desktop do every frame, no longer poll
+//! through the wait for the timer.
 
 /// How far a CPU's limit may grow, and the first step it grows to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,9 +120,120 @@ impl HaltPoll {
     }
 }
 
+/// The other CPUs, as an idle CPU looks them over for work while it
+/// polls: one CPU a look, so that a poll's turn costs the same however
+/// many CPUs there are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Others {
+    own: usize,
+    count: usize,
+    /// The CPU the next look is at.
+    next: usize,
+    /// The looks in a row that found no work.
+    quiet: usize,
+}
+
+impl Others {
+    /// The other CPUs of `count`, for CPU `own`.
+    pub const fn of(own: usize, count: usize) -> Others {
+        Others { own, count, next: own, quiet: 0 }
+    }
+
+    /// Looks at the next of the other CPUs, which `has_work` says of, and
+    /// returns whether polling may still pay: `false` once every other
+    /// CPU, one after another, had no work, and at once where there is no
+    /// other CPU.
+    pub fn may_wake(&mut self, has_work: impl FnOnce(usize) -> bool) -> bool {
+        if self.count < 2 || self.own >= self.count {
+            return false;
+        }
+        let after = |cpu: usize| if cpu + 1 >= self.count { 0 } else { cpu + 1 };
+        let cpu = if self.next == self.own { after(self.next) } else { self.next };
+        self.next = after(cpu);
+        self.quiet = if has_work(cpu) { 0 } else { self.quiet + 1 };
+        self.quiet < self.count - 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cpu_alone_never_polls() {
+        for count in 0..2 {
+            let mut others = Others::of(0, count);
+            assert!(!others.may_wake(|_| panic!("no other CPU to look at")));
+        }
+        // A CPU the count does not hold looks at none either.
+        assert!(!Others::of(4, 4).may_wake(|_| panic!("no CPU to look at")));
+    }
+
+    #[test]
+    fn two_cpus_poll_while_the_other_has_work() {
+        let mut others = Others::of(1, 2);
+        for _ in 0..1000 {
+            assert!(others.may_wake(|cpu| {
+                assert_eq!(cpu, 0);
+                true
+            }));
+        }
+        assert!(!others.may_wake(|_| false));
+        // And again once it has.
+        assert!(others.may_wake(|_| true));
+    }
+
+    #[test]
+    fn polling_ends_once_every_other_cpu_had_no_work() {
+        const COUNT: usize = 6;
+        for own in 0..COUNT {
+            let mut others = Others::of(own, COUNT);
+            let mut seen = [0u32; COUNT];
+            // Four quiet looks leave one CPU unseen: go on.
+            for _ in 0..COUNT - 2 {
+                assert!(others.may_wake(|cpu| {
+                    seen[cpu] += 1;
+                    false
+                }));
+            }
+            // Work on the fifth starts the round again.
+            assert!(others.may_wake(|cpu| {
+                seen[cpu] += 1;
+                true
+            }));
+            for _ in 0..COUNT - 2 {
+                assert!(others.may_wake(|cpu| {
+                    seen[cpu] += 1;
+                    false
+                }));
+            }
+            assert!(!others.may_wake(|cpu| {
+                seen[cpu] += 1;
+                false
+            }));
+            // Every other CPU was looked at twice, in turn, and its own never.
+            for (cpu, looks) in seen.iter().enumerate() {
+                assert_eq!(*looks, if cpu == own { 0 } else { 2 }, "CPU {cpu} from {own}");
+            }
+        }
+    }
+
+    #[test]
+    fn work_anywhere_keeps_a_cpu_polling() {
+        const COUNT: usize = 64;
+        let mut others = Others::of(17, COUNT);
+        // One CPU of 63 has work: every round finds it before it ends.
+        for _ in 0..10 * COUNT {
+            assert!(others.may_wake(|cpu| cpu == 40));
+        }
+        // From its last look at work, a round of the other 63 without any
+        // ends the poll.
+        assert!(others.may_wake(|_| true));
+        for _ in 0..COUNT - 2 {
+            assert!(others.may_wake(|_| false));
+        }
+        assert!(!others.may_wake(|_| false));
+    }
 
     #[test]
     fn a_limit_kept_elsewhere_goes_on_learning() {

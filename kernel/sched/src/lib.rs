@@ -17,7 +17,8 @@
 //! - [`Topology`]: the CPUs' cores, packages and NUMA nodes, and from them
 //!   where a waking thread runs and what load balancing moves;
 //! - [`HaltPoll`]: how long an idle CPU polls before it halts, within the
-//!   bounds of a virtual CPU or of one that waits in hardware;
+//!   bounds of a virtual CPU or of one that waits in hardware, and
+//!   [`haltpoll::Others`], which ends the poll once no other CPU has work;
 //! - [`account`]: user and system time from the timer's samples, and the
 //!   load averages.
 //!
