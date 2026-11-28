@@ -75,7 +75,14 @@ const POINTER_SIDE: u32 = 256;
 /// console's lock, which masks interrupts: one row at least, whatever
 /// its length, and as many shorter rows as come to this. A row of a
 /// screen 3840 pixels wide is 15 KiB.
-const HOLD_BYTES: usize = 16 << 10;
+///
+/// Taking the lock is a locked instruction, at which the CPU sends on
+/// what it has gathered for write-combining memory and waits until it
+/// is sent, so every hold costs a wait as well (ADR 0718): at 16 KiB a
+/// picture of 1280 by 800 was 267 holds and took a sixth longer than
+/// its copying. At this size a hold is some 2 microseconds of copying
+/// where memory takes 28 GiB a second.
+const HOLD_BYTES: usize = 64 << 10;
 
 /// The card's number in the layer and where its framebuffer starts in
 /// physical memory, while the layer has the card.
@@ -228,18 +235,7 @@ impl Firmware {
         };
         let source = Source { main, pointer: frame.pointer.as_ref().filter(|_| frame.active) };
         let row_bytes = rect.width as usize * usize::from(self.layout.bytes);
-        static FBDIAG_DRAWS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        static FBDIAG_LEAST: [core::sync::atomic::AtomicU64; 4] =
-            [const { core::sync::atomic::AtomicU64::new(u64::MAX) }; 4];
-        static FBDIAG_SUM: [core::sync::atomic::AtomicU64; 4] =
-            [const { core::sync::atomic::AtomicU64::new(0) }; 4];
-        const FBDIAG_HOLDS: [usize; 4] = [16 << 10, 64 << 10, 256 << 10, 16 << 20];
-        let fbdiag_whole = rect.width == self.width && rect.height == self.height;
-        let fbdiag_draw = FBDIAG_DRAWS.load(Ordering::Relaxed);
-        let fbdiag_way = (fbdiag_draw / 8 % 4) as usize;
-        let hold_bytes = if fbdiag_whole { FBDIAG_HOLDS[fbdiag_way] } else { HOLD_BYTES };
-        let at_once = (hold_bytes / row_bytes.max(1)).max(1);
-        let fbdiag_started = <crate::Arch as radix_hal::Timer>::now_ns();
+        let at_once = (HOLD_BYTES / row_bytes.max(1)).max(1);
         let mut rows = (rect.y..).take(rect.height as usize).peekable();
         while rows.peek().is_some() {
             let held = console::with_pixels(|screen| {
@@ -250,25 +246,6 @@ impl Firmware {
             // The log has the screen, or the kernel's report.
             if held.is_none() {
                 return;
-            }
-        }
-        if fbdiag_whole {
-            let took = <crate::Arch as radix_hal::Timer>::now_ns() - fbdiag_started;
-            FBDIAG_LEAST[fbdiag_way].fetch_min(took, Ordering::Relaxed);
-            FBDIAG_SUM[fbdiag_way].fetch_add(took, Ordering::Relaxed);
-            let draws = FBDIAG_DRAWS.fetch_add(1, Ordering::Relaxed) + 1;
-            if draws.is_multiple_of(32) {
-                let over = source.pointer.is_some();
-                let start = source.main.map(|(_, pages)| pages.start);
-                for (way, hold) in FBDIAG_HOLDS.iter().enumerate() {
-                    let least = FBDIAG_LEAST[way].swap(u64::MAX, Ordering::Relaxed);
-                    let mean = FBDIAG_SUM[way].swap(0, Ordering::Relaxed) / 8;
-                    radix_klog::info!(
-                        "FBDIAG draw: hold {} KiB: least {least} ns, mean {mean} ns of 8; \
-                         pointer {over}, picture starts at {start:?}",
-                        hold >> 10
-                    );
-                }
             }
         }
     }
