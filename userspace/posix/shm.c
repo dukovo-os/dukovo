@@ -518,8 +518,9 @@ static void fault_around(void) {
 		matched += reader[i * PAGE] == (char)(i + 1);
 	long faults = check_page_faults() - before;
 	CHECK(matched == PAGES);
+	printf("%s: %ld faults for %d pages\n", check_name, faults, PAGES);
 	// Four runs of 16, or five where the mapping starts inside one, and
-	// one more for the status file's read at most.
+	// one more at most for the C library's own memory.
 	CHECK(before >= 0 && faults >= PAGES / 16 && faults <= PAGES / 16 + 2);
 	made[5 * PAGE + 1] = 'x';
 	CHECK(reader[5 * PAGE + 1] == 'x');

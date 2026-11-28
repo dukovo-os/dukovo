@@ -1163,8 +1163,9 @@ static void kept_around(void) {
 	long faults = check_page_faults() - before;
 	for(int i = 0; i <= PAGES; i++)
 		expected += pattern[i * PAGE];
+	printf("%s: %ld faults for %d pages\n", check_name, faults, PAGES + 1);
 	// Four runs of 16, or five where the mapping starts inside one; the
-	// tail on its own; one more for the status file's read at most.
+	// tail on its own; one more at most for the C library's own memory.
 	CHECK(before >= 0 && faults >= PAGES / 16 && faults <= PAGES / 16 + 3);
 	CHECK(sum == expected && !memcmp(second, pattern, SIZE));
 	int zeros = 1;

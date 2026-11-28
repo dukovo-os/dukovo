@@ -10,6 +10,7 @@
 #define POSIX_CHECK_H
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,23 +157,29 @@ static inline long check_anonymous_pages(void) {
 }
 
 // The page faults the process has taken, minor and major, from
-// /processes/<pid>/status; -1 if they cannot be read.
+// /processes/<pid>/status; -1 if they cannot be read. It takes none of
+// its own once the status file's text is made: it reads into a buffer
+// it touched first, through no buffer of the C library's, whose first
+// use would map pages.
 static inline long check_page_faults(void) {
+	static char text[8192];
+	memset(text, 0, sizeof(text));
 	char path[64];
 	snprintf(path, sizeof(path), "/processes/%d/status", (int)getpid());
-	FILE *status = fopen(path, "r");
-	if(!status)
+	int fd = open(path, O_RDONLY);
+	if(fd < 0)
 		return -1;
-	char line[128];
-	long minor = -1, major = -1, value;
-	while(fgets(line, sizeof(line), status)) {
-		if(sscanf(line, "minor_faults: %ld", &value) == 1)
-			minor = value;
-		else if(sscanf(line, "major_faults: %ld", &value) == 1)
-			major = value;
-	}
-	fclose(status);
-	return minor < 0 || major < 0 ? -1 : minor + major;
+	size_t length = 0;
+	ssize_t got;
+	while(length < sizeof(text) - 1 && (got = read(fd, text + length, sizeof(text) - 1 - length)) > 0)
+		length += (size_t)got;
+	close(fd);
+	text[length] = 0;
+	const char *minor = strstr(text, "\nminor_faults: ");
+	const char *major = strstr(text, "\nmajor_faults: ");
+	if(!minor || !major)
+		return -1;
+	return strtol(minor + strlen("\nminor_faults: "), NULL, 10) + strtol(major + strlen("\nmajor_faults: "), NULL, 10);
 }
 
 #endif
