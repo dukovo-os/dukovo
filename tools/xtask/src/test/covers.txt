@@ -381,6 +381,12 @@ desktop-firmware userspace/programs/windowd/ userspace/programs/window-test/ use
 desktop-firmware userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
 desktop-firmware kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
 desktop-firmware ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/ tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
+desktop-screens userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
+desktop-screens userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
+desktop-screens kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
+desktop-screens kernel/drivers/virtio/ ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/
+desktop-screens tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
+desktop-screens userspace/programs/systools/src/signals.rs
 desktop-window userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
 desktop-window userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
 desktop-window kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
