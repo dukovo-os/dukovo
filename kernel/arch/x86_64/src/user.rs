@@ -64,6 +64,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use radix_hal::{SignalFrame, SyscallRegs, UserFault, UserFaultKind};
 use radix_sync::Once;
 
+use crate::copy;
 use crate::cpu::{self, msr};
 use crate::fpu;
 use crate::interrupts::TrapFrame;
@@ -1215,6 +1216,16 @@ pub fn read_frames(phys: u64, dst: &mut [u8]) {
             dst.as_mut_ptr(),
             dst.len(),
         );
+    };
+}
+
+/// Copies RAM at `phys` into `dst`, which is mapped write-combining.
+pub fn read_frames_in_order(phys: u64, dst: &mut [u8]) {
+    let end = phys + dst.len() as u64;
+    assert!(memory::is_ram(phys..end), "reading {phys:#x}: not RAM");
+    // SAFETY: as in `read_frames`.
+    unsafe {
+        copy::in_order(dst.as_mut_ptr(), memory::phys_to_virt(phys) as *const u8, dst.len());
     };
 }
 

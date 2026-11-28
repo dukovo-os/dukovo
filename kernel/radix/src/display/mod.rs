@@ -203,14 +203,28 @@ impl Pages {
     /// program may be drawing in them, as it may in any picture a screen
     /// shows: what is copied is some mix of old and new, never anything
     /// else.
-    pub fn read(&self, at: usize, mut out: &mut [u8]) {
+    pub fn read(&self, at: usize, out: &mut [u8]) {
+        self.read_by(Arch::read_frames, at, out);
+    }
+
+    /// [`Pages::read`] into `screen`, bytes of a framebuffer: memory
+    /// mapped write-combining, which takes its bytes once and in order
+    /// (ADR 0718).
+    pub fn read_to_screen(&self, at: usize, screen: &mut [u8]) {
+        self.read_by(Arch::read_frames_in_order, at, screen);
+    }
+
+    /// Copies `out.len()` bytes of the picture from byte `at` of it, a
+    /// page's part at a time, by `copy`, which is given where the part
+    /// is in physical memory.
+    fn read_by(&self, copy: impl Fn(u64, &mut [u8]), at: usize, mut out: &mut [u8]) {
         let mut at = self.start + at;
         while !out.is_empty() {
             let within = at % PAGE;
             let step = out.len().min(PAGE - within);
             let (now, rest) = out.split_at_mut(step);
             match self.frames.get(at / PAGE) {
-                Some(&frame) => Arch::read_frames(frame + within as u64, now),
+                Some(&frame) => copy(frame + within as u64, now),
                 // Past the picture, which no caller asks for.
                 None => now.fill(0),
             }

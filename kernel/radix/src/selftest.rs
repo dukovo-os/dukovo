@@ -369,9 +369,14 @@ const COPY_PLACES: usize = 8;
 /// What `copy` fills its destination with; no source byte is this.
 const COPY_GUARD: u8 = 0xFF;
 
-/// The `copy` self-test: `memcpy` copies each size up to [`COPY_MAX`]
-/// bytes from each of [`COPY_PLACES`] places in a quadword to each, and
-/// writes nothing before or after what it copies.
+/// A way of copying the `copy` self-test checks: one slice to another
+/// of its length.
+type CopyWay = fn(&mut [u8], &[u8]);
+
+/// The `copy` self-test: `memcpy`, and the copy for write-combining
+/// memory (ADR 0718), each copy each size up to [`COPY_MAX`] bytes from
+/// each of [`COPY_PLACES`] places in a quadword to each, and write
+/// nothing before or after what they copy.
 #[inline(never)]
 fn copy() {
     let len = COPY_MAX + COPY_PLACES;
@@ -386,7 +391,40 @@ fn copy() {
         let _ = source.push_within_capacity((i % 251 + 1).to_le_bytes()[0]);
         let _ = target.push_within_capacity(COPY_GUARD);
     }
+    let ways: [(&str, CopyWay); 2] = [
+        ("memcpy", |to, from| to.copy_from_slice(from)),
+        ("the copy in order", Arch::copy_in_order),
+    ];
     let mut copies: u32 = 0;
+    for (name, way) in ways {
+        match copies_exactly(way, &source, &mut target) {
+            Ok(made) => copies += made,
+            Err((size, from, to, copied)) => {
+                error!(
+                    "selftest copy: failed; {name}, copying {size} bytes from byte {from} of a \
+                     quadword to byte {to}, {}",
+                    if copied { "wrote past their ends" } else { "did not copy them" }
+                );
+                return;
+            }
+        }
+    }
+    info!(
+        "selftest copy: passed; {copies} copies of 0 to {COPY_MAX} bytes between each place in \
+         a quadword, by memcpy and in order"
+    );
+}
+
+/// Copies each size up to [`COPY_MAX`] bytes of `source` to `target` by
+/// `way`, from each of [`COPY_PLACES`] places in a quadword to each.
+/// Returns how many copies that was, or the first that went wrong: its
+/// size, its two places, and whether the bytes themselves were copied.
+fn copies_exactly(
+    way: CopyWay,
+    source: &[u8],
+    target: &mut [u8],
+) -> Result<u32, (usize, usize, usize, bool)> {
+    let mut copies = 0;
     for size in 0..=COPY_MAX {
         for from in 0..COPY_PLACES {
             for to in 0..COPY_PLACES {
@@ -394,26 +432,18 @@ fn copy() {
                 // Known only as it runs, so that the copy calls `memcpy`
                 // rather than moves the compiler picks for one size.
                 let size = core::hint::black_box(size);
-                target[to..to + size].copy_from_slice(&source[from..from + size]);
+                way(&mut target[to..to + size], &source[from..from + size]);
                 let copied = target[to..to + size] == source[from..from + size];
                 let around =
                     target[..to].iter().chain(&target[to + size..]).all(|&b| b == COPY_GUARD);
                 if !copied || !around {
-                    error!(
-                        "selftest copy: failed; a copy of {size} bytes from byte {from} of a \
-                         quadword to byte {to} {}",
-                        if copied { "wrote past its ends" } else { "did not copy them" }
-                    );
-                    return;
+                    return Err((size, from, to, copied));
                 }
                 copies += 1;
             }
         }
     }
-    info!(
-        "selftest copy: passed; {copies} copies of 0 to {COPY_MAX} bytes between each place in \
-         a quadword"
-    );
+    Ok(copies)
 }
 
 fn tlb() {

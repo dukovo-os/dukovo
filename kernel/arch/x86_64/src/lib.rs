@@ -224,6 +224,13 @@ impl Cpu for Arch {
         }
     }
 
+    fn copy_in_order(dst: &mut [u8], src: &[u8]) {
+        assert_eq!(dst.len(), src.len(), "a copy between slices of two lengths");
+        // SAFETY: both are the caller's slices, of one length, and a
+        // slice borrowed to write overlaps no other.
+        unsafe { copy::in_order(dst.as_mut_ptr(), src.as_ptr(), src.len()) };
+    }
+
     fn machine_check_banks() -> usize {
         mce::banks()
     }
@@ -1133,6 +1140,10 @@ impl UserMode for Arch {
 
     fn read_frames(phys: u64, dst: &mut [u8]) {
         user::read_frames(phys, dst);
+    }
+
+    fn read_frames_in_order(phys: u64, dst: &mut [u8]) {
+        user::read_frames_in_order(phys, dst);
     }
 
     fn cycle_counter_hz() -> u64 {

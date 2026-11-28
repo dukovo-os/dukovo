@@ -15,6 +15,11 @@
 //! framebuffer in the pictures' own layout takes a row with no pointer
 //! on it straight from the picture's pages.
 //!
+//! The framebuffer is mapped write-combining, so its bytes are written
+//! once each and in order, by the copy for such memory (ADR 0718): the
+//! kernel's general copy takes over three times as long to put a
+//! picture there.
+//!
 //! A picture the card keeps has no pixels here either: PUT's rows go
 //! straight to the screen while the picture shows, and are dropped while
 //! it does not. Its holder sends them again when it is in front, as
@@ -49,6 +54,7 @@ use radix_abi::display::{
 use radix_display::Rect;
 use radix_display::pixels::{self, Channel, Layout};
 use radix_display::state::PictureShape;
+use radix_hal::Cpu;
 use radix_hw::pci::{Bar, Function};
 use radix_klog::{info, warn};
 use radix_mm::Kmalloc;
@@ -59,7 +65,7 @@ use super::{
     CardSpec, Change, Driver, Failed, Frame, Pages, Picture, PlaneFault, PlaneSpec, ScreenSpec,
     Shown, add_card, kmalloc, name,
 };
-use crate::console;
+use crate::{Arch, console};
 
 /// The rate the card's beat is kept at, in frames in 1000 seconds.
 const REFRESH_MHZ: u32 = 60_000;
@@ -268,7 +274,7 @@ impl Firmware {
         match from {
             // One copy, from the picture's pages to the screen.
             Some((from, pages)) if over.is_none() && self.layout == Layout::XRGB8888 => {
-                return pages.read(from, target);
+                return pages.read_to_screen(from, target);
             }
             Some((from, pages)) => pages.read(from, row),
             None => row.fill(0),
@@ -283,7 +289,20 @@ impl Firmware {
                 pixels::blend(under, over);
             }
         }
-        pixels::store(self.layout, row, target);
+        self.store(row, target);
+    }
+
+    /// Writes the pixels of `row`, which are XRGB8888, to `target`, the
+    /// framebuffer's bytes they show at, in its layout: as many whole
+    /// pixels as both hold.
+    fn store(&self, row: &[u8], target: &mut [u8]) {
+        if self.layout == Layout::XRGB8888 {
+            let len = row.len().min(target.len()) / 4 * 4;
+            Arch::copy_in_order(&mut target[..len], &row[..len]);
+        } else {
+            // A pixel at a time, each stored once and in order.
+            pixels::store(self.layout, row, target);
+        }
     }
 
     /// Writes `row`, the pixels PUT sends for `rect`, one row of the
@@ -298,7 +317,7 @@ impl Firmware {
         let pixel = usize::from(self.layout.bytes);
         let at = part.y as usize * self.pitch + part.x as usize * pixel;
         if let Some(target) = screen.get_mut(at..at + part.width as usize * pixel) {
-            pixels::store(self.layout, row, target);
+            self.store(row, target);
         }
     }
 }
