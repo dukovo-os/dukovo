@@ -500,6 +500,7 @@ where
         let at = self.screens.within(at);
         self.manager.motion(&mut self.shell, at);
         self.under = self.shell.windows.under(at);
+        self.manager.rests(&self.under, time_ns);
         let focus = self.focus();
         let serial = SERIAL_COUNTER.next_serial();
         let moved = MotionEvent { location: at, serial, time: ms(time_ns) };
@@ -555,13 +556,15 @@ where
         self.settle();
     }
 
-    /// When the next frame is to be drawn, on the monotonic clock, if
-    /// one is due.
+    /// When the next frame is to be drawn, or the pointer has rested
+    /// long enough on a button for what that shows, on the monotonic
+    /// clock, if either is due.
     pub fn due(&self, now_ns: u64) -> Option<u64> {
-        self.screens.due(now_ns)
+        [self.screens.due(now_ns), self.manager.due()].into_iter().flatten().min()
     }
 
-    /// Draws the frames that are due at `now_ns`.
+    /// Draws the frames that are due at `now_ns`, after what a pointer
+    /// that has rested until then shows.
     ///
     /// A frame that cannot be drawn because a program's pixels cannot
     /// be read, as when the program cut their file short, is drawn anew
@@ -572,6 +575,9 @@ where
     /// What the layer's requests fail with, and what the renderer does
     /// [`SPOILED_MOST`] frames in a row.
     pub fn draw(&mut self, now_ns: u64) -> Result<(), Failed> {
+        if self.manager.rested(&mut self.shell, now_ns) {
+            self.settle();
+        }
         let Some(pointer) = self.shell.seat.get_pointer() else { return Ok(()) };
         let shown = match self.own {
             Some(own) => Shown::Own(own),
@@ -585,7 +591,7 @@ where
         };
         let scene = Scene {
             windows: &self.shell.windows,
-            panel: self.manager.panel(),
+            over: self.manager.over(),
             preview: self.manager.preview(),
         };
         match self.screens.draw(&mut self.renderer, &self.shell, &scene, &pointing, now_ns) {

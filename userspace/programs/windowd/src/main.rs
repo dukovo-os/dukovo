@@ -21,6 +21,7 @@ mod keys;
 mod link;
 mod manager;
 mod panel;
+mod picker;
 mod pointer;
 mod scene;
 mod screens;

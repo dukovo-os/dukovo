@@ -14,9 +14,12 @@
 //! console of that number, as it does at a console (consoled(8)).
 //! Ctrl+Alt+Backspace ends the desktop. The window manager's own are
 //! Alt+Tab and Alt+Shift+Tab for the list of windows, Alt+F4 to close
-//! a window, Alt+Space for its menu, and the Super key with the up or
-//! the down arrow to maximize, restore or minimize it; Super pressed
-//! and let go alone shows the list.
+//! a window, Alt+Space for its menu, and the Super key: with an arrow
+//! to snap a window to a side of its screen or a part of one, to
+//! maximize, restore or minimize it; with Shift and the left or the
+//! right arrow to carry it to the next screen; with Ctrl and D, F4 or
+//! an arrow for the screen's desktops. Super pressed and let go alone
+//! shows the list.
 
 use input::abi::{
     KEY_BACKSPACE, KEY_CAPSLOCK, KEY_D, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12,

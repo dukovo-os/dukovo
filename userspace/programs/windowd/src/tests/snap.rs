@@ -6,10 +6,11 @@
 
 use display_pattern::pattern;
 use input::abi::{
-    BTN_LEFT, KEY_A, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_LEFTMETA, KEY_RIGHT, KEY_UP,
+    BTN_LEFT, KEY_A, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_LEFTALT, KEY_LEFTMETA, KEY_RIGHT,
+    KEY_SPACE, KEY_UP,
 };
 use window_frame::panel::{Entry, Mark};
-use window_frame::{Bar, Layout, Shape, Theme};
+use window_frame::{Bar, Button, Canvas, Layout, Rect, Shape, Theme};
 use window_test::Heard;
 
 use super::laid::settings;
@@ -435,4 +436,125 @@ fn the_edge_two_snapped_windows_share_resizes_both() {
     let size = draws_on(&mut world, &first, 17).unwrap();
     fills(&mut world, ((612, 484), (312, 284)), size, 17);
     assert_eq!(draws_on(&mut world, &second, 11), None);
+}
+
+/// Has the pointer rest where it is for longer than the picker of
+/// layouts waits.
+fn rest(world: &mut World) {
+    for _ in 0..270 {
+        world.turn();
+    }
+    world.settle();
+}
+
+/// The middle of the maximize button of a window whose frame's box is
+/// `frame` wide and high with its corner at `corner`, and where the
+/// corner of the picker is under it: in the middle of the button's
+/// width, or as near to that as leaves it whole on a screen 1024 wide.
+fn picker_under(corner: (i32, i32), frame: (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    let ((width, height), _) = inside(frame);
+    let layout =
+        Layout::of(&Theme::basic(), (width as i32, height as i32), Shape::Normal, Bar::Full, None);
+    let button = layout.button(Button::Maximize);
+    let (left, top) = (corner.0 + button.x, corner.1 + button.y);
+    let (across, _) = window_frame::picker::place(&Theme::basic()).size;
+    let under = (left + (button.w - across) / 2).min(1024 - across);
+    ((left + button.w / 2, top + button.h / 2), (under, top + button.h))
+}
+
+/// Fails unless the first screen shows the picker with its corner at
+/// `corner` and the target `hot` lit.
+fn shows_picker(world: &mut World, corner: (i32, i32), hot: Option<usize>) {
+    let theme = Theme::basic();
+    let (width, height) = window_frame::picker::place(&theme).size;
+    let all = Rect::new(0, 0, width, height);
+    let mut drawn = vec![0; Canvas::bytes_of(&all)];
+    window_frame::picker::draw(&theme, hot, &mut Canvas::over(all, &mut drawn));
+    world.shows_drawn((all, &drawn), corner, &[], false);
+}
+
+#[test]
+fn the_pointer_resting_on_the_maximize_button_is_shown_the_layouts_to_pick_from() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, (320, 200), 5);
+    let (layout, at) = framed((320, 200));
+    let (on, corner) = picker_under(at, (layout.frame.w, layout.frame.h));
+    let targets = window_frame::picker::place(&Theme::basic()).targets;
+    let target = Theme::basic().panel.target;
+    let target = [target.red, target.green, target.blue];
+    let in_first = ((corner.0 + 20) as u32, (corner.1 + 20) as u32);
+    // The pointer comes to the button: nothing shows until it has been
+    // there half a second.
+    world.point(on.0, on.1);
+    world.settle();
+    assert_ne!(world.colour(in_first.0, in_first.1), target);
+    rest(&mut world);
+    shows_picker(&mut world, corner, None);
+    // The target under the pointer is lit, and a click on it snaps the
+    // window to what it stands for: the lower part of the right side.
+    let lower = targets[4].rect;
+    world.point(corner.0 + lower.x + 10, corner.1 + lower.y + 10);
+    world.settle();
+    shows_picker(&mut world, corner, Some(4));
+    world.button(BTN_LEFT, true);
+    world.button(BTN_LEFT, false);
+    let (size, _) = world.follow(&program, (320, 200), 6);
+    world.settle();
+    fills(&mut world, ((512, 384), (512, 384)), size, 6);
+    assert_eq!(world.colour(in_first.0, in_first.1), BACKGROUND);
+    // It shows again for the button where it is now, and goes when the
+    // pointer leaves it and the button.
+    let (on, corner) = picker_under((512, 384), (512, 384));
+    world.point(on.0, on.1);
+    rest(&mut world);
+    shows_picker(&mut world, corner, None);
+    world.point(on.0, on.1 + 60);
+    world.settle();
+    shows_picker(&mut world, corner, None);
+    world.point(600, 500);
+    world.settle();
+    assert_ne!(world.colour((corner.0 + 20) as u32, (corner.1 + 20) as u32), target);
+    // A click on the button does what it does, with the picker or not.
+    world.point(on.0, on.1);
+    rest(&mut world);
+    shows_picker(&mut world, corner, None);
+    world.button(BTN_LEFT, true);
+    world.button(BTN_LEFT, false);
+    let bar = Theme::basic().bar as u32;
+    assert_eq!(world.follow(&program, (320, 200), 7), ((1024, 768 - bar), true));
+    world.settle();
+    assert_eq!(world.colour(1023, 767), pattern::colour(7, 1023, 767 - bar));
+}
+
+#[test]
+fn the_window_menu_restores_a_snapped_window_and_maximizes_it() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, (320, 200), 5);
+    let size = arrow(&mut world, &program, KEY_LEFT, 6);
+    fills(&mut world, ((0, 0), (512, 768)), size, 6);
+    // The menu of a snapped window: it is restored to be moved or
+    // resized, and can be maximized as it is.
+    let line = |words, key, off| Entry::Line { words, key, mark: Mark::None, off };
+    let menu = [
+        line("Restore", "", false),
+        line("Move", "", true),
+        line("Size", "", true),
+        line("Minimize", "", false),
+        line("Maximize", "", false),
+        Entry::Gap,
+        line("Close", "Alt+F4", false),
+    ];
+    let bar = Theme::basic().bar;
+    world.chord(KEY_LEFTALT, KEY_SPACE);
+    world.settle();
+    world.shows_panel(330, &menu, None, (0, bar));
+    world.tap(KEY_DOWN);
+    world.tap(KEY_ENTER);
+    assert_eq!(world.follow(&program, (320, 200), 7), ((320, 200), false));
+    world.settle();
+    let (left, top) = middle((320, 200));
+    assert_eq!(world.colour(left, top), pattern::colour(7, 0, 0));
+    assert_eq!(world.colour(100, 600), BACKGROUND);
 }

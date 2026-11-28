@@ -100,8 +100,8 @@ pub struct Tone {
     pub close: Glass,
 }
 
-/// The colours of the boxes windowd shows over the windows: the window
-/// menu and the list of windows.
+/// The sizes and colours of the boxes windowd shows over the windows:
+/// the window menu, the list of windows and the picker of layouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Panel {
     /// The box's fill.
@@ -138,6 +138,14 @@ pub struct Panel {
     pub chosen: Colour,
     /// The line around that line.
     pub chosen_line: Colour,
+    /// The width and the height of a picture of the picker of layouts.
+    pub picture: (i32, i32),
+    /// The room between two pictures.
+    pub picture_gap: i32,
+    /// The room between two divisions of a picture.
+    pub picture_room: i32,
+    /// The fill of a division the pointer is not on.
+    pub target: Colour,
 }
 
 /// Every size and colour of a frame.
@@ -289,6 +297,10 @@ impl Theme {
                 key: rgb(0xa2_b5cc),
                 chosen: rgb(0x2b_5c97),
                 chosen_line: rgb(0x6c_b2ff),
+                picture: (72, 48),
+                picture_gap: 10,
+                picture_room: 2,
+                target: rgb(0x2c_4a6e),
             },
         }
     }

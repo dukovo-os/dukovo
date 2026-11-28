@@ -17,6 +17,8 @@
 //! preview of the side, the part of one or the whole screen it fills
 //! when it is let go there. After a snap, the other windows of the
 //! desktop are offered for the largest zone left, as a list in it.
+//! A pointer that rests on a maximize button is shown the picker of
+//! layouts, to choose a zone for the window from.
 //!
 //! The [`Manager`] is told each press, release, motion and key by the
 //! desktop, which then gives the programs what is left for them.
@@ -35,8 +37,9 @@ use smithay::utils::Rectangle;
 
 use crate::keys::Ask;
 use crate::panel::{Panel, Row};
+use crate::picker::Picker;
 use crate::pointer::Picture;
-use crate::scene::{Preview, Shade};
+use crate::scene::{Over, Preview, Shade};
 use crate::settings::Settings;
 use crate::shell::{Shell, app_of};
 use crate::titlebar::TitleBar;
@@ -47,6 +50,10 @@ use crate::windows::{Desk, Framed, Restore, Split, Under};
 /// the window follows it, and how far apart the two presses of a double
 /// click may be.
 const SLOP: f64 = 4.0;
+
+/// How long the pointer rests on a maximize button before the picker
+/// of layouts shows.
+const REST_NS: u64 = 500_000_000;
 
 /// How far an arrow key moves a window or its edges, and how far with
 /// Ctrl held.
@@ -135,6 +142,10 @@ enum Hold {
     /// screen the place `at` is on, as a list in it: `listed` is the
     /// window of each row.
     Offer { panel: Panel, listed: Vec<Window>, zone: Zone, at: Point<f64, Logical> },
+    /// The picker of layouts shows for `window`, until the pointer
+    /// chooses a zone or leaves `around`, the rectangle around the
+    /// picker and the button it shows under.
+    Picker { window: Window, picker: Picker, around: Rectangle<i32, Logical> },
     /// The arrow keys move a window, or resize it, from where its
     /// frame's corner was at `start`; `by` is how far they have.
     Keys { window: Window, size: bool, start: Point<i32, Logical>, by: Point<i32, Logical> },
@@ -158,12 +169,16 @@ pub struct Manager {
     pub double_click_ns: u64,
     /// What the renderer knows the preview of a snap by.
     shade: Shade,
+    /// The window whose maximize button the pointer is on with nothing
+    /// held, and since when.
+    rest: Option<(Window, u64)>,
 }
 
 impl Default for Manager {
     fn default() -> Manager {
         let double_click_ns = u64::from(Settings::default().double_click_ms) * 1_000_000;
-        Manager { hold: Hold::None, clicked: None, double_click_ns, shade: Shade::default() }
+        let shade = Shade::default();
+        Manager { hold: Hold::None, clicked: None, double_click_ns, shade, rest: None }
     }
 }
 
@@ -194,14 +209,62 @@ impl Manager {
         matches!(self.hold, Hold::Offer { .. })
     }
 
-    /// The panel that shows over the windows.
-    pub fn panel(&self) -> Option<&Panel> {
+    /// The box that shows over the windows: a panel or the picker.
+    pub fn over(&self) -> Option<Over<'_>> {
         match &self.hold {
             Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
-                Some(panel)
+                Some(Over { at: panel.area().loc, pixels: panel.pixels() })
+            }
+            Hold::Picker { picker, .. } => {
+                Some(Over { at: picker.area().loc, pixels: picker.pixels() })
             }
             _ => None,
         }
+    }
+
+    /// The pointer is over `under` at `time_ns`: it rests on a
+    /// maximize button from when it came to it, with nothing held.
+    pub fn rests(&mut self, under: &Under, time_ns: u64) {
+        let on = match (&self.hold, under) {
+            (Hold::None, Under::Part { window, part: Part::Button(Button::Maximize) }) => {
+                Some(window)
+            }
+            _ => None,
+        };
+        let since = self.rest.take().filter(|(window, _)| Some(window) == on);
+        self.rest = since.or_else(|| Some((on?.clone(), time_ns)));
+    }
+
+    /// When the pointer has rested long enough for the picker to show,
+    /// on the monotonic clock, if it rests on a maximize button.
+    pub fn due(&self) -> Option<u64> {
+        let (_, since) = self.rest.as_ref()?;
+        Some(since.saturating_add(REST_NS))
+    }
+
+    /// It is `now_ns`: the picker of layouts shows under the maximize
+    /// button the pointer has rested on long enough. Returns whether
+    /// it does.
+    pub fn rested(&mut self, shell: &mut Shell, now_ns: u64) -> bool {
+        if self.due().is_none_or(|due| due > now_ns) {
+            return false;
+        }
+        let Some((window, _)) = self.rest.take() else { return false };
+        if !matches!(self.hold, Hold::None) {
+            return false;
+        }
+        let Some(framed) = shell.windows.framed(&window) else { return false };
+        let button = framed.layout().button(Button::Maximize);
+        let button = Rectangle::new(
+            framed.at() + Point::from((button.x, button.y)),
+            (button.w, button.h).into(),
+        );
+        let screen = shell.windows.screen_at(button.loc.to_f64());
+        let picker = Picker::new(shell.windows.theme(), button, screen);
+        let around = button.merge(picker.area());
+        self.hold = Hold::Picker { window, picker, around };
+        shell.changed.windows = true;
+        true
     }
 
     /// The preview of what the window that is dragged fills if it is
@@ -228,6 +291,8 @@ impl Manager {
                 let on = over.filter(|over| *over == (window, *button));
                 (on, on)
             }
+            // The button the picker shows under is lit while it does.
+            Hold::Picker { window, .. } => (Some((window, Button::Maximize)), None),
             _ => (None, None),
         }
     }
@@ -267,6 +332,7 @@ impl Manager {
             | Hold::Move { window, .. }
             | Hold::Resize { window, .. }
             | Hold::Menu { window, .. }
+            | Hold::Picker { window, .. }
             | Hold::Keys { window, .. } => shows(window),
             Hold::List { listed, .. } | Hold::Offer { listed, .. } => listed.iter().all(there),
         };
@@ -285,6 +351,15 @@ impl Manager {
         code: u16,
         time_ns: u64,
     ) {
+        self.rest = None;
+        // A press on a target of the picker waits for the release; any
+        // other puts the picker away, and is what it is without it.
+        if let Hold::Picker { picker, .. } = &self.hold {
+            if picker.zone_at(at).is_some() {
+                return;
+            }
+            self.let_go(shell);
+        }
         match &mut self.hold {
             Hold::None => {}
             Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
@@ -359,6 +434,13 @@ impl Manager {
             Hold::Resize { code: held, .. } | Hold::Split { code: held, .. } if *held == code => {
                 self.let_go(shell);
             }
+            Hold::Picker { window, picker, .. } if code == BTN_LEFT => {
+                let Some(zone) = picker.zone_at(at) else { return };
+                let window = window.clone();
+                self.let_go(shell);
+                shell.windows.fill(&window, Fills::Zone(zone));
+                self.offer(shell, &window);
+            }
             Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. }
                 if code == BTN_LEFT =>
             {
@@ -406,6 +488,13 @@ impl Manager {
             Hold::Split { split, pressed, .. } => {
                 shell.windows.split_to(split, (at - *pressed).to_i32_round());
                 shell.changed.windows = true;
+            }
+            Hold::Picker { picker, around, .. } => {
+                if !around.to_f64().contains(at) {
+                    self.let_go(shell);
+                } else if picker.point(shell.windows.theme(), at) {
+                    shell.changed.windows = true;
+                }
             }
             Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
                 // The pointer chooses the line it comes to, and leaves
@@ -583,7 +672,7 @@ impl Manager {
     /// Shows the window menu of `window` with its corner at `at`.
     fn menu(&mut self, shell: &mut Shell, window: Window, at: Point<i32, Logical>) {
         let Some(framed) = shell.windows.framed(&window) else { return };
-        let maximized = framed.maximized();
+        let fills = framed.fills();
         // An application of no name has no entry in the settings to
         // change.
         let app = window.toplevel().map(app_of).filter(|app| !app.is_empty());
@@ -601,9 +690,12 @@ impl Manager {
             rows.push(match item {
                 None => Row::Gap,
                 Some(item) => {
+                    // A window that fills a zone or the screen is
+                    // restored first to be moved or resized.
                     let off = match item {
-                        Item::Restore => !maximized,
-                        Item::Move | Item::Size | Item::Maximize => maximized,
+                        Item::Restore => fills == Fills::Nothing,
+                        Item::Move | Item::Size => fills != Fills::Nothing,
+                        Item::Maximize => fills == Fills::All,
                         Item::Minimize | Item::FullBar | Item::Close => false,
                     };
                     let ticked = *item == Item::FullBar && full == Some(true);

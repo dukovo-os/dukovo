@@ -3,7 +3,7 @@
 
 //! What a screen's frame is drawn from.
 //!
-//! From the front: the panel windowd shows over the windows, then each
+//! From the front: the box windowd shows over the windows, then each
 //! window in the windows' order, and of each window its popups, the
 //! strips of its frame and its own surface. Under a window that is
 //! dragged to an edge of the desktop lies the preview of what it will
@@ -36,7 +36,8 @@ use smithay::wayland::seat::WaylandFocus;
 
 use window_frame::{Colour, Theme};
 
-use crate::panel::Panel;
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+
 use crate::windows::{Framed, Windows};
 
 render_elements! {
@@ -238,13 +239,22 @@ fn solid(colour: Colour) -> Color32F {
     Color32F::new(part(colour.red), part(colour.green), part(colour.blue), cover)
 }
 
+/// A box of windowd's own over the windows: a panel or the picker.
+#[derive(Debug, Clone, Copy)]
+pub struct Over<'a> {
+    /// Where its top left corner is on the desktop.
+    pub at: Point<i32, Logical>,
+    /// Its pixels.
+    pub pixels: &'a MemoryRenderBuffer,
+}
+
 /// What the screens show beside the windows.
 #[derive(Debug, Clone, Copy)]
 pub struct Scene<'a> {
     /// The windows.
     pub windows: &'a Windows,
-    /// The panel over them.
-    pub panel: Option<&'a Panel>,
+    /// The box over them.
+    pub over: Option<Over<'a>>,
     /// The preview under one of them.
     pub preview: Option<Preview<'a>>,
 }
@@ -289,12 +299,12 @@ impl Scene<'_> {
     ) -> Result<Vec<Piece>, PixmanError> {
         let onto = Onto { corner: screen.loc, zoom };
         let mut pieces = Vec::new();
-        if let Some(panel) = self.panel {
-            let at = onto.place(panel.area().loc).to_f64();
+        if let Some(over) = self.over {
+            let at = onto.place(over.at).to_f64();
             let own = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 at,
-                panel.pixels(),
+                over.pixels,
                 None,
                 None,
                 None,
