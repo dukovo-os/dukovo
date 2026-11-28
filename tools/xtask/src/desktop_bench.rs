@@ -98,11 +98,9 @@ const KEY_PAUSE: Duration = Duration::from_millis(5);
 const SETTLE: Duration = Duration::from_millis(500);
 
 /// How long the machine is left alone before it is watched with nothing
-/// moving. The desktop shows while the last services still start, and
-/// what they run is not the desktop at rest: both systems' CPUs ran two
-/// to four times their time at rest in the fourth to sixth second
-/// after it showed, and their own from the seventh.
-const REST_SETTLE: Duration = Duration::from_secs(6);
+/// moving: the desktop shows while the last services still start, and
+/// what they run is not the desktop at rest.
+const REST_SETTLE: Duration = Duration::from_secs(3);
 
 /// How long the desktop is watched with nothing moving.
 const IDLE_FOR: Duration = Duration::from_secs(3);
@@ -225,9 +223,73 @@ fn machine(
         reboot: false,
         gdb: false,
         qmp: Some(dir.join(format!("{name}.qmp"))),
-        extra: DEVICES.map(String::from).into(),
+        extra: DEVICES.map(String::from).into_iter().chain(traced(dir, name)).collect(),
         write_log: None,
         direct,
+    }
+}
+
+/// MEASUREMENT ONLY: QEMU's own log of the port and device-memory
+/// accesses it serves, and how much of it has been read.
+static TRACE: std::sync::Mutex<Option<(PathBuf, usize)>> = std::sync::Mutex::new(None);
+
+/// MEASUREMENT ONLY: with `OB_TRACE_IO` set, the arguments that make QEMU
+/// log every port and device-memory access it serves for machine `name`.
+/// The log costs time at every access, so the rows of such a run say
+/// nothing.
+fn traced(dir: &Path, name: &str) -> Vec<String> {
+    if std::env::var_os("OB_TRACE_IO").is_none() {
+        return Vec::new();
+    }
+    let log = dir.join(format!("{name}.trace"));
+    let _ = std::fs::remove_file(&log);
+    *TRACE.lock().expect("the trace's lock") = Some((log.clone(), 0));
+    let events = ["cpu_in", "cpu_out", "memory_region_ops_read", "memory_region_ops_write"];
+    let mut args: Vec<String> =
+        events.iter().flat_map(|event| ["-trace".to_string(), (*event).to_string()]).collect();
+    args.extend(["-D".to_string(), log.display().to_string()]);
+    args
+}
+
+/// MEASUREMENT ONLY: what QEMU logged until now is not counted by the
+/// next [`trace_said`].
+fn trace_mark() {
+    if let Some((log, read)) = TRACE.lock().expect("the trace's lock").as_mut() {
+        *read = std::fs::metadata(&*log).map_or(0, |data| data.len() as usize);
+    }
+}
+
+/// MEASUREMENT ONLY: what QEMU logged since [`trace_mark`], counted by
+/// port or by device region, the most frequent first.
+fn trace_said(what: &str, count: u32) {
+    let mut trace = TRACE.lock().expect("the trace's lock");
+    let Some((log, read)) = trace.as_mut() else { return };
+    let Ok(bytes) = std::fs::read(&*log) else { return };
+    let new = String::from_utf8_lossy(bytes.get(*read..).unwrap_or_default()).into_owned();
+    *read = bytes.len();
+    let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for line in new.lines() {
+        let word_after =
+            |key: &str| line.split_once(key).and_then(|(_, rest)| rest.split_whitespace().next());
+        let key = if let Some(at) = line.find("cpu_in ").or_else(|| line.find("cpu_out ")) {
+            let event = line[at..].split_whitespace().next().unwrap_or("?");
+            format!("{event} {}", word_after("addr ").unwrap_or("?"))
+        } else if let Some(at) = line.find("memory_region_ops_") {
+            let event = line[at..].split_whitespace().next().unwrap_or("?");
+            let name = word_after("name ").unwrap_or("?");
+            format!("{event} {name} size {}", word_after("size ").unwrap_or("?"))
+        } else {
+            continue;
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+    let mut counts: Vec<(String, u64)> = counts.into_iter().collect();
+    counts.sort_by(|one, other| other.1.cmp(&one.1));
+    for (key, times) in counts.into_iter().take(24) {
+        println!(
+            "HOST {what}: trace {key}: {times} ({:.2} a turn)",
+            times as f64 / f64::from(count)
+        );
     }
 }
 
@@ -423,6 +485,32 @@ fn sizes_drawn(vm: &mut Vm) -> std::result::Result<u32, String> {
     count.ok_or_else(|| "the program drew the window at no size".into())
 }
 
+/// MEASUREMENT ONLY: prints what the host's KVM counted for the machine
+/// since `before`, over `count` turns that took `took`, and what its
+/// CPUs' threads ran.
+fn host_said(
+    vm: &mut Vm,
+    before: &[(String, u64)],
+    what: &str,
+    count: u32,
+    ran: f64,
+    took: Duration,
+) {
+    println!(
+        "HOST {what}: {count} turns in {} ms, the CPUs' threads ran {:.1} us a turn",
+        took.as_millis(),
+        ran / 1000.0 / f64::from(count)
+    );
+    for (name, now) in vm.host_counts() {
+        let was = before.iter().find(|(key, _)| *key == name).map_or(0, |(_, value)| *value);
+        let since = now.saturating_sub(was);
+        if since > 0 {
+            println!("HOST {what}: {name} {since} ({:.2} a turn)", since as f64 / f64::from(count));
+        }
+    }
+    trace_said(what, count);
+}
+
 /// Sees `window-test cost` in `vm` through, from its first step to its
 /// `cost: done`, and gives the rows measured from the host.
 fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, String> {
@@ -436,17 +524,47 @@ fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, Stri
     // The window shows and nothing moves.
     step_said(vm, "cost: ready for a key")?;
     std::thread::sleep(REST_SETTLE);
+    trace_mark();
+    let counted = vm.host_counts();
     let from = Ran::now(cpus)?;
     std::thread::sleep(IDLE_FOR);
     let (ran, took) = from.since(cpus)?;
+    host_said(vm, &counted, "rest, a second", IDLE_FOR.as_secs() as u32, ran, took);
     let idle = ran / took.as_secs_f64();
     rows.push(row("desktop_idle", idle, 1));
+    // MEASUREMENT ONLY: the seconds after, each by itself, which show
+    // whether the machine had come to rest.
+    for second in 1..=8 {
+        let counted = vm.host_counts();
+        let from = Ran::now(cpus)?;
+        std::thread::sleep(Duration::from_secs(1));
+        let (ran, _) = from.since(cpus)?;
+        let now = vm.host_counts();
+        let since = |name: &str| {
+            let of = |counts: &[(String, u64)]| {
+                counts.iter().find(|(key, _)| key == name).map_or(0, |(_, value)| *value)
+            };
+            of(&now).saturating_sub(of(&counted))
+        };
+        println!(
+            "HOST rest later, second {second}: ran {:.1} us, {} halts, {} mmio, {} io, {} exits",
+            ran / 1000.0,
+            since("halt_exits"),
+            since("mmio_exits"),
+            since("io_exits"),
+            since("exits")
+        );
+    }
 
     // A key starts the frames.
+    trace_mark();
+    let counted = vm.host_counts();
     let from = Ran::now(cpus)?;
     vm.keys_on(SCREEN, &["a"], true)?;
     step_said(vm, "cost: drew the frames")?;
-    rows.push(row("desktop_frame", from.work_since(cpus, idle)?, FRAMES));
+    let (ran, took) = from.since(cpus)?;
+    host_said(vm, &counted, "frames", FRAMES, ran, took);
+    rows.push(row("desktop_frame", (ran - idle * took.as_secs_f64()).max(0.0), FRAMES));
     vm.keys_on(SCREEN, &["a"], false)?;
 
     // The keys the program times itself.
@@ -481,7 +599,12 @@ fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, Stri
     step_said(vm, "cost: ready for a press")?;
     vm.input_events(SCREEN, &left_button(true))?;
     step_said(vm, "cost: resizing")?;
+    trace_mark();
+    let counted = vm.host_counts();
+    let from = Ran::now(cpus)?;
     let resizing = strokes(vm, cpus, RESIZE_BY, idle)?;
+    let (ran, took) = from.since(cpus)?;
+    host_said(vm, &counted, "resize", STROKES * STROKE * 2, ran, took);
     vm.input_events(SCREEN, &left_button(false))?;
     step_said(vm, "cost: drew ")?;
     rows.push(row("desktop_resize", resizing, sizes_drawn(vm)?));

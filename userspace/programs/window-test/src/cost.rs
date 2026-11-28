@@ -49,6 +49,8 @@ use std::time::Duration;
 use sysapi::time;
 use window_test::{Client, Heard, Outcome, ResizeEdge};
 
+use crate::tally::Tally;
+
 /// The window's own pixels.
 const WINDOW: (u32, u32) = (640, 480);
 
@@ -200,13 +202,25 @@ fn key(client: &mut Client) -> Outcome<(Option<u64>, u32, bool)> {
 
 /// The frame row's work: [`FRAMES`] frames after a key.
 fn frames(client: &mut Client) -> Outcome {
+    // MEASUREMENT ONLY: the counts over the rest and over the frames.
+    let rest = Tally::now();
+    let rested = std::time::Instant::now();
     say("ready for a key");
     while !key(client)?.2 {}
+    let before = Tally::now();
+    let seconds = rested.elapsed().as_secs().max(1) as u32;
     for round in 0..FRAMES {
         client.repaint(0x40 + (round % 0x80) as u8)?;
         frame(client)?;
     }
     say("drew the frames");
+    let after = Tally::now();
+    for line in rest.lines_until(&before, "rest, a second", seconds) {
+        println!("{line}");
+    }
+    for line in before.lines_until(&after, "frames", FRAMES) {
+        println!("{line}");
+    }
     // The key was let go meanwhile.
     while key(client)?.2 {}
     Ok(())
@@ -268,6 +282,8 @@ fn resized(client: &mut Client) -> Outcome {
     client.take_heard();
     client.ask_resize(ResizeEdge::BottomRight)?;
     say("resizing");
+    // MEASUREMENT ONLY.
+    let before = Tally::now();
     let (mut drawn, mut shade) = (0u32, 0x40u8);
     loop {
         match client.heard(STEP_PATIENCE)? {
@@ -281,7 +297,11 @@ fn resized(client: &mut Client) -> Outcome {
             _ => {}
         }
     }
+    let after = Tally::now();
     say(&format!("drew {drawn} sizes"));
+    for line in before.lines_until(&after, "resize", drawn) {
+        println!("{line}");
+    }
     Ok(())
 }
 
