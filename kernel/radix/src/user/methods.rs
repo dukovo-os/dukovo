@@ -127,6 +127,7 @@ pub fn call(
     info: Info,
     words: &[u64; 8],
 ) -> Result<Answer> {
+    super::callprobe::mark(super::callprobe::CALL);
     let args = arguments(info, words);
     let at = SlotRef::new(user.cspace, slot);
     let cap = &found.cap;

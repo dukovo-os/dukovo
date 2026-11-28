@@ -483,6 +483,7 @@ pub fn method(
     label: u32,
     args: &[u64; 8],
 ) -> Result<Answer> {
+    super::callprobe::mark(super::callprobe::POSIX);
     let me = &user.process;
     // These act on the caller's own process; `exec` may also start a
     // created one, and `start_limit` set its limits before it does.

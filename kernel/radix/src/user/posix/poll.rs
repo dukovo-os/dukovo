@@ -629,6 +629,7 @@ const ON_STACK: usize = 8;
 /// `poll`, for `user`'s thread.
 #[inline(never)]
 pub fn poll(user: &UserRef, a: PollArgs) -> Result<u32> {
+    crate::user::callprobe::mark(crate::user::callprobe::POLL);
     if a.count > ENTRIES_MAX {
         return Err(Kernel::InvalidArgument.status(1));
     }
@@ -662,6 +663,7 @@ pub fn poll(user: &UserRef, a: PollArgs) -> Result<u32> {
     // goes on to take it, so that a signal the mask lets through
     // interrupts it, as on Linux.
     let mut ready = look(cspace, a.base, entries, found);
+    crate::user::callprobe::mark(crate::user::callprobe::LOOKED);
     let waits = a.flags.contains(PollFlags::FOREVER) || a.timeout_ns > 0;
     if ready == 0 && (waits || a.flags.contains(PollFlags::MASK)) {
         ready = wait_ready(user, &a, cspace, entries, found)?;
@@ -679,6 +681,7 @@ pub fn poll(user: &UserRef, a: PollArgs) -> Result<u32> {
             return Err(error(Kernel::BadAddress));
         }
     }
+    crate::user::callprobe::mark(crate::user::callprobe::POLLED);
     Ok(ready)
 }
 
