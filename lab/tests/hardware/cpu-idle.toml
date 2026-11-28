@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Idle CPUs wait in the states the firmware describes, which the kernel lists, orders and counts"
+time = "2m"
+
+# The boot log names the first CPU's states, C1 first (ADR 0795).
+[[step]]
+run = "dmesg"
+root = true
+expect = "Idle: C1"
+
+# acpi_idle where the firmware gives states deeper than C1, none where C1
+# is all there is, as Linux names them.
+[[step]]
+run = '''sh -c 'n=$(ls -d /kernel/devices/system/cpu/cpu0/cpuidle/state* | wc -l); d=$(cat /kernel/devices/system/cpu/cpuidle/current_driver); case "$d:$n" in none:1) echo "driver: as the sta""tes say" ;; acpi_idle:1) echo "driver: acpi_idle with C1 alone" ;; acpi_idle:*) echo "driver: as the sta""tes say" ;; *) echo "driver: $d with $n states" ;; esac' '''
+expect = "driver: as the states say"
+
+# Every CPU's first state is C1, and each CPU's states are shallowest
+# first: none takes less time to leave than the one before it.
+[[step]]
+run = '''sh -c 'for c in /kernel/devices/system/cpu/cpu[0-9]*; do [ "$(cat $c/cpuidle/state0/name)" = C1 ] || echo "first not C1: $c"; last=0; for s in $c/cpuidle/state*; do l=$(cat $s/latency); [ "$l" -ge "$last" ] || echo "out of order: $s"; last=$l; done; done; echo "states: orde""red"' '''
+expect = "states: ordered"
+expect_not = ["first not C1:", "out of order:"]
+
+# Each CPU enters its states while the machine idles, and the counts say
+# so.
+[[step]]
+run = '''sh -c 'for c in /kernel/devices/system/cpu/cpu[0-9]*; do echo "$c $(cat $c/cpuidle/state*/usage | awk "{ s += \$1 } END { print s + 0 }")"; done > /tmp/idle-before; sleep 2; for c in /kernel/devices/system/cpu/cpu[0-9]*; do echo "$c $(cat $c/cpuidle/state*/usage | awk "{ s += \$1 } END { print s + 0 }")"; done > /tmp/idle-after; awk "NR == FNR { before[\$1] = \$2; next } \$2 <= before[\$1] { print \"never idle: \" \$1 }" /tmp/idle-before /tmp/idle-after; rm -f /tmp/idle-before /tmp/idle-after; echo "idle: coun""ted"' '''
+expect = "idle: counted"
+expect_not = "never idle:"
+
+# Where the firmware gives deeper states, an idle machine uses them.
+[[step]]
+run = '''sh -c 'if [ "$(cat /kernel/devices/system/cpu/cpuidle/current_driver)" = acpi_idle ]; then n=$(cat /kernel/devices/system/cpu/cpu[0-9]*/cpuidle/state[1-9]*/usage | awk "{ s += \$1 } END { print s + 0 }"); if [ "$n" -gt 0 ]; then echo "deeper states: us""ed"; else echo "deeper states: never entered"; fi; else echo "deeper states: none to u""se"; fi' '''
+expect = "deeper states: "
+expect_not = "never entered"
