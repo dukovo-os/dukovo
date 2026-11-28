@@ -576,6 +576,7 @@ pub const HOST_TESTED: &[&str] = &[
     "system-release",
     "systools",
     "tuf",
+    "window-frame",
     "window-test",
     "windowd",
 ];
