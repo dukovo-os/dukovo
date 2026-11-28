@@ -66,7 +66,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use radix_hal::{SignalFrame, SyscallRegs, UserFault, UserFaultKind};
-use radix_sync::Once;
+use radix_sync::{Once, nospec};
 
 use crate::cpu::{self, msr};
 use crate::fpu;
@@ -438,10 +438,9 @@ radix_user_copy:
     je 2f
     stac
 2:
-    /* The caller checked that the program's range is its own; no copy
-       starts before that check is settled, whichever way the CPU
-       predicted it (Spectre variant 1). */
-    lfence
+    /* The caller checked that the program's range is its own, and passes
+       it through radix_sync::nospec::range, so that a CPU that guessed
+       the check wrong copies nothing (Spectre variant 1, ADR 0803). */
     // Short copies go by bytes and words, from the end (SHORT_MAX).
     cmp rcx, {short_max}
     jbe 5f
@@ -1174,11 +1173,14 @@ pub fn copy_from_user(dst: &mut [u8], src: u64) -> bool {
     if !user_range(src, dst.len()) {
         return false;
     }
-    // SAFETY: `dst` is kernel memory the caller lent for its whole length;
-    // `src..src + len` is in the user half (checked above), where a fault
-    // ends the copy early instead of stopping the kernel (`fixup`), so
-    // whatever the program mapped there, or did not, the copy is sound.
-    unsafe { radix_user_copy(dst.as_mut_ptr(), src as *const u8, dst.len()) == 0 }
+    let (src, len) = nospec::range(src, dst.len() as u64, USER_TOP);
+    // SAFETY: `dst` is kernel memory the caller lent for its whole length,
+    // and `len` is that length (checked above; `range` changes it only
+    // for a CPU running ahead of the check, to 0). `src..src + len` is in
+    // the user half, where a fault ends the copy early instead of stopping
+    // the kernel (`fixup`), so whatever the program mapped there, or did
+    // not, the copy is sound.
+    unsafe { radix_user_copy(dst.as_mut_ptr(), src as *const u8, len as usize) == 0 }
 }
 
 /// Copies `src` into user memory at `dst`; see the HAL.
@@ -1186,9 +1188,10 @@ pub fn copy_to_user(dst: u64, src: &[u8]) -> bool {
     if !user_range(dst, src.len()) {
         return false;
     }
+    let (dst, len) = nospec::range(dst, src.len() as u64, USER_TOP);
     // SAFETY: as in `copy_from_user`, the other way round: the kernel side
     // is `src`, which is only read.
-    unsafe { radix_user_copy(dst as *mut u8, src.as_ptr(), src.len()) == 0 }
+    unsafe { radix_user_copy(dst as *mut u8, src.as_ptr(), len as usize) == 0 }
 }
 
 /// Leaves for user mode; see the HAL.
