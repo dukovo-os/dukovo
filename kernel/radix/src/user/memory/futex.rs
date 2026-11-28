@@ -105,11 +105,17 @@ fn key_of(thread: &ThreadRef) -> usize {
 /// Waits while the word at `address` of `space`, the running thread's,
 /// holds `expected`, until a wake, `deadline_ns` (on the kernel's clock)
 /// or a signal.
-pub fn wait(space: &SpaceObject, address: u64, expected: u32, deadline_ns: Option<u64>) -> Result<()> {
+pub fn wait(
+    space: &SpaceObject,
+    address: u64,
+    expected: u32,
+    deadline_ns: Option<u64>,
+) -> Result<()> {
     if !address.is_multiple_of(4) {
         return Err(Kernel::InvalidArgument.status(0));
     }
-    let me = sched::current().ok_or(error(Kernel::Gone))?;
+    // Borrowed: the waiter's reference is the one counted.
+    let me = sched::running().ok_or(error(Kernel::Gone))?;
     let key = space.futex_key(address);
     let bucket = list(&key);
     {
@@ -127,8 +133,12 @@ pub fn wait(space: &SpaceObject, address: u64, expected: u32, deadline_ns: Optio
         waiters.try_reserve(1).map_err(|_| error(Kernel::NoMemory))?;
         me.futex_woken.store(false, Ordering::Relaxed);
         // Room was reserved above.
-        let waiter =
-            Waiter { owner: key.owner, offset: key.offset, hold: key.hold, thread: me.clone() };
+        let waiter = Waiter {
+            owner: key.owner,
+            offset: key.offset,
+            hold: key.hold,
+            thread: ThreadRef::clone(&me),
+        };
         let _ = waiters.push_within_capacity(waiter);
     }
     let done = || me.futex_woken.load(Ordering::Acquire) || sched::interrupted();
