@@ -416,6 +416,31 @@ fn sizes_drawn(vm: &mut Vm) -> std::result::Result<u32, String> {
     count.ok_or_else(|| "the program drew the window at no size".into())
 }
 
+/// MEASUREMENT ONLY: prints what the host's KVM counted for the machine
+/// since `before`, over `count` turns that took `took`, and what its
+/// CPUs' threads ran.
+fn host_said(
+    vm: &mut Vm,
+    before: &[(String, u64)],
+    what: &str,
+    count: u32,
+    ran: f64,
+    took: Duration,
+) {
+    println!(
+        "HOST {what}: {count} turns in {} ms, the CPUs' threads ran {:.1} us a turn",
+        took.as_millis(),
+        ran / 1000.0 / f64::from(count)
+    );
+    for (name, now) in vm.host_counts() {
+        let was = before.iter().find(|(key, _)| *key == name).map_or(0, |(_, value)| *value);
+        let since = now.saturating_sub(was);
+        if since > 0 {
+            println!("HOST {what}: {name} {since} ({:.2} a turn)", since as f64 / f64::from(count));
+        }
+    }
+}
+
 /// Sees `window-test cost` in `vm` through, from its first step to its
 /// `cost: done`, and gives the rows measured from the host.
 fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, String> {
@@ -429,17 +454,22 @@ fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, Stri
     // The window shows and nothing moves.
     step_said(vm, "cost: ready for a key")?;
     std::thread::sleep(SETTLE);
+    let counted = vm.host_counts();
     let from = Ran::now(cpus)?;
     std::thread::sleep(IDLE_FOR);
     let (ran, took) = from.since(cpus)?;
+    host_said(vm, &counted, "rest, a second", IDLE_FOR.as_secs() as u32, ran, took);
     let idle = ran / took.as_secs_f64();
     rows.push(row("desktop_idle", idle, 1));
 
     // A key starts the frames.
+    let counted = vm.host_counts();
     let from = Ran::now(cpus)?;
     vm.keys_on(SCREEN, &["a"], true)?;
     step_said(vm, "cost: drew the frames")?;
-    rows.push(row("desktop_frame", from.work_since(cpus, idle)?, FRAMES));
+    let (ran, took) = from.since(cpus)?;
+    host_said(vm, &counted, "frames", FRAMES, ran, took);
+    rows.push(row("desktop_frame", (ran - idle * took.as_secs_f64()).max(0.0), FRAMES));
     vm.keys_on(SCREEN, &["a"], false)?;
 
     // The keys the program times itself.
@@ -474,7 +504,11 @@ fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, Stri
     step_said(vm, "cost: ready for a press")?;
     vm.input_events(SCREEN, &left_button(true))?;
     step_said(vm, "cost: resizing")?;
+    let counted = vm.host_counts();
+    let from = Ran::now(cpus)?;
     let resizing = strokes(vm, cpus, RESIZE_BY, idle)?;
+    let (ran, took) = from.since(cpus)?;
+    host_said(vm, &counted, "resize", STROKES * STROKE * 2, ran, took);
     vm.input_events(SCREEN, &left_button(false))?;
     step_said(vm, "cost: drew ")?;
     rows.push(row("desktop_resize", resizing, sizes_drawn(vm)?));
