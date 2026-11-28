@@ -123,6 +123,10 @@ pub enum Heard {
     /// The window server asked for the window to be drawn full screen,
     /// or no longer. The size to draw it at follows ([`Heard::Size`]).
     Full(bool),
+    /// The window server snapped the window to a side of its screen or
+    /// to a part of one, or the window is no longer snapped. The size
+    /// to draw it at follows ([`Heard::Size`]).
+    Snapped(bool),
     /// A commit the program asked about ([`Client::ask_shown`]) showed
     /// on a screen.
     Shown {
@@ -256,6 +260,8 @@ struct Told {
     /// Whether the window server last asked for the window to be full
     /// screen.
     full: bool,
+    /// Whether the window server last said the window is snapped.
+    snapped: bool,
     /// The bytes of the keyboard's layout, once it came.
     layout_bytes: Option<u32>,
     /// How long a held key waits and how often it repeats, once told.
@@ -1467,7 +1473,7 @@ impl Client {
         }
         // The next window is told everything anew.
         (self.told.asked, self.told.configured) = ((0, 0, false), None);
-        (self.told.active, self.told.full) = (false, false);
+        (self.told.active, self.told.full, self.told.snapped) = (false, false, false);
         (self.holds, self.told.heard) = (None, VecDeque::new());
         self.sent()
     }
@@ -1727,6 +1733,12 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Told {
                 if full != told.full {
                     told.full = full;
                     told.heard.push_back(Heard::Full(full));
+                }
+                use xdg_toplevel::State::{TiledBottom, TiledLeft, TiledRight, TiledTop};
+                let snapped = [TiledLeft, TiledRight, TiledTop, TiledBottom].into_iter().any(has);
+                if snapped != told.snapped {
+                    told.snapped = snapped;
+                    told.heard.push_back(Heard::Snapped(snapped));
                 }
                 let asked = (width, height, has(xdg_toplevel::State::Maximized));
                 if asked != told.asked {
