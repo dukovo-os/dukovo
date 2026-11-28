@@ -25,13 +25,14 @@ use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::backend::renderer::Bind;
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::input::keyboard::{FilterResult, XkbConfig};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use sysapi::time::monotonic_ns;
 
 use crate::clients::Clients;
+use crate::constraints::{self, Held, Kind};
 use crate::curve::Curve;
 use crate::keys::{self, Ask, Chord};
 use crate::link::Link;
@@ -227,6 +228,12 @@ where
         self.screens.front()
     }
 
+    /// Where the pointer is on the desktop.
+    #[cfg(test)]
+    pub fn pointer_at(&self) -> (f64, f64) {
+        self.shell.pointer_at().into()
+    }
+
     /// Puts the pointer in the middle of the first screen.
     fn centre(&mut self) {
         let Some(first) = self.screens.first() else { return };
@@ -286,8 +293,50 @@ where
         if stale {
             self.screens.stale();
         }
+        self.constrain();
         // What the steps above sent, as the first flush.
         let _ = self.display.flush_clients();
+    }
+
+    /// Settles which surface holds the pointer now, locked or confined
+    /// ([`crate::constraints`]): the one under it whose program asked,
+    /// if its window is the one the person works in and the window
+    /// manager has no hold of the pointer. A lock that ended leaves the
+    /// pointer where its program said it would have it, if that is on
+    /// the surface still.
+    fn constrain(&mut self) {
+        let Some(pointer) = self.shell.seat.get_pointer() else { return };
+        let now = match &self.under {
+            Under::Surface { window, surface, at }
+                if !self.manager.takes_pointer()
+                    && self.shell.active() == Some(window)
+                    && pointer.current_focus().as_ref() == Some(surface) =>
+            {
+                let within = pointer.current_location() - *at;
+                let kind = constraints::takes(surface, &pointer, within);
+                kind.map(|kind| Held { surface: surface.clone(), at: *at, kind })
+            }
+            _ => None,
+        };
+        let Some(before) = core::mem::replace(&mut self.shell.held, now) else { return };
+        let held = self.shell.held.as_ref();
+        if held.is_some_and(|held| held.same(&before)) {
+            return;
+        }
+        // The pointer is over the surface still, and its window is not
+        // the person's any more, or the window manager has the pointer.
+        if held.is_none_or(|held| held.surface != before.surface) {
+            constraints::ends(&before.surface, &pointer);
+        }
+        let Kind::Locked { hint: Some(hint) } = before.kind else { return };
+        let to = before.at + hint;
+        let on_it = matches!(
+            self.shell.windows.under(to),
+            Under::Surface { surface, .. } if surface == before.surface
+        );
+        if on_it && !self.manager.takes_pointer() {
+            self.point(monotonic_ns(), to);
+        }
     }
 
     /// Has the frames and the pointer show what they should now: the
@@ -471,7 +520,24 @@ where
     pub fn moved(&mut self, time_ns: u64, dx: i32, dy: i32) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
         let by: Point<f64, Logical> = self.curve.moved(time_ns, dx, dy).into();
-        self.point(time_ns, pointer.current_location() + by);
+        // The program with the pointer hears the motion as the mouse
+        // made it too, if it asked: how far the pointer goes for it,
+        // held or not, and the mouse's own counts.
+        let own = RelativeMotionEvent {
+            delta: by,
+            delta_unaccel: (f64::from(dx), f64::from(dy)).into(),
+            utime: time_ns / 1000,
+        };
+        let focus = self.focus();
+        pointer.relative_motion(&mut self.shell, focus, &own);
+        if matches!(self.shell.held, Some(Held { kind: Kind::Locked { .. }, .. })) {
+            // The pointer stays, and that motion is all the program
+            // hears.
+            pointer.frame(&mut self.shell);
+            self.settle();
+            return;
+        }
+        self.steer(time_ns, pointer.current_location() + by);
     }
 
     /// A device points at a place of the first screen: `x` of the way
@@ -489,7 +555,32 @@ where
         if let Some(y) = y {
             at.y = first.loc.y + y.clamp(0.0, 1.0) * (first.size.h - 1.0);
         }
-        self.point(time_ns, at);
+        self.steer(time_ns, at);
+    }
+
+    /// Moves the pointer to `to`, or as near to it as the surface that
+    /// holds the pointer lets it go: nowhere, if the pointer is locked.
+    fn steer(&mut self, time_ns: u64, to: Point<f64, Logical>) {
+        let Some(pointer) = self.shell.seat.get_pointer() else { return };
+        let to = match &self.shell.held {
+            None => to,
+            Some(Held { kind: Kind::Locked { .. }, .. }) => return,
+            Some(Held { surface, at, kind: Kind::Confined }) => {
+                // The part of the surface that shows, and of that the
+                // region its program named.
+                let allowed = |place: Point<f64, Logical>| {
+                    let on_it = matches!(
+                        self.shell.windows.under(place),
+                        Under::Surface { surface: under, .. } if under == *surface
+                    );
+                    on_it && constraints::lets(surface, &pointer, place - *at)
+                };
+                let size = constraints::size_of(surface).unwrap_or_default();
+                let bounds = Rectangle::new(*at, size.to_f64());
+                constraints::confined(pointer.current_location(), to, bounds, allowed)
+            }
+        };
+        self.point(time_ns, to);
     }
 
     /// Moves the pointer to the place on a screen nearest to `at`, and

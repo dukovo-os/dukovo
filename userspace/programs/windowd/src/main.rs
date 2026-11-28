@@ -14,6 +14,7 @@
 
 mod borrowed;
 mod clients;
+mod constraints;
 mod curve;
 mod desktop;
 mod devices;

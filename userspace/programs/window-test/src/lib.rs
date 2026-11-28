@@ -37,7 +37,13 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::input_timestamps::zv1::client::{
     zwp_input_timestamps_manager_v1, zwp_input_timestamps_v1,
 };
+use wayland_protocols::wp::pointer_constraints::zv1::client::{
+    zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1,
+};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
+use wayland_protocols::wp::relative_pointer::zv1::client::{
+    zwp_relative_pointer_manager_v1, zwp_relative_pointer_v1,
+};
 use wayland_protocols::wp::tearing_control::v1::client::{
     wp_tearing_control_manager_v1, wp_tearing_control_v1,
 };
@@ -132,6 +138,20 @@ pub enum Heard {
     },
     /// A commit the program asked about never showed.
     NotShown,
+    /// The window holds the pointer where it is ([`Client::lock`]), or
+    /// no longer.
+    Locked(bool),
+    /// The window holds the pointer to itself ([`Client::confine`]), or
+    /// no longer.
+    Confined(bool),
+    /// A mouse moved ([`Client::hear_mouse`]).
+    Mouse {
+        /// How far the pointer goes for it, right and down, in
+        /// 256ths of a pixel.
+        by: (i32, i32),
+        /// The mouse's own counts, in 256ths.
+        counts: (i32, i32),
+    },
     /// The popup is done: the person went elsewhere.
     PopupDone,
     /// The window server said who draws the window's frame: itself, or
@@ -208,6 +228,8 @@ struct Told {
     fractions: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     presentation: Option<wp_presentation::WpPresentation>,
     tearing: Option<wp_tearing_control_manager_v1::WpTearingControlManagerV1>,
+    constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
+    mice: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
     /// The whole zoom each surface was last told to draw at
     /// (`wl_surface.preferred_buffer_scale`).
     zooms: Vec<(wl_surface::WlSurface, i32)>,
@@ -319,6 +341,18 @@ pub struct Client {
     /// Whether the program asks, with the window's next commit, to be
     /// told when that shows.
     asks_shown: bool,
+    /// The object the window holds the pointer with, where it is or to
+    /// itself.
+    holds: Option<Holds>,
+    /// The object the program hears the mice's own motion through.
+    mouse: Option<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
+}
+
+/// The object a window holds the pointer with.
+#[derive(Debug)]
+enum Holds {
+    Locked(zwp_locked_pointer_v1::ZwpLockedPointerV1),
+    Confined(zwp_confined_pointer_v1::ZwpConfinedPointerV1),
 }
 
 impl Client {
@@ -365,7 +399,19 @@ impl Client {
         let connection = connection.clone();
         let (window, popup, pointer_shown) = (None, None, None);
         let (covers, asks_shown) = (None, false);
-        Ok(Client { connection, queue, told, window, popup, pointer_shown, covers, asks_shown })
+        let (holds, mouse) = (None, None);
+        Ok(Client {
+            connection,
+            queue,
+            told,
+            window,
+            popup,
+            pointer_shown,
+            covers,
+            asks_shown,
+            holds,
+            mouse,
+        })
     }
 
     /// The screens.
@@ -591,6 +637,120 @@ impl Client {
             PresentationHint::Vsync
         });
         Ok(())
+    }
+
+    /// Asks for the pointer to stay where it is while it is over the
+    /// window and the window is the one the person works in
+    /// ([`Heard::Locked`]): until it first leaves, or, if `lasting`,
+    /// each time it comes back.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, the pointer has not come, or the window
+    /// server does not offer `zwp_pointer_constraints_v1`.
+    pub fn lock(&mut self, lasting: bool) -> Outcome {
+        self.hold(lasting, None, true)
+    }
+
+    /// Asks for the pointer to stay on the window, or on the part
+    /// `region` of it (x, y, width, height), as [`Client::lock`] asks
+    /// for it to stay where it is ([`Heard::Confined`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::lock`].
+    pub fn confine(&mut self, lasting: bool, region: Option<(i32, i32, i32, i32)>) -> Outcome {
+        self.hold(lasting, region, false)
+    }
+
+    /// Asks for the pointer to be held: locked, or confined to `region`
+    /// of the window.
+    fn hold(
+        &mut self,
+        lasting: bool,
+        region: Option<(i32, i32, i32, i32)>,
+        locked: bool,
+    ) -> Outcome {
+        use zwp_pointer_constraints_v1::Lifetime;
+        let handle = self.queue.handle();
+        let (Some(constraints), Some(compositor)) = (&self.told.constraints, &self.told.compositor)
+        else {
+            return Err("the window server offers no zwp_pointer_constraints_v1".into());
+        };
+        let Some(pointer) = &self.told.pointer else { return Err("no pointer yet".into()) };
+        let Some(window) = &self.window else { return Err("no window".into()) };
+        let region = region.map(|(x, y, width, height)| {
+            let region = compositor.create_region(&handle, ());
+            region.add(x, y, width, height);
+            region
+        });
+        let lifetime = if lasting { Lifetime::Persistent } else { Lifetime::Oneshot };
+        let (surface, region) = (&window.surface, region.as_ref());
+        self.holds = Some(if locked {
+            Holds::Locked(constraints.lock_pointer(surface, pointer, region, lifetime, &handle, ()))
+        } else {
+            let confined =
+                constraints.confine_pointer(surface, pointer, region, lifetime, &handle, ());
+            Holds::Confined(confined)
+        });
+        if let Some(region) = region {
+            region.destroy();
+        }
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
+    }
+
+    /// Asks for the pointer to be held a second time, which a window
+    /// may not: the window server refuses it, and the program is
+    /// disconnected.
+    ///
+    /// # Errors
+    ///
+    /// When the window server refuses, as it should.
+    pub fn lock_again(&mut self) -> Outcome {
+        let had = self.holds.take();
+        self.lock(true)?;
+        self.holds = had;
+        self.sent()
+    }
+
+    /// Lets go of the pointer. A window that held it where it was says
+    /// first where it would have it, if `hint` names a place of the
+    /// window.
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone.
+    pub fn let_go(&mut self, hint: Option<(f64, f64)>) -> Outcome {
+        match self.holds.take() {
+            Some(Holds::Locked(locked)) => {
+                if let (Some((x, y)), Some(window)) = (hint, &self.window) {
+                    locked.set_cursor_position_hint(x, y);
+                    // Where the pointer would be is the window's state,
+                    // and holds from its next commit.
+                    window.surface.commit();
+                }
+                locked.destroy();
+            }
+            Some(Holds::Confined(confined)) => confined.destroy(),
+            None => {}
+        }
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
+    }
+
+    /// Asks to hear every motion of a mouse while the pointer is on the
+    /// window, as the mouse made it ([`Heard::Mouse`]).
+    ///
+    /// # Errors
+    ///
+    /// When the pointer has not come, or the window server does not
+    /// offer `zwp_relative_pointer_manager_v1`.
+    pub fn hear_mouse(&mut self) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(mice), Some(pointer)) = (&self.told.mice, &self.told.pointer) else {
+            return Err("no pointer, or no zwp_relative_pointer_manager_v1".into());
+        };
+        self.mouse = Some(mice.get_relative_pointer(pointer, &handle, ()));
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
     }
 
     /// Asks for a second object to say the same with, which a window
@@ -1290,6 +1450,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                 }
                 "wp_viewporter" => told.viewporter = Some(registry.bind(name, 1, handle, ())),
                 "wp_presentation" => told.presentation = Some(registry.bind(name, 1, handle, ())),
+                "zwp_pointer_constraints_v1" => {
+                    told.constraints = Some(registry.bind(name, 1, handle, ()));
+                }
+                "zwp_relative_pointer_manager_v1" => {
+                    told.mice = Some(registry.bind(name, 1, handle, ()));
+                }
                 "wp_tearing_control_manager_v1" => {
                     told.tearing = Some(registry.bind(name, 1, handle, ()));
                 }
@@ -1570,6 +1736,68 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for Told {
     }
 }
 
+impl Dispatch<zwp_locked_pointer_v1::ZwpLockedPointerV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _locked: &zwp_locked_pointer_v1::ZwpLockedPointerV1,
+        event: zwp_locked_pointer_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        use zwp_locked_pointer_v1::Event;
+        match event {
+            Event::Locked => told.heard.push_back(Heard::Locked(true)),
+            Event::Unlocked => told.heard.push_back(Heard::Locked(false)),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_confined_pointer_v1::ZwpConfinedPointerV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _confined: &zwp_confined_pointer_v1::ZwpConfinedPointerV1,
+        event: zwp_confined_pointer_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        use zwp_confined_pointer_v1::Event;
+        match event {
+            Event::Confined => told.heard.push_back(Heard::Confined(true)),
+            Event::Unconfined => told.heard.push_back(Heard::Confined(false)),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _mouse: &zwp_relative_pointer_v1::ZwpRelativePointerV1,
+        event: zwp_relative_pointer_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let zwp_relative_pointer_v1::Event::RelativeMotion {
+            dx,
+            dy,
+            dx_unaccel,
+            dy_unaccel,
+            ..
+        } = event
+        {
+            let part = |pixels: f64| (pixels * 256.0).round() as i32;
+            told.heard.push_back(Heard::Mouse {
+                by: (part(dx), part(dy)),
+                counts: (part(dx_unaccel), part(dy_unaccel)),
+            });
+        }
+    }
+}
+
 impl Dispatch<wl_buffer::WlBuffer, ()> for Told {
     fn event(
         told: &mut Told,
@@ -1606,6 +1834,8 @@ delegate_noop!(Told: wl_region::WlRegion);
 delegate_noop!(Told: ignore wp_presentation::WpPresentation);
 delegate_noop!(Told: wp_tearing_control_manager_v1::WpTearingControlManagerV1);
 delegate_noop!(Told: wp_tearing_control_v1::WpTearingControlV1);
+delegate_noop!(Told: zwp_pointer_constraints_v1::ZwpPointerConstraintsV1);
+delegate_noop!(Told: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1);
 delegate_noop!(Told: xdg_positioner::XdgPositioner);
 delegate_noop!(Told: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Told: zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1);

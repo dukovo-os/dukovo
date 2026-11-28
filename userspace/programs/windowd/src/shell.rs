@@ -87,6 +87,7 @@ use sysapi::time::monotonic_ns;
 use window_frame::{Bar, Edge};
 
 use crate::clients::Peer;
+use crate::constraints::{self, Held};
 use crate::manager::Asked;
 use crate::settings::TitleBars;
 use crate::shm::Files;
@@ -124,6 +125,9 @@ pub struct Shell {
     /// and say that their frames need not wait for a beat.
     _presentation: PresentationState,
     _tearing: GlobalId,
+    /// Kept for as long as programs may ask to hold the pointer, and
+    /// for a mouse's own motion.
+    _constraints: constraints::Offered,
     /// Kept for as long as programs may ask for a part of a title bar.
     _title_bars: GlobalId,
     /// Where events of windowd's own protocols are sent from.
@@ -154,6 +158,9 @@ pub struct Shell {
     pub stamps: Stamps,
     /// The files the programs' pixels are in.
     pub files: Files,
+    /// The surface that holds the pointer, locked or confined, as the
+    /// desktop last settled it.
+    pub held: Option<Held>,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -186,9 +193,11 @@ impl Shell {
             // The times are the monotonic clock's, as the layer's are.
             _presentation: PresentationState::new::<Shell>(display, libc::CLOCK_MONOTONIC as u32),
             _tearing: tearing::offer(display),
+            _constraints: constraints::offer(display),
             _title_bars: titlebar::offer(display),
             stamps: Stamps::offer(display),
             files: Files::default(),
+            held: None,
             display: display.clone(),
             popups: PopupManager::default(),
             grabbed: None,
@@ -272,7 +281,7 @@ impl Shell {
     }
 
     /// Where the pointer is.
-    fn pointer_at(&self) -> Point<f64, Logical> {
+    pub fn pointer_at(&self) -> Point<f64, Logical> {
         self.seat.get_pointer().map_or_default(|pointer| pointer.current_location())
     }
 
