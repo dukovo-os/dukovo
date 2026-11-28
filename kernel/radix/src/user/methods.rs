@@ -172,6 +172,7 @@ pub fn call(
         }
         (ObjectKind::AddressSpace, _) => address_space_method(user, slot, info.label, &args),
         (ObjectKind::Thread, _) => thread_method(me, user, slot, info.label, &args),
+        (ObjectKind::Process, radix_abi::process::POLL) => super::process::poll(user, found, &args),
         (ObjectKind::Process, _) => super::process::method(user, slot, found, info.label, &args),
         (ObjectKind::ResourceDomain, _) => super::domain::method(user, slot, info.label, &args),
         (ObjectKind::Power, _) => super::power::method(user, cap, info.label, &args),
