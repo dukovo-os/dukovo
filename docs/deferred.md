@@ -114,8 +114,9 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | The fixed ACPI power button on both reference machines (ADR 0142) | Firmware differs | Dell, Framework |
-| MWAIT idle on real CPUs (scheduler design note) | QEMU does not offer MWAIT, so boot tests exercise HLT | Dell, Framework |
+| MWAIT idle on real CPUs (scheduler design note), and the deeper C-states the firmware's `_CST` gives: MWAIT states on Intel, I/O-port states on AMD's Zen, the C1E promotion turned off, and the idle governor's choices (ADR 0795) | QEMU does not offer MWAIT or `_CST`, so boot tests exercise HLT alone | OptiPlex 7040, Lenovo M75q, Dell, Framework |
 | HWP and CPPC frequency control, thermal zones, embedded controller events, batteries and lids (ADRs 0201 to 0203) | QEMU emulates none of them | Dell, Framework |
+| Speed control through the firmware's P-states (ADR 0796) | QEMU offers neither Enhanced SpeedStep nor hardware P-states, and the lab's desktops have HWP or CPPC | The R740 with its BIOS's power management set to the operating system and HWP off |
 | The Framework Desktop's embedded controller, fans and ARGB header (ADRs 0207, 0208) | Tested against a simulated EC | Framework |
 | Corrected-error interrupts (CMCI on the Dell, Zen 5's counters) and Zen's scalable machine-check banks (ADRs 0169, 0204) | QEMU's CPUs have neither | Dell, Framework |
 | The chipset watchdogs: the Dell's TCO timer behind its SMBus controller, and the AMD FCH's (ADR 0167), and an update that hangs falling back through them (ADR 0453; the boot test `update-hang` proves it on QEMU's i6300esb, and the lab's QEMU machines have no watchdog) | Phase 15's rollback relies on them; not proven on hardware | Dell, Framework, AMD lab machine |
@@ -138,7 +139,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | The three cloud canaries (ADRs 0456, 0533) | The reference machine and the lab machines are the canaries: each reports every hour, and one that fails or goes quiet holds the waves | Buying the cloud machines, before 1.0.0-alpha.1 |
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, release 1.11) |
-| AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
 | A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
 | A boot test that starts Repair startup from the install stick's menu entry, on the hotkey R, and one of a repair that finds the partition readable, with only GRUB or its menu gone (ADR 0503) | The `repair-startup` boot test runs the repair from the live system's shell, on a partition whose FAT is overwritten with zeros, and restarts from the stick in place; the entry and the readable case have unit tests, and the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
@@ -293,6 +293,12 @@ machine with AMT, an AMD machine and a laptop; see
 | Machine-check counts by DIMM slot | The kernel counts errors by bank, and names no memory module | Phase 19 step 4 |
 | SFP+ modules: their information, and fiber ports | No driver reads a module's EEPROM, and the cards with cages are the server cards | Phase 19 step 12 |
 
+### Speculation flaws before 1.0.0-beta.1
+
+| Item | Why it waits | Waits on |
+| --- | --- | --- |
+| A program's own speculation controls, `prctl(PR_SET_SPECULATION_CTRL)` and seccomp's, for Speculative Store Bypass and IBPB between programs (ADR 0790) | Speculative Store Bypass is closed only for every program at once (`spec_store_bypass_disable=on`), and IBPB between programs only with `spectre_v2_user=on` | Phase 18's `prctl` |
+
 ### Releases after 1.0
 
 These come from finished work; the releases themselves are in the
@@ -390,6 +396,9 @@ machine asks for them.
 | --- | --- |
 | Spark's pet of the hardware watchdog came more than 10 s late while nginx served the lab PC's load on the OptiPlex 7040: what holds Spark's loop up (nginx's access log copied into the system's log is the first suspect) | Lab, services/nginx on the OptiPlex, 2026-11-13 |
 | Transparent huge pages for anonymous memory | ADR 0121 |
+| Idle states for Intel processors whose firmware gives no `_CST`, or a poor one, from the kernel's own table of each model's states | ADR 0795 |
+| Turning an idle state off while the system runs, through `cpuidle/state*/disable`, and a latency limit that programs ask for, as Linux's PM QoS | ADR 0795 |
+| The firmware's P-states where `_PCT` names I/O ports rather than the processor's registers, `_PSD`'s software coordination of a domain's CPUs, a `_PPC` that changes while the system runs (its Notify 0x80), AMD's Core Performance Boost under `cpu.boost`, and CPPC through `_CPC`'s shared memory | ADR 0796 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
 | `getrusage`'s `ru_maxrss`, a process's peak resident memory in KiB, as on Linux and the BSDs: the C library leaves it 0, as the kernel keeps no peak, so Go's `runtime/pprof` heap profiles say `MaxRSS = 0` | Go's test suite, ADR 0358 |
 | `/devices/shm`'s directory keeps its names in one array in the order they were made, with an index sorted by name, as tmpfs did before ADR 0367 kept its entries in pieces: it holds at most 32,768 shared memory objects, and removing one moves every one after it | ADR 0367 |
@@ -576,9 +585,13 @@ machine asks for them.
 | The banner of a change that is being tried naming the AI client that asked for it: the journal's row and the task do, and the Security page's script is at its size budget | ADR 0690 |
 | What only a screen reader is told (`.sr-only`) held inside the scrolling box of every page, as the AI clients page holds its own: on a page whose table has such a caption below the window's end, the Overview at 1280 by 800 for one, the document is taller than its window and scrolls into nothing. One rule on the shell's page box does it for all pages, and moves what each page's menus and popovers are placed against, so each page is looked at first | Lab test `web-console/clients` |
 
-### Language runtimes
+### Not scheduled
 
 The roadmap lists these as [not scheduled](roadmap.md#not-scheduled).
+Each waits on programs or users asking for it.
+
+#### Language runtimes
+
 Each waits on programs or users asking for more than the Linux builds
 give.
 
@@ -586,6 +599,12 @@ give.
 | --- | --- |
 | A native OpenJDK port (Java and the JVM languages), with HotSpot's own operating-system layer for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
 | A native .NET port (C# and F#), with the runtime's platform layer and native shims for Dukovo and its JIT within W^X, for speed and DukUI integration. Until then the official Linux builds run through the Linux compatibility layer, once Phase 18 lets a program ask for JIT memory | Roadmap, not scheduled |
+
+#### Device classes
+
+| Item | Source |
+| --- | --- |
+| Dukovo as a tablet operating system in place of Android: a touch-first shell on DukUI, touchscreen and pen input, and the AArch64 port; an x86-64 tablet such as a Surface Pro first, phones (modem, carrier, telephony) later | Roadmap, not scheduled |
 
 ### Benchmarks
 
@@ -605,7 +624,7 @@ give.
 | TLS rows of the server benchmarks (nginx over HTTPS, PostgreSQL over TLS): the handshake and record costs are OpenSSL's arithmetic, the same code on both systems, and the Linux kit's servers are built without OpenSSL | ADR 0546 |
 | The server benchmarks over the network card: they run client and server on the machine, over the loopback or a Unix socket, so that they need no peer; the card's path is measured by its own rows | ADR 0546 |
 | In QEMU on the lab PC (an AMD Zen 5 host, which gives the virtual machine no PCIDs), some server rows take longer than Linux's in the same virtual machine: PostgreSQL's select 2.0 to 2.6 times Linux's time, TPC-B 2.0 to 2.1, and serverbench's wait for one ready pipe among idle ones 1.9, where PHP-FPM is level with Linux and on the OptiPlex 7040 every server row is at or under Linux's time. The profiles put the extra time in switching between programs and in the return from interrupts, each of which costs more in the virtual machine. 1.0.0-alpha.1 holds the server rows to Linux's time on the OptiPlex; 1.0.0-beta.1 holds them in QEMU too | Lab, performance/server-profile, php and postgresql on QEMU; ADR 0770 |
-| At the CPUs' default clocks, Dukovo's and Linux's differ on real hardware: Dukovo idles in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores count as active and the busy core reaches the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. The lab's performance tests hold both systems at the base frequency instead; what the default clocks cost is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end` once that run is in, and deep idle states come with laptop power | ADR 0557; the first OptiPlex run with the clocks held |
+| At the CPUs' default clocks, Dukovo's and Linux's differed on real hardware: Dukovo idled in C1 with the firmware's C1E promotion left on and no deeper state, so idle cores counted as active and the busy core reached the four-core turbo level (3.3 GHz on the OptiPlex 7040) where Linux, whose intel_idle turns the promotion off and uses deeper states, can reach 3.6 GHz. ADR 0795 brings the firmware's deeper states and turns the promotion off where the firmware lists C1E; whether the busy core now reaches 3.6 GHz, and what the default clocks cost, is measured with `cpu_cycle_cold`, `cpu_cycle` and `cpu_cycle_end`. The lab's performance tests hold both systems at the base frequency meanwhile | ADR 0557, ADR 0795; an OptiPlex run with the default clocks |
 
 ## Lab findings to confirm
 

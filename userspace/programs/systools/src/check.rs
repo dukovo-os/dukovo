@@ -8,12 +8,13 @@
 //! that lets every port in, SSH that takes passwords from anyone, an
 //! account with no password, an update that is waiting, a clock that was
 //! never set, a service that gave up, a warning that is still active,
-//! alerts that reach nobody, and no snapshots of the people's files. A
-//! default install has none of these, so a warning is real. It changes
-//! nothing but the kept result.
+//! alerts that reach nobody, a processor flaw that only newer microcode
+//! closes, and no snapshots of the people's files. A default install has
+//! none of these, so a warning is real. It changes nothing but the kept
+//! result.
 //!
 //! Where to look: `line` holds what a check finds, the IDs of its
-//! warnings (SEC-101 to SEC-170, each with a page in docs/errors) and the
+//! warnings (SEC-101 to SEC-180, each with a page in docs/errors) and the
 //! exit status they make; `context` what the checks read, which the unit
 //! tests plant in a folder; `saved` the result kept in
 //! `/system/state/dukovo-check/last.json`; and one module for each area:
@@ -57,7 +58,7 @@ struct Check {
 }
 
 /// The checks, in the order of the report.
-const CHECKS: [Check; 16] = [
+const CHECKS: [Check; 17] = [
     Check { area: Area::Network, name: "reachable", run: network::reachable },
     Check { area: Area::Network, name: "firewall rules", run: network::rules },
     Check { area: Area::Network, name: "firewall on", run: network::service_on },
@@ -72,6 +73,7 @@ const CHECKS: [Check; 16] = [
     Check { area: Area::Services, name: "failed", run: services::failed },
     Check { area: Area::Health, name: "early warnings", run: health::early_warnings },
     Check { area: Area::Health, name: "hardware", run: health::hardware },
+    Check { area: Area::Health, name: "processor flaws", run: health::processor_flaws },
     Check { area: Area::Alerts, name: "reach", run: alerts::reach },
     Check { area: Area::Backups, name: "snapshots", run: backups::snapshots },
 ];
@@ -280,7 +282,7 @@ mod tests {
         assert_eq!(first, ["reachable", "firewall rules", "firewall on"]);
         assert_eq!(lines.last().map(|line| line.check.as_str()), Some("snapshots"));
         // A clean system, as installed, has a line for each of its checks.
-        assert_eq!(lines.len(), 16);
+        assert_eq!(lines.len(), 17);
     }
 
     #[test]

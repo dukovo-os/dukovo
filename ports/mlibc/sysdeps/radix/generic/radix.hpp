@@ -279,6 +279,25 @@ void copy_dir_path(int from, int to);
 // Forgets the path of `fd`, which was closed or is to be another file.
 void forget_dir_path(int fd);
 
+// What the socket a descriptor holds is, as far as the C library knows
+// (ADR 0801): a network socket and its type, or anything else, which is a
+// Unix socket or no socket. The calls that work differently for the two
+// families ask the kernel once for a descriptor, and the C library notes
+// what it makes (socket, socketpair, accept); every new descriptor starts
+// with nothing known, and a copy has its original's.
+enum class SocketKind : uint8_t {
+	unknown = 0,
+	other,
+	inet_stream,
+	inet_datagram,
+};
+
+// What the C library knows of the socket descriptor `fd` holds.
+SocketKind socket_kind(int fd);
+
+// Notes what the socket descriptor `fd` holds is.
+void note_socket_kind(int fd, SocketKind kind);
+
 // Copies the path of descriptor `fd`, beneath the root (`.` for the root
 // itself), to `out`, which has room for PATH_MAX_BYTES bytes, and returns
 // its length: 0 if it has none.

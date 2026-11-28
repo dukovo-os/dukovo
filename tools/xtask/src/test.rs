@@ -166,6 +166,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-broadcom-net",
     "radix-btrfs",
     "radix-cap",
+    "radix-cpuflaws",
     "radix-crosec",
     "radix-display",
     "radix-elf",
@@ -218,6 +219,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-smbus",
     "radix-spd",
     "radix-sync",
+    "radix-thunks",
     "radix-tty",
     "radix-uacpi",
     "radix-uart",
@@ -12495,7 +12497,8 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
     // come before the kernel's banner.
     let module = test_microcode().len();
     vm.expect(&format!(
-        "microcode: module of {module} bytes with 2 updates; CPU signature {MICROCODE_SIGNATURE:#x}"
+        "microcode: module of {module} bytes with 2 Intel updates and 0 AMD patches; CPU \
+         signature {MICROCODE_SIGNATURE:#x}"
     ))?;
     // QEMU accepts the update but cannot apply it, so the revision stays.
     vm.expect(&format!("microcode: revision {MICROCODE_REVISION:#x} did not take effect"))?;

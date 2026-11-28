@@ -10,7 +10,9 @@
  * Its methods write what they did to I/O ports the test reads back. Its
  * embedded controller keeps a battery, an AC adapter and a lid; its GPIO
  * controller has events; its I2C controller is a PCI function, with a
- * touchpad on it.
+ * touchpad on it. Its processors, a legacy Processor object and a
+ * processor device, list idle and performance states, and take what the
+ * kernel tells them through _OSC and _PDC.
  */
 DefinitionBlock ("dsdt.aml", "DSDT", 2, "DUKOVO", "TESTDSDT", 1)
 {
@@ -255,6 +257,119 @@ DefinitionBlock ("dsdt.aml", "DSDT", 2, "DUKOVO", "TESTDSDT", 1)
                         Return (0)
                     }
                 }
+            }
+        }
+
+        // A legacy processor, ID 3, and a processor device, UID 5, both
+        // with the idle and performance states of an Intel processor:
+        // C1 and C3 by MWAIT, C2 by a read of a port.
+        Processor (CPU0, 3, 0x00001810, 6)
+        {
+            Name (_CST, Package ()
+            {
+                3,
+                Package ()
+                {
+                    ResourceTemplate () { Register (FFixedHW, 1, 2, 0x00, 1) },
+                    1, 1, 1000
+                },
+                Package ()
+                {
+                    ResourceTemplate () { Register (SystemIO, 8, 0, 0x814, 1) },
+                    2, 100, 500
+                },
+                Package ()
+                {
+                    ResourceTemplate () { Register (FFixedHW, 1, 2, 0x20, 1) },
+                    3, 87, 350
+                }
+            })
+
+            Name (_PSS, Package ()
+            {
+                Package () { 2400, 35000, 10, 10, 0x1800, 0x1800 },
+                Package () { 1800, 20000, 10, 10, 0x1200, 0x1200 },
+                Package () { 800, 8000, 10, 10, 0x0800, 0x0800 }
+            })
+
+            Name (_PCT, Package ()
+            {
+                ResourceTemplate () { Register (FFixedHW, 64, 0, 0x199, 4) },
+                ResourceTemplate () { Register (FFixedHW, 64, 0, 0x198, 4) }
+            })
+
+            Method (_PPC)
+            {
+                Return (1)
+            }
+
+            // The kernel's capabilities, kept, less the MWAIT for C2 and C3.
+            Name (OSCB, Buffer (16) {})
+            Method (_OSC, 4, Serialized)
+            {
+                OSCB = Arg3
+                CreateDWordField (Arg3, 4, CAPS)
+                CAPS &= 0xFFFFFDFF
+                Return (Arg3)
+            }
+
+            Name (PDCB, Buffer (8) {})
+            Method (_PDC, 1)
+            {
+                PDCB = Arg0
+            }
+        }
+
+        Device (CPU1)
+        {
+            Name (_HID, "ACPI0007")
+            Name (_UID, 5)
+
+            Method (_CST)
+            {
+                Return (\_SB.CPU0._CST)
+            }
+
+            Method (_PSS)
+            {
+                Return (\_SB.CPU0._PSS)
+            }
+
+            Method (_PCT)
+            {
+                Return (\_SB.CPU0._PCT)
+            }
+
+            Method (_PPC)
+            {
+                Return (0)
+            }
+
+            Name (OSCB, Buffer (16) {})
+            Method (_OSC, 4, Serialized)
+            {
+                OSCB = Arg3
+                CreateDWordField (Arg3, 4, CAPS)
+                CAPS &= 0xFFFFFDFF
+                Return (Arg3)
+            }
+
+            Name (PDCB, Buffer (8) {})
+            Method (_PDC, 1)
+            {
+                PDCB = Arg0
+            }
+        }
+
+        // A processor device that is not there, found by its _CID.
+        Device (CPU2)
+        {
+            Name (_HID, "DKV0002")
+            Name (_CID, "ACPI0007")
+            Name (_UID, 6)
+            Method (_STA)
+            {
+                Return (0)
             }
         }
 

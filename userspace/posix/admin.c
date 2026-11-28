@@ -665,8 +665,12 @@ static void hardware(void) {
 	CONTAINS("00:1f.2 \"SATA controller\" \"Intel Corporation\"", "/bin/lspci", "-mm", "-d", "8086:");
 	OUTPUT("", "", "/bin/lspci", "-d", "ffff:");
 	STATUS(1, "/bin/lspci", "-s", "1:2:3:4");
-	CONTAINS("Architecture:             x86_64\n", "/bin/lscpu");
-	CONTAINS("CPU(s):                   4\n  On-line CPU(s) list:    0-3\n", "/bin/lscpu");
+	// The values line up after the longest label, which is the processor
+	// flaw "Vulnerability Indirect target selection:" (ADR 0790).
+	CONTAINS("Architecture:                            x86_64\n", "/bin/lscpu");
+	CONTAINS("CPU(s):                                  4\n"
+	         "  On-line CPU(s) list:                   0-3\n",
+	         "/bin/lscpu");
 	CONTAINS(" sse2 ", "/bin/lscpu");
 	CONTAINS("0x0000000000000000-0x000000003fffffff   1G online   0-7\n", "/bin/lsmem");
 	OUTPUT("", "Memory block size:       128M\nTotal online memory:       1G\n"

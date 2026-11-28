@@ -29,6 +29,7 @@
 
 pub mod devices;
 mod pci;
+pub mod processor;
 pub mod thermal;
 pub mod ucsi;
 

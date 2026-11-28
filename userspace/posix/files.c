@@ -907,6 +907,62 @@ static int in_dir(const char *path) {
 	return getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, path);
 }
 
+// Whether /processes shows `path` as this process's working directory,
+// as the C library has the kernel note it (radix-proc(5)).
+static int shown_dir(const char *path) {
+	char status[64], text[8192], line[PATH_MAX + 16];
+	snprintf(status, sizeof(status), "/processes/%d/status", (int)getpid());
+	int fd = open(status, O_RDONLY | O_CLOEXEC);
+	if(fd < 0)
+		return 0;
+	size_t len = 0;
+	ssize_t got;
+	while(len < sizeof(text) - 1 && (got = read(fd, text + len, sizeof(text) - 1 - len)) > 0)
+		len += (size_t)got;
+	close(fd);
+	text[len] = 0;
+	snprintf(line, sizeof(line), "\ndirectory: %s\n", path);
+	return strstr(text, line) != NULL;
+}
+
+// chdir, one call to the kernel (ADR 0800): into a directory by a link
+// and by paths with `.`, `..` and doubled slashes, relative and absolute,
+// and into the root, which getcwd and /processes then both say; and a
+// file, a link to one, a missing path and the empty one, which fail as on
+// Linux and leave the working directory where it was.
+static void entering(void) {
+	char saved[PATH_MAX];
+	CHECK(getcwd(saved, sizeof(saved)) != NULL);
+	CHECK(mkdir("/tmp/files-enter", 0755) == 0);
+	CHECK(mkdir("/tmp/files-enter/a", 0755) == 0);
+	CHECK(mkdir("/tmp/files-enter/a/b", 0755) == 0);
+	CHECK(symlink("a/b", "/tmp/files-enter/l") == 0);
+	int fd = open("/tmp/files-enter/f", O_WRONLY | O_CREAT, 0644);
+	CHECK(fd >= 0);
+	close(fd);
+	CHECK(symlink("f", "/tmp/files-enter/to-f") == 0);
+	CHECK(chdir("/tmp/files-enter/l") == 0 && in_dir("/tmp/files-enter/a/b"));
+	CHECK(shown_dir("/tmp/files-enter/a/b"));
+	CHECK(chdir("../..//./a/") == 0 && in_dir("/tmp/files-enter/a"));
+	CHECK(shown_dir("/tmp/files-enter/a"));
+	CHECK(chdir("b/../../l") == 0 && in_dir("/tmp/files-enter/a/b"));
+	CHECK(chdir("/") == 0 && in_dir("/") && shown_dir("/"));
+	CHECK(chdir("tmp/files-enter") == 0 && in_dir("/tmp/files-enter"));
+	CHECK_ERROR(chdir("f"), ENOTDIR);
+	CHECK_ERROR(chdir("to-f"), ENOTDIR);
+	CHECK_ERROR(chdir("f/"), ENOTDIR);
+	CHECK_ERROR(chdir("a/nowhere"), ENOENT);
+	CHECK_ERROR(chdir(""), ENOENT);
+	CHECK(in_dir("/tmp/files-enter") && shown_dir("/tmp/files-enter"));
+	CHECK(chdir(saved) == 0 && in_dir(saved) && shown_dir(saved));
+	CHECK(unlink("/tmp/files-enter/to-f") == 0);
+	CHECK(unlink("/tmp/files-enter/f") == 0);
+	CHECK(unlink("/tmp/files-enter/l") == 0);
+	CHECK(rmdir("/tmp/files-enter/a/b") == 0);
+	CHECK(rmdir("/tmp/files-enter/a") == 0);
+	CHECK(rmdir("/tmp/files-enter") == 0);
+}
+
 // `..` beneath a directory descriptor, and fchdir, which go by the path
 // the C library notes for each one (ADR 0089): up from descriptors
 // opened beneath others, with O_PATH as tree walks open them, and from a
@@ -1130,6 +1186,56 @@ static void busy_while_shared(void) {
 	CHECK(fstat(fd, &st) == 0 && st.st_size == 0);
 	CHECK(close(other) == 0 && close(fd) == 0);
 	CHECK(unlink(path) == 0 && unlink("/tmp/files-busy-2") == 0);
+}
+
+// A fault on a file's kept pages maps those around it that are kept
+// already, of the aligned run of 16 that holds it (ADR 0799), as Linux
+// maps a program's pages from its page cache: a second mapping of a file
+// no one may write, read through, takes a fault for each run rather than
+// for each page. The last page, which the file fills only in part, is not
+// kept, and reads as the file's bytes and then zeros; and a page made
+// writable is copied at its first write, leaving the file and the first
+// mapping as they were.
+static void kept_around(void) {
+	enum { PAGE = 4096, PAGES = 64, TAIL = 100, SIZE = PAGES * PAGE + TAIL, LENGTH = (PAGES + 1) * PAGE };
+	static char pattern[SIZE];
+	for(int i = 0; i < SIZE; i++)
+		pattern[i] = (char)(i % 251);
+	const char *path = "/tmp/files-around";
+	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd >= 0 && write(fd, pattern, SIZE) == SIZE);
+	CHECK(fchmod(fd, 0555) == 0 && close(fd) == 0);
+	fd = open(path, O_RDONLY);
+	CHECK(fd >= 0);
+	// The first mapping makes and keeps each whole page.
+	char *first = mmap(NULL, LENGTH, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(first != MAP_FAILED && !memcmp(first, pattern, SIZE));
+	char *second = mmap(NULL, LENGTH, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(second != MAP_FAILED);
+	long before = check_page_faults();
+	int sum = 0, expected = 0;
+	for(int i = 0; i <= PAGES; i++)
+		sum += second[i * PAGE];
+	long faults = check_page_faults() - before;
+	for(int i = 0; i <= PAGES; i++)
+		expected += pattern[i * PAGE];
+	printf("%s: %ld faults for %d pages\n", check_name, faults, PAGES + 1);
+	// Four runs of 16, or five where the mapping starts inside one; the
+	// tail on its own; one more at most for the C library's own memory.
+	CHECK(before >= 0 && faults >= PAGES / 16 && faults <= PAGES / 16 + 3);
+	CHECK(sum == expected && !memcmp(second, pattern, SIZE));
+	int zeros = 1;
+	for(int i = SIZE; i < LENGTH; i++)
+		zeros &= second[i] == 0;
+	CHECK(zeros);
+	CHECK(mprotect(second + 3 * PAGE, PAGE, PROT_READ | PROT_WRITE) == 0);
+	second[3 * PAGE] = (char)~pattern[3 * PAGE];
+	CHECK(first[3 * PAGE] == pattern[3 * PAGE]);
+	char byte = 0;
+	CHECK(pread(fd, &byte, 1, 3 * PAGE) == 1 && byte == pattern[3 * PAGE]);
+	CHECK(!memcmp(second + 4 * PAGE, pattern + 4 * PAGE, PAGE));
+	CHECK(munmap(first, LENGTH) == 0 && munmap(second, LENGTH) == 0);
+	CHECK(close(fd) == 0 && unlink(path) == 0);
 }
 
 // A tmpfs charges a file by the pages it holds, as Linux's does: a byte
@@ -1921,9 +2027,11 @@ int main(void) {
 	RUN(special_files);
 	RUN(named_pipe_identity);
 	RUN(climbing);
+	RUN(entering);
 	RUN(path_forms);
 	RUN(mapped);
 	RUN(busy_while_shared);
+	RUN(kept_around);
 	RUN(tmpfs_space);
 	RUN(large_folder);
 	RUN(folder_names);

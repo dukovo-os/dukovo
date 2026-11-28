@@ -293,6 +293,7 @@ fn allocate_stacks(index: usize) -> usize {
         ist[slot] = stack;
         guards[slot + 1] = guard;
     }
+    crate::pti::share_stack_tops(&ist);
     let top = kernel.end;
     let _ = percpu::get(index).expect("index below MAX_CPUS").stacks.set(percpu::Stacks {
         kernel,
@@ -348,6 +349,12 @@ pub fn start_all(entry: fn(usize) -> !) -> usize {
     let mut online = 1;
     for index in 1..total {
         let apic_id = percpu::get(index).map_or(0, |cpu| cpu.apic_id.load(Ordering::Relaxed));
+        if crate::speculation::leave_off(index) {
+            radix_klog::debug!(
+                "SMP: CPU {index} (APIC ID {apic_id}) left off: a second hardware thread (nosmt)"
+            );
+            continue;
+        }
         let stack_top = allocate_stacks(index);
         patch(base, offset!(ap_stack), &(stack_top as u64).to_le_bytes());
         patch(base, offset!(ap_index), &(index as u64).to_le_bytes());
@@ -415,6 +422,7 @@ extern "C" fn ap_entry(index: usize) -> ! {
     fpu::init_cpu();
     time::set_cpu_number(index);
     microcode::load(false);
+    crate::speculation::init_cpu();
     mce::init_cpu();
     let madt = acpi::get().and_then(|acpi| acpi.madt.as_ref());
     apic::init_cpu(madt, acpi_uid(index));

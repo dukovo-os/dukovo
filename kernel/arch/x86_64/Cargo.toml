@@ -18,6 +18,7 @@ bench = false
 radix-acpi = { path = "../../lib/acpi" }
 radix-amdvi = { path = "../../drivers/amdvi" }
 radix-bootinfo = { path = "../../lib/bootinfo" }
+radix-cpuflaws = { path = "../../lib/cpuflaws" }
 radix-hal = { path = "../../hal" }
 radix-hw = { path = "../../lib/hw" }
 radix-iopt = { path = "../../lib/iopt" }
@@ -28,6 +29,7 @@ radix-mm = { path = "../../mm" }
 radix-pstate = { path = "../../lib/pstate" }
 radix-random = { path = "../../lib/random" }
 radix-relocs = { path = "../../lib/relocs" }
+radix-thunks = { path = "../../lib/thunks" }
 radix-sensors = { path = "../../lib/sensors" }
 radix-smbios = { path = "../../lib/smbios" }
 radix-smbus = { path = "../../drivers/smbus" }

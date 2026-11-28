@@ -28,7 +28,13 @@
 //! From user mode (Phase 5) the CPU switches to the running thread's kernel
 //! stack (the TSS's RSP0), and the common stub swaps GS base to this CPU's
 //! data, and back on the way out, when the saved CS says the interrupted
-//! code ran in user mode. NMIs, double faults and machine checks can also
+//! code ran in user mode. Where the kernel isolates itself from programs'
+//! page tables (`crate::pti`), RSP0 is instead the CPU's small entry stack:
+//! the stub loads the kernel's page tables, moves the frame to the top of
+//! the thread's kernel stack and goes on there, and the way out copies the
+//! interrupt frame back to the entry stack and loads the program's page
+//! tables last. The stubs and their common code are in `.text.entry`,
+//! which the program's page tables map. NMIs, double faults and machine checks can also
 //! arrive in kernel mode before the SYSCALL entry has swapped GS, or after
 //! the exit has swapped it back, and an `iretq` to user mode that faults
 //! does so in kernel mode after the swap, so for an exception in kernel
@@ -107,7 +113,7 @@ pub struct TrapFrame {
 // place.
 core::arch::global_asm!(
     r#"
-    .section .text.isr, "ax"
+    .section .text.entry, "ax"
     .balign 64
     .global radix_isr_stubs
 radix_isr_stubs:
@@ -122,99 +128,268 @@ radix_isr_stubs:
     jmp radix_isr_common
     .set vector, vector + 1
     .endr
+    "#,
+    options(att_syntax)
+);
 
+// What every stub jumps to: the registers saved, page tables, GS base and
+// the speculation controls set for the kernel, the handler called, and all
+// of it undone on the way out. In the entry text, which programs' page
+// tables map under page-table isolation (`crate::pti`).
+core::arch::global_asm!(
+    r#"
+    .section .text.entry, "ax"
+    .global radix_isr_common
 radix_isr_common:
     cld
-    pushq %rax
-    pushq %rbx
-    pushq %rcx
-    pushq %rdx
-    pushq %rbp
-    pushq %rsi
-    pushq %rdi
-    pushq %r8
-    pushq %r9
-    pushq %r10
-    pushq %r11
-    pushq %r12
-    pushq %r13
-    pushq %r14
-    pushq %r15
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
     /* RBX (saved above, callee-saved across the call) says whether GS
-       base was swapped on the way in. */
-    xorl %ebx, %ebx
-    testb $3, 18*8(%rsp)
+       base was swapped on the way in. R12, also callee-saved, holds the
+       IA32_SPEC_CTRL value to put back on the way out, with bit 32 set,
+       where the NMI and machine-check site below saved one, R13 the CR3
+       of a program's page tables to put back on the way out to kernel
+       mode, where an exception came in while they were loaded, and R14,
+       then, where its frame was on the entry stack, if it moved. */
+    xor ebx, ebx
+    xor r12d, r12d
+    xor r13d, r13d
+    test byte ptr [rsp + 18 * 8], 3
     jz 1f
     swapgs
-    movl $1, %ebx
+    mov ebx, 1
+"#,
+    crate::speculation::pti_enter_interrupt!(),
+    crate::speculation::entry_sites!(),
+    r#"
     jmp 3f
 1:
     /* Kernel mode: an interrupt finds the kernel's GS base, but an
        exception may not, so it reads GS base, which is the kernel's when
        its top bit is set. */
-    cmpq $32, 15*8(%rsp)
+    cmp qword ptr [rsp + 15 * 8], 32
     jae 3f
-    movl $0xc0000101, %ecx
+    mov ecx, 0xc0000101
     rdmsr
-    testl %edx, %edx
-    js 3f
+    test edx, edx
+    js 2f
     swapgs
-    movl $1, %ebx
-    orq ${user_gs}, 15*8(%rsp)
+    mov ebx, 1
+    or qword ptr [rsp + 15 * 8], {user_gs}
+2:
+    /* An NMI, machine check or double fault can arrive while a program's
+       page tables are loaded, at either end of an entry or exit, and an
+       exception on the exit's last instruction finds them too. It
+       switches to the kernel's and back on its way out (`crate::pti`). An
+       exception that came in on the entry stack, which is too small for a
+       handler, moves to the thread's stack, below the top frame, which
+       the exit it interrupted may still be reading; R14 keeps where it
+       was, and it goes back there before the program's page tables do. */
+"#,
+    crate::speculation::site!(
+        "site_pti",
+        "mov rax, cr3",
+        "test eax, {pti_view}",
+        "jz 669f",
+        "mov r13, rax",
+        "and rax, ~{pti_views}",
+        "or rax, gs:[{entry_noflush}]",
+        "mov cr3, rax",
+        "669:",
+        "xor r14d, r14d",
+        "mov rax, gs:[{entry_stack_top}]",
+        "sub rax, rsp",
+        "cmp rax, {entry_stack_size}",
+        "jae 666f",
+        "mov r14, rsp",
+        "mov rsi, rsp",
+        "mov rsp, gs:[{kernel_rsp}]",
+        "and rsp, -16",
+        "sub rsp, 2 * {frame_words} * 8",
+        "mov rdi, rsp",
+        "mov ecx, {frame_words}",
+        "rep movsq",
+        "666:",
+    ),
+    r#"
+    /* An NMI or a machine check can arrive while IA32_SPEC_CTRL holds a
+       program's value: just after a system call's entry, or just before
+       its exit. It runs with the kernel's, and puts the program's back on
+       its way out. */
+"#,
+    crate::speculation::site!(
+        "site_spec_ctrl_paranoid",
+        "cmp qword ptr [rsp + 15 * 8], 2",
+        "je 667f",
+        "cmp qword ptr [rsp + 15 * 8], 18",
+        "jne 668f",
+        "667:",
+        "mov ecx, 0x48",
+        "rdmsr",
+        "mov r12d, eax",
+        "bts r12, 32",
+        crate::speculation::write_spec_ctrl!("spec_ctrl_kernel"),
+        "668:",
+    ),
+    r#"
 3:
-    cmpb $0, {smap}(%rip)
+    /* Both sides of the SWAPGS decision stop here until it is settled, so
+       that no handler runs speculatively with the wrong GS base (Spectre
+       variant 1). */
+"#,
+    crate::speculation::site!("site_swapgs_fence", "lfence"),
+    r#"
+    cmp byte ptr [rip + {smap}], 0
     je 4f
     clac
 4:
     /* Fake frame record: interrupted RIP above interrupted RBP. */
-    pushq 17*8(%rsp)
-    pushq %rbp
-    movq %rsp, %rbp
-    leaq 16(%rsp), %rdi
+    push qword ptr [rsp + 17 * 8]
+    push rbp
+    mov rbp, rsp
+    lea rdi, [rsp + 16]
     call radix_trap_dispatch
 radix_isr_return:
-    addq $16, %rsp
-    testl %ebx, %ebx
+    add rsp, 16
+"#,
+    crate::speculation::site!(
+        "site_spec_ctrl_paranoid",
+        "bt r12, 32",
+        "jnc 667f",
+        "mov ecx, 0x48",
+        "mov eax, r12d",
+        "xor edx, edx",
+        "wrmsr",
+        "667:",
+    ),
+    r#"
+    test byte ptr [rsp + 18 * 8], 3
+    jz 6f
+"#,
+    crate::speculation::exit_sites!(),
+    r#"
+    /* Back to user mode, where GS base was swapped on the way in. */
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
+"#,
+    crate::speculation::pti_exit_iret!(),
+    r#"
+    swapgs
+"#,
+    crate::speculation::verw_site!(),
+    r#"
+    iretq
+6:
+    /* Back to kernel mode, with the page tables and GS base found. */
+"#,
+    crate::speculation::site!(
+        "site_pti",
+        "test r13, r13",
+        "jz 669f",
+        "test r14, r14",
+        "jz 666f",
+        "mov rsi, rsp",
+        "mov rdi, r14",
+        "mov ecx, {frame_words}",
+        "rep movsq",
+        "mov rsp, r14",
+        "666:",
+        "or r13, gs:[{entry_noflush}]",
+        "mov cr3, r13",
+        "669:",
+    ),
+    r#"
+    test ebx, ebx
     jz 5f
     swapgs
 5:
-    popq %r15
-    popq %r14
-    popq %r13
-    popq %r12
-    popq %r11
-    popq %r10
-    popq %r9
-    popq %r8
-    popq %rdi
-    popq %rsi
-    popq %rbp
-    popq %rdx
-    popq %rcx
-    popq %rbx
-    popq %rax
-    addq $16, %rsp
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
     iretq
 
     /* A machine check in user mode that ends the program
        (`user::machine_check`): RDI is its frame, moved from the
        machine-check stack to the top of the thread's kernel stack, where
        an exception from user mode leaves its frame, and RSI the bad page.
-       It goes on there as the stub above does, GS base swapped. */
+       It goes on there as the stub above does, GS base swapped and the
+       kernel's page tables loaded. */
     .global radix_isr_user_machine_check
 radix_isr_user_machine_check:
-    movq %rdi, %rsp
-    movl $1, %ebx
-    pushq 17*8(%rsp)
-    pushq 11*8(%rsp)
-    movq %rsp, %rbp
-    leaq 16(%rsp), %rdi
+    mov rsp, rdi
+    mov ebx, 1
+    xor r12d, r12d
+    xor r13d, r13d
+    push qword ptr [rsp + 17 * 8]
+    push qword ptr [rsp + 11 * 8]
+    mov rbp, rsp
+    lea rdi, [rsp + 16]
     call radix_trap_user_machine_check
     jmp radix_isr_return
     "#,
     smap = sym crate::paging::SMAP,
     user_gs = const USER_GS_IN_KERNEL,
-    options(att_syntax)
+    kernel_rsp = const percpu::KERNEL_RSP_OFFSET,
+    frame_words = const size_of::<TrapFrame>() / 8,
+    pti_view = const crate::pti::USER_VIEW,
+    pti_views = const crate::pti::USER_VIEW | crate::pti::USER_PCID,
+    entry_scratch = const percpu::ENTRY_SCRATCH,
+    entry_noflush = const percpu::ENTRY_NOFLUSH,
+    entry_user_view = const percpu::ENTRY_USER_VIEW,
+    entry_user_flush = const percpu::ENTRY_USER_FLUSH,
+    entry_stack_top = const percpu::ENTRY_STACK_TOP,
+    entry_stack_size = const percpu::ENTRY_STACK_SIZE,
+    spec_ctrl_kernel = sym crate::speculation::SPEC_CTRL_KERNEL,
+    spec_ctrl_user = sym crate::speculation::SPEC_CTRL_USER,
+    site_spec_ctrl_entry = const crate::speculation::Site::SpecCtrlEntry as u8,
+    site_spec_ctrl_exit = const crate::speculation::Site::SpecCtrlExit as u8,
+    site_spec_ctrl_paranoid = const crate::speculation::Site::SpecCtrlParanoid as u8,
+    site_ibpb_entry = const crate::speculation::Site::IbpbEntry as u8,
+    site_untrain_entry = const crate::speculation::Site::UntrainEntry as u8,
+    site_verw_exit = const crate::speculation::Site::VerwExit as u8,
+    site_div0_exit = const crate::speculation::Site::Div0Exit as u8,
+    site_swapgs_fence = const crate::speculation::Site::SwapgsFence as u8,
+    site_pti = const crate::speculation::Site::Pti as u8,
 );
 
 /// Set in a frame's vector word by the entry stub: the exception came in
@@ -239,7 +414,14 @@ struct Gate {
     _reserved: u32,
 }
 
-static IDT: TakeOnce<[Gate; 256]> = TakeOnce::new(
+/// The IDT: a page of its own, which programs' page tables map under
+/// page-table isolation (`crate::pti`).
+#[repr(C, align(4096))]
+struct Table([Gate; 256]);
+
+const _: () = assert!(size_of::<Table>() == 4096);
+
+static IDT: TakeOnce<Table> = TakeOnce::new(Table(
     [Gate {
         offset_low: 0,
         selector: 0,
@@ -249,14 +431,14 @@ static IDT: TakeOnce<[Gate; 256]> = TakeOnce::new(
         offset_high: 0,
         _reserved: 0,
     }; 256],
-);
+));
 
 /// Address of the IDT once built.
 static IDT_ADDRESS: Once<usize> = Once::new();
 
 /// Builds the IDT. Called once, by the boot CPU.
 pub fn init() {
-    let Some(idt) = IDT.take() else { return };
+    let Some(Table(idt)) = IDT.take() else { return };
     let stubs = &raw const radix_isr_stubs as usize;
     for (vector, gate) in idt.iter_mut().enumerate() {
         let handler = (stubs + 16 * vector) as u64;
@@ -281,6 +463,12 @@ pub fn init() {
         };
     }
     let _ = IDT_ADDRESS.set(idt.as_ptr() as usize);
+}
+
+/// The page the IDT fills, once built.
+pub fn idt_page() -> core::ops::Range<usize> {
+    let start = IDT_ADDRESS.get().copied().expect("the IDT is built");
+    start..start + size_of::<Table>()
 }
 
 /// Loads the IDT on this CPU.
@@ -541,10 +729,10 @@ fn handle(vector: u8, frame: &mut TrapFrame) {
     }
 }
 
-/// Where a protection fault resumes, if it was a read of an MSR that may
-/// not exist (`cpu::rdmsr_safe`).
+/// Where a protection fault resumes, if it was a read or a write of an
+/// MSR that may not exist (`cpu::rdmsr_safe`, `cpu::wrmsr_safe`).
 fn msr_fixup(vector: u8, frame: &TrapFrame) -> Option<u64> {
-    if vector == 13 { cpu::rdmsr_fixup(frame.rip) } else { None }
+    if vector == 13 { cpu::msr_fixup(frame.rip) } else { None }
 }
 
 /// Where a kernel-mode page or protection fault resumes, if it hit a user

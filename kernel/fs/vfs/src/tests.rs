@@ -690,6 +690,57 @@ fn symbolic_links_are_followed() {
     assert_eq!(vfs.make_link(&K, &root, "a/b/file/x", "y", LINK).err(), Some(Error::NotDirectory));
 }
 
+/// Going into a directory (chdir(2)) gives where it really is, as
+/// `real_path` does, only for a directory its caller may search: one walk
+/// with the errors stat(2), then access(2) with X_OK, would give.
+#[test]
+fn entering_a_directory_needs_one_it_may_search_and_says_where_it_is() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "a", DIR).unwrap();
+    vfs.make_directory(&K, &root, "a/b", DIR).unwrap();
+    vfs.make_directory(&K, &root, "a/b/alice", owned(&ALICE, 0o700)).unwrap();
+    vfs.make_directory(&K, &root, "a/b/alice/inner", DIR).unwrap();
+    vfs.make_directory(&K, &root, "listed", owned(&ALICE, 0o600)).unwrap();
+    write(&vfs, &root, "a/file", b"data").unwrap();
+    vfs.make_link(&K, &root, "rel", "a/b", LINK).unwrap();
+    vfs.make_link(&K, &root, "to-file", "a/file", LINK).unwrap();
+    vfs.make_link(&K, &root, "dangling", "nowhere", LINK).unwrap();
+    let enter = |who: &Who, base: &Location, path: &str| {
+        let mut out = [0u8; 64];
+        let n = vfs.enter(who, base, path, &mut SliceMut(&mut out[..]))?;
+        Ok::<_, Error>(String::from(core::str::from_utf8(&out[..n.min(64)]).unwrap()))
+    };
+    // Links followed and `.` and `..` worked out, as `real_path` has it.
+    assert_eq!(enter(&ALICE, &root, "rel"), Ok("a/b".into()));
+    assert_eq!(enter(&ALICE, &root, "rel/../b/."), Ok("a/b".into()));
+    assert_eq!(enter(&ALICE, &root, "rel/alice/inner/"), Ok("a/b/alice/inner".into()));
+    assert_eq!(enter(&ALICE, &root, "."), Ok(".".into()));
+    assert_eq!(enter(&ALICE, &root, ".."), Ok(".".into()));
+    let a = vfs.resolve(&K, &root, "a").unwrap();
+    assert_eq!(enter(&ALICE, &a, "b"), Ok("b".into()));
+    assert_eq!(enter(&ALICE, &a, ".."), Err(Error::Outside));
+    // What is not there, or is no directory, before whether it may be
+    // searched.
+    assert_eq!(enter(&ALICE, &root, "nowhere"), Err(Error::NotFound));
+    assert_eq!(enter(&ALICE, &root, "dangling"), Err(Error::NotFound));
+    assert_eq!(enter(&ALICE, &root, "a/file"), Err(Error::NotDirectory));
+    assert_eq!(enter(&ALICE, &root, "to-file"), Err(Error::NotDirectory));
+    assert_eq!(enter(&BOB, &root, "a/file"), Err(Error::NotDirectory));
+    // Its own directory without the search bit, and another's.
+    assert_eq!(enter(&ALICE, &root, "listed"), Err(Error::Denied));
+    assert_eq!(enter(&BOB, &root, "a/b/alice"), Err(Error::Denied));
+    // A walk through a directory it may not search fails there first.
+    assert_eq!(enter(&BOB, &root, "a/b/alice/inner"), Err(Error::Denied));
+    // The kernel's calls pass the second gate, as for access(2).
+    assert_eq!(enter(&K, &root, "listed"), Ok("listed".into()));
+    assert_eq!(enter(&K, &root, "a/b/alice"), Ok("a/b/alice".into()));
+    // A path too long for `out` comes back cut short, with its length.
+    let mut short = [0u8; 3];
+    assert_eq!(vfs.enter(&ALICE, &root, "rel/alice", &mut SliceMut(&mut short[..])), Ok(9));
+    assert_eq!(&short, b"a/b");
+}
+
 #[test]
 fn a_slash_or_a_dot_after_a_file_is_not_a_directory() {
     let vfs = vfs();

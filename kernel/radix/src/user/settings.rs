@@ -13,6 +13,7 @@ use radix_abi::kernel_settings::{
 use radix_cap::{Capability, ObjectKind, Rights};
 use radix_hal::UserMode;
 use radix_klog::TextBuf;
+use radix_sync::nospec;
 
 use super::methods::{Answer, answer};
 use super::{Result, UserRef, cap_error, error};
@@ -29,10 +30,13 @@ pub fn method(user: &UserRef, cap: &Capability, label: u32, args: &[u64; 8]) -> 
         abi::LIST => {
             let a = ListArgs::decode(args)?;
             check(Rights::READ)?;
-            let index = a.index as usize;
-            if index >= settings::count() {
+            let count = settings::count();
+            if a.index as usize >= count {
                 return Err(error(Kernel::OutOfRange));
             }
+            // A line the processor guesses in range, while the check is
+            // still to be done, is line 0 meanwhile (Spectre v1, ADR 0790).
+            let index = nospec::index(a.index as usize, count);
             let mut line = TextBuf::<{ LINE_MAX as usize }>::new();
             settings::line(index, &mut line).map_err(|_| error(Kernel::InvalidArgument))?;
             let bytes = line.as_str().as_bytes();

@@ -34,6 +34,7 @@ requests built at once do not add rows at the same place.
 | [uACPI](https://github.com/uACPI/uACPI) 7.0.0 by Daniil Tatianin and its contributors | The interpreter of the firmware's AML, compiled into the kernel from `kernel/lib/uacpi/vendor/`, unmodified ([ADR 0200](docs/adr/0200-uacpi-runs-the-firmwares-aml-in-the-kernel.md)) | MIT |
 | [GNU GRUB](https://www.gnu.org/software/grub/) 2.12 | The boot loader, as a separate program that loads the kernel: built by `ob` from the GNU project's tarball, unchanged, for a PC's BIOS and for UEFI, with only the modules the images need; its images for a disk are in `/system/boot/grub`, which rgrub-setup puts on disks ([ADR 0306](docs/adr/0306-grub-built-from-its-source-and-put-on-disks-by-our-own-tools.md)) | GPL-3.0-or-later |
 | [Intel microcode](https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files) | CPU microcode, only in local builds that ask for it ([ADR 0007](docs/adr/0007-closed-firmware-separate-package.md)) | Intel's redistribution license |
+| [AMD microcode](https://gitlab.com/kernel-firmware/linux-firmware/-/tree/main/amd-ucode) | CPU microcode, only in local builds that ask for it ([ADR 0007](docs/adr/0007-closed-firmware-separate-package.md), [ADR 0792](docs/adr/0792-amd-processors-load-their-microcode-at-boot-as-intel-s-do.md)) | AMD's redistribution license |
 | [mlibc](https://github.com/managarm/mlibc) 7.0.0 by the Managarm project | The C library and dynamic linker (`/system/libraries/libc.so`, `ld.so` and the static `libc.a`), with Radix's system calls added in `ports/mlibc/sysdeps/radix` and the fixes in `ports/mlibc/patches` ([ADR 0068](docs/adr/0068-mlibc-is-the-c-library.md)); its own tests run in the `posix` boot test | MIT |
 | [frigg](https://github.com/managarm/frigg) b0dbea66bc19 and [libsmarter](https://github.com/managarm/libsmarter) f7d061bc37d4 by the Managarm project | Template libraries mlibc is built on; frigg's printf and formatting headers as its commit b9ce1199489f has them (commits by lzcunt and no92) | MIT |
 | [musl](https://musl.libc.org/) 1.2.5 by Rich Felker and contributors | Exact floating-point formatting and scanning, `strftime` and the calendar conversions of `mktime`, `gmtime` and `localtime`, `scanf`'s conversions and integers, `inet_pton` and `inet_ntop`, `strstr` and `memmem`, the `rand48` family, the message catalogs of `catopen` and the limits `pathconf` gives, in `ports/mlibc/musl` and the patches ([ADR 0072](docs/adr/0072-exact-numbers-and-times-in-the-c-library.md)); its cancellation points, system calls made from a stub whose labels the cancel signal's handler looks for, are the design of ours, with no code taken ([ADR 0104](docs/adr/0104-cancellation-points-as-musl-makes-them.md)) | MIT |
@@ -573,6 +574,14 @@ We implement these from their published descriptions. No code is copied.
 - Microsoft's *Virtual Hard Disk Image Format Specification* (version
   1.0, 2006), from which radix-ntfs's tests write the fixed VHDs that
   CI's Windows job mounts.
+- AMD's microcode container format, as the `amd-ucode` files of
+  [linux-firmware](https://gitlab.com/kernel-firmware/linux-firmware)
+  ship it: the equivalence table, the patch sections and the patch header,
+  and the registers that report and load a patch
+  (`MSR_AMD64_PATCH_LEVEL` and `MSR_AMD64_PATCH_LOADER`).
+  `radix-microcode` reads the format and `radix-arch-x86_64` loads the patch
+  ([ADR 0792](docs/adr/0792-amd-processors-load-their-microcode-at-boot-as-intel-s-do.md)).
+  No code is taken from Linux's loader.
 
 ## Projects whose ideas we follow
 

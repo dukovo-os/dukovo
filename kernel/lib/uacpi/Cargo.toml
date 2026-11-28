@@ -22,5 +22,8 @@ notices = ["vendor/LICENSE"]
 [dependencies]
 radix-sync = { path = "../sync" }
 
+[dev-dependencies]
+radix-acpi = { path = "../acpi" }
+
 [lints]
 workspace = true

@@ -148,6 +148,7 @@ static SAVED_RSP: AtomicU64 = AtomicU64::new(0);
 // sends it, returns u64::MAX). Microsoft's convention keeps RSI, RDI and
 // XMM6-15 too, so nothing the caller needs is lost.
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .section .text
     .balign 64
@@ -172,7 +173,8 @@ radix_efi_call:
     mov r9, [r10 + 24]
     mov r11, [r10 + 32]
     mov [rsp + 32], r11
-    call rax
+    mov r11, rax
+    radix_call_r11
 radix_efi_call_resume:
     mov rsp, [rip + {saved}]
     popfq
@@ -182,12 +184,13 @@ radix_efi_call_resume:
     pop r12
     pop rbx
     pop rbp
-    ret
+    radix_ret
     .global radix_efi_call_fault
 radix_efi_call_fault:
     mov rax, -1
     jmp radix_efi_call_resume
 "#,
+    crate::thunks::asm_end!(),
     saved = sym SAVED_RSP,
 );
 
@@ -403,7 +406,9 @@ fn call(function: u64, args: [u64; 5]) -> Result<u64, VariableError> {
     // reads has bit 63 clear, so loading it again flushes its PCID.
     let status = unsafe {
         cpu::write_cr3(runtime.pml4);
+        crate::speculation::firmware_enter();
         let status = radix_efi_call(function, &raw const args, runtime.stack_top);
+        crate::speculation::firmware_exit();
         cpu::write_cr3(cr3);
         status
     };

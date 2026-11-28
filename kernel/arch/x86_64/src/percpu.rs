@@ -7,24 +7,35 @@
 //! at its own entry, so `gs:[8]` is the running CPU's index, `gs:[16]` its
 //! preemption count and `gs:[20]` its interrupt depth, each changed by one
 //! instruction that a migration cannot split. `gs:[24]` is the top of the
-//! running thread's kernel stack and `gs:[32]` a scratch word, which the
-//! system call entry uses before it has a stack (`crate::user`); `gs:[40]`
-//! is the scheduler's word for the running thread, which it reads in one
-//! instruction to find the running thread without holding preemption off;
-//! `gs:[48]` and `gs:[56]` are the RCX and R11 a system call that restores
-//! every register returns with.
+//! running thread's kernel stack; `gs:[40]` is the scheduler's word for the
+//! running thread, which it reads in one instruction to find the running
+//! thread without holding preemption off; `gs:[48]` and `gs:[56]` are the
+//! RCX and R11 a system call that restores every register returns with.
 //! The boot CPU sets GS base first thing in [`crate::entry`], before any
 //! code that asks which CPU it is running on. In user mode GS base is the
 //! program's (zero); the entry paths swap it with `swapgs`.
 //!
-//! Each CPU also has its own GDT and TSS. The GDT has the kernel's code and
-//! data segments, then the user segments in the order SYSRET needs them.
-//! The TSS holds the stack an interrupt from user mode switches to (the
-//! running thread's kernel stack, set at every context switch) and the
-//! interrupt stack table: double faults, NMIs and machine checks switch to
-//! dedicated stacks, so a kernel stack overflow still produces a report.
+//! Each CPU also has an [`EntryCpu`]: what entering and leaving the kernel
+//! needs before it has its own page tables loaded, which under page-table
+//! isolation (`crate::pti`) is all of a CPU's data that programs' page
+//! tables map. The entries are an array of their own, page-aligned, as
+//! long as the [`PerCpu`] array and right after it, so that each CPU's
+//! lies at the same distance from its [`PerCpu`]: `gs:[ENTRY + n]` is
+//! byte `n` of the running CPU's. It holds a scratch word, which the system
+//! call entry uses before it has a stack (`crate::user`), the words the
+//! entry and exit paths make the CR3 values of from, the GDT and TSS, and
+//! the entry stack.
+//!
+//! The GDT has the kernel's code and data segments, then the user segments
+//! in the order SYSRET needs them. The TSS holds the stack an interrupt
+//! from user mode switches to (the running thread's kernel stack, set at
+//! every context switch, or under page-table isolation the entry stack,
+//! from which the entry moves to the thread's) and the interrupt stack
+//! table: double faults, NMIs and machine checks switch to dedicated
+//! stacks, so a kernel stack overflow still produces a report.
 
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use core::ops::Range;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -60,8 +71,6 @@ const _: () = assert!(USER_DS == USER_BASE + 8 && USER_CS == USER_BASE + 16);
 
 /// Offset of [`PerCpu`]'s top-of-kernel-stack word, for the entry code.
 pub const KERNEL_RSP_OFFSET: usize = 24;
-/// Offset of [`PerCpu`]'s scratch word, for the entry code.
-pub const SCRATCH_OFFSET: usize = 32;
 /// Offsets of [`PerCpu`]'s RCX and R11 for a full return, for the entry
 /// code.
 pub const FULL_RCX_OFFSET: usize = 48;
@@ -121,6 +130,135 @@ struct Descriptors {
     tss: Tss,
 }
 
+/// The words of an [`EntryCpu`] that the entry and exit paths use, and its
+/// GDT and TSS.
+#[repr(C)]
+struct EntryHead {
+    /// Scratch: the program's stack pointer in the system call entry, RAX
+    /// in an exit while it switches page tables.
+    scratch: AtomicU64,
+    /// What an entry ORs into CR3 as it loads the kernel's view of the
+    /// address space: bit 63 where PCIDs are on, which keeps the view's
+    /// TLB entries, else 0.
+    noflush: AtomicU64,
+    /// What an exit ORs into CR3 to load the program's view (`crate::pti`).
+    user_view: AtomicU64,
+    /// Bit 0: the TLB may hold entries of the program's view that are out
+    /// of date, so the next exit loads it without bit 63, flushing them.
+    user_flush: AtomicU64,
+    /// The top of the entry stack.
+    stack_top: AtomicU64,
+    descriptors: TakeOnce<Descriptors>,
+}
+
+/// What entering and leaving the kernel needs of a CPU before the kernel's
+/// page tables are loaded: under page-table isolation the only data of the
+/// CPU that programs' page tables map (`crate::pti`). As long as a
+/// [`PerCpu`], so that the two arrays keep each CPU's at the same distance.
+#[repr(C, align(64))]
+pub struct EntryCpu {
+    head: EntryHead,
+    /// The entry stack: under page-table isolation, where an interrupt or
+    /// exception from user mode arrives, and where the exits to user mode
+    /// end. Only the processor and the entry and exit paths touch it.
+    stack: UnsafeCell<[u8; ENTRY_STACK]>,
+}
+
+/// The size of an [`EntryCpu`]'s stack: what is left of a [`PerCpu`]'s
+/// size. The entry pushes a [`crate::interrupts::TrapFrame`] on it, 176
+/// bytes, before it moves to the thread's stack.
+const ENTRY_STACK: usize = size_of::<PerCpu>() - size_of::<EntryHead>();
+
+const _: () = {
+    assert!(size_of::<EntryCpu>() == size_of::<PerCpu>());
+    assert!(ENTRY_STACK >= 512 && ENTRY_STACK.is_multiple_of(16));
+};
+
+// SAFETY: the stack is only written by the processor and the entry and exit
+// paths of the CPU it belongs to, with interrupts masked; Rust code never
+// reaches it. The other fields are atomics or a `TakeOnce`, which is `Sync`.
+unsafe impl Sync for EntryCpu {}
+
+/// Every CPU's [`EntryCpu`], in pages of their own.
+#[repr(C, align(4096))]
+struct EntryArea([EntryCpu; MAX_CPUS]);
+
+/// The per-CPU data: each CPU's [`EntryCpu`] lies [`ENTRY`] bytes after its
+/// [`PerCpu`].
+#[repr(C)]
+struct Cpus {
+    percpu: [PerCpu; MAX_CPUS],
+    entry: EntryArea,
+}
+
+/// The distance from a CPU's [`PerCpu`] to its [`EntryCpu`].
+pub const ENTRY: usize = core::mem::offset_of!(Cpus, entry);
+/// Offsets from GS base of the running CPU's [`EntryCpu`] words, for the
+/// entry and exit paths.
+pub const ENTRY_SCRATCH: usize = ENTRY + core::mem::offset_of!(EntryHead, scratch);
+pub const ENTRY_NOFLUSH: usize = ENTRY + core::mem::offset_of!(EntryHead, noflush);
+pub const ENTRY_USER_VIEW: usize = ENTRY + core::mem::offset_of!(EntryHead, user_view);
+pub const ENTRY_USER_FLUSH: usize = ENTRY + core::mem::offset_of!(EntryHead, user_flush);
+pub const ENTRY_STACK_TOP: usize = ENTRY + core::mem::offset_of!(EntryHead, stack_top);
+/// How far below the top of the entry stack its user may be.
+pub const ENTRY_STACK_SIZE: usize = ENTRY_STACK;
+
+impl EntryCpu {
+    const fn new() -> Self {
+        Self {
+            head: EntryHead {
+                scratch: AtomicU64::new(0),
+                noflush: AtomicU64::new(0),
+                user_view: AtomicU64::new(0),
+                user_flush: AtomicU64::new(0),
+                stack_top: AtomicU64::new(0),
+                descriptors: TakeOnce::new(Descriptors {
+                    gdt: [0; 8],
+                    tss: Tss {
+                        _reserved0: 0,
+                        rsp: [0; 3],
+                        _reserved1: 0,
+                        ist: [0; 7],
+                        _reserved2: 0,
+                        _reserved3: 0,
+                        iomap_base: 0,
+                    },
+                }),
+            },
+            stack: UnsafeCell::new([0; ENTRY_STACK]),
+        }
+    }
+
+    /// The top of the entry stack.
+    pub fn stack_top(&self) -> usize {
+        self.stack.get() as usize + ENTRY_STACK
+    }
+
+    /// Sets what this CPU's entries and exits make CR3 from under
+    /// page-table isolation (`crate::pti`).
+    pub fn set_views(&self, noflush: u64, user_view: u64) {
+        self.head.noflush.store(noflush, Ordering::Relaxed);
+        self.head.user_view.store(user_view, Ordering::Relaxed);
+    }
+
+    /// Has the next exit to user mode flush the TLB entries of the
+    /// program's view.
+    pub fn flush_user_view(&self) {
+        self.set_user_view_flush(true);
+    }
+
+    /// Sets whether the next exit to user mode flushes the TLB entries of
+    /// the program's view.
+    pub fn set_user_view_flush(&self, flush: bool) {
+        self.head.user_flush.store(u64::from(flush), Ordering::Relaxed);
+    }
+
+    /// Whether the next exit flushes the program's view, as asked.
+    pub fn user_view_flush_pending(&self) -> bool {
+        self.head.user_flush.load(Ordering::Relaxed) != 0
+    }
+}
+
 /// Everything the kernel keeps per CPU.
 #[repr(C, align(64))]
 pub struct PerCpu {
@@ -134,9 +272,11 @@ pub struct PerCpu {
     irq_depth: AtomicU32,
     /// The top of the running thread's kernel stack: `gs:[24]`.
     kernel_rsp: AtomicU64,
-    /// Scratch for the system call entry (the program's stack pointer):
-    /// `gs:[32]`.
-    scratch: AtomicU64,
+    /// Under page-table isolation with PCIDs: a mapping of the kernel's
+    /// half was flushed only from the TLB entries of the PCID this CPU ran,
+    /// and those of others may still hold it, so the next switch to another
+    /// address space flushes them all (`crate::pti`). `gs:[32]`.
+    pub kernel_tlb_stale: AtomicBool,
     /// The scheduler's word for the thread running on this CPU:
     /// `gs:[40]`.
     running: AtomicUsize,
@@ -146,7 +286,9 @@ pub struct PerCpu {
     /// the return (`crate::user`).
     pub full_rcx: AtomicU64,
     pub full_r11: AtomicU64,
-    /// The address of this CPU's TSS, once loaded.
+    /// The address of this CPU's TSS, once loaded, whose RSP0 follows the
+    /// running thread's kernel stack; 0 before, and under page-table
+    /// isolation, where RSP0 stays at the entry stack.
     tss: AtomicUsize,
     /// Local APIC ID.
     pub apic_id: AtomicU32,
@@ -190,6 +332,12 @@ pub struct PerCpu {
     pub thread_stack: [AtomicUsize; 2],
     /// The address of the running thread's context block, or 0.
     pub context: AtomicUsize,
+    /// The block of the context whose extended state the registers hold,
+    /// or 0 (`thread.rs`).
+    pub fpu_holder: AtomicUsize,
+    /// FS base as last written here, or `u64::MAX` (no canonical address)
+    /// before the first write.
+    pub fs_base: AtomicU64,
     /// Reschedule IPIs received.
     pub reschedules: AtomicU64,
     /// When the next periodic tick is due, in nanoseconds.
@@ -216,7 +364,6 @@ pub struct PerCpu {
     pub pv_eoi: AtomicU32,
     /// KVM's steal-time record of this CPU (`kvm`).
     pub steal_time: StealTime,
-    descriptors: TakeOnce<Descriptors>,
 }
 
 impl PerCpu {
@@ -227,7 +374,7 @@ impl PerCpu {
             preempt: AtomicU32::new(0),
             irq_depth: AtomicU32::new(0),
             kernel_rsp: AtomicU64::new(0),
-            scratch: AtomicU64::new(0),
+            kernel_tlb_stale: AtomicBool::new(false),
             running: AtomicUsize::new(0),
             full_rcx: AtomicU64::new(0),
             full_r11: AtomicU64::new(0),
@@ -250,6 +397,8 @@ impl PerCpu {
             stacks: Once::new(),
             thread_stack: [const { AtomicUsize::new(0) }; 2],
             context: AtomicUsize::new(0),
+            fpu_holder: AtomicUsize::new(0),
+            fs_base: AtomicU64::new(u64::MAX),
             reschedules: AtomicU64::new(0),
             next_tick_ns: AtomicU64::new(0),
             deadline_ns: AtomicU64::new(u64::MAX),
@@ -261,18 +410,6 @@ impl PerCpu {
             shootdowns_left: AtomicU64::new(0),
             pv_eoi: AtomicU32::new(0),
             steal_time: StealTime::new(),
-            descriptors: TakeOnce::new(Descriptors {
-                gdt: [0; 8],
-                tss: Tss {
-                    _reserved0: 0,
-                    rsp: [0; 3],
-                    _reserved1: 0,
-                    ist: [0; 7],
-                    _reserved2: 0,
-                    _reserved3: 0,
-                    iomap_base: 0,
-                },
-            }),
         }
     }
 
@@ -286,6 +423,12 @@ impl PerCpu {
     /// With interrupts masked, on this CPU.
     pub fn set_kernel_stack(&self, top: usize) {
         self.kernel_rsp.store(top as u64, Ordering::Relaxed);
+        self.write_rsp0(top);
+    }
+
+    /// Points RSP0 at `top`, if the TSS is loaded and RSP0 follows the
+    /// thread's stack.
+    fn write_rsp0(&self, top: usize) {
         let tss = self.tss.load(Ordering::Relaxed);
         if tss != 0 {
             // SAFETY: `tss` is this CPU's TSS, which lives in a static and
@@ -298,6 +441,20 @@ impl PerCpu {
                 rsp0.write_unaligned(top as u64);
             }
         }
+    }
+
+    /// Points RSP0 at `top` for good, under page-table isolation: the
+    /// entry stack, from which the entry moves to the thread's stack
+    /// itself. With interrupts masked, on this CPU, after its TSS is
+    /// loaded.
+    pub fn pin_entry_stack(&self, top: usize) {
+        self.write_rsp0(top);
+        self.tss.store(0, Ordering::Relaxed);
+    }
+
+    /// This CPU's [`EntryCpu`].
+    pub fn entry(&self) -> &'static EntryCpu {
+        &CPUS.entry.0[self.index()]
     }
 
     /// The top of the running thread's kernel stack, where its user
@@ -421,14 +578,16 @@ pub fn interrupt_depth() -> u32 {
     depth
 }
 
-static CPUS: [PerCpu; MAX_CPUS] = [const { PerCpu::new() }; MAX_CPUS];
+static CPUS: Cpus = Cpus {
+    percpu: [const { PerCpu::new() }; MAX_CPUS],
+    entry: EntryArea([const { EntryCpu::new() }; MAX_CPUS]),
+};
 
 const _: () = {
     assert!(core::mem::offset_of!(PerCpu, index) == 8);
     assert!(core::mem::offset_of!(PerCpu, preempt) == 16);
     assert!(core::mem::offset_of!(PerCpu, irq_depth) == 20);
     assert!(core::mem::offset_of!(PerCpu, kernel_rsp) == KERNEL_RSP_OFFSET);
-    assert!(core::mem::offset_of!(PerCpu, scratch) == SCRATCH_OFFSET);
     assert!(core::mem::offset_of!(PerCpu, running) == 40);
     assert!(core::mem::offset_of!(PerCpu, full_rcx) == FULL_RCX_OFFSET);
     assert!(core::mem::offset_of!(PerCpu, full_r11) == FULL_R11_OFFSET);
@@ -436,7 +595,14 @@ const _: () = {
 
 /// The data of CPU `index`.
 pub fn get(index: usize) -> Option<&'static PerCpu> {
-    CPUS.get(index)
+    CPUS.percpu.get(index)
+}
+
+/// Where every CPU's [`EntryCpu`] is: whole pages, which nothing else
+/// shares.
+pub fn entry_area() -> Range<usize> {
+    let start = &raw const CPUS.entry as usize;
+    start..start + size_of::<EntryArea>()
 }
 
 /// Index of the running CPU.
@@ -467,7 +633,7 @@ pub fn current() -> &'static PerCpu {
 
 /// Points GS base at CPU `index`'s data. Called first thing on each CPU.
 pub fn set_current(index: usize) {
-    let cpu = &CPUS[index];
+    let cpu = &CPUS.percpu[index];
     cpu.self_addr.store(core::ptr::from_ref::<PerCpu>(cpu) as usize, Ordering::Relaxed);
     cpu.index.store(index, Ordering::Relaxed);
     // SAFETY: GS_BASE exists on every x86-64 CPU, and the kernel uses GS
@@ -488,7 +654,9 @@ fn tss_descriptor(base: u64, limit: u32) -> [u64; 2] {
 /// `ist_tops`. Call once per CPU, after [`set_current`].
 pub fn load_descriptors(ist_tops: [usize; IST_STACKS]) {
     let cpu = current();
-    let Some(descriptors) = cpu.descriptors.take() else {
+    let entry = cpu.entry();
+    entry.head.stack_top.store(entry.stack_top() as u64, Ordering::Relaxed);
+    let Some(descriptors) = entry.head.descriptors.take() else {
         panic!("CPU {} loaded its descriptor tables twice", cpu.index());
     };
     let mut ist = [0u64; 7];

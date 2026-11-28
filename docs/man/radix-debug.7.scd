@@ -584,8 +584,12 @@ boots.
 *fpu*
 	Runs three threads on every CPU that fill the x87, SSE and AVX
 	registers with values of their own and check them after each of a
-	thousand yields, so every switch must save and restore them.
-	Reports *selftest fpu: passed* with the number of switches.
+	thousand yields, so every switch must save and restore them. Then
+	one thread moves back and forth between two CPUs, filling the
+	registers on each, and checks on each arrival that it finds what it
+	filled on the other CPU, not what the registers of the one it comes
+	to still hold. Reports *selftest fpu: passed* with the number of
+	switches.
 
 *sched-fair*
 	On the last CPU, runs four fair threads of equal weight for 600 ms

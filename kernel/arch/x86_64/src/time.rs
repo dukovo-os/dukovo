@@ -489,6 +489,13 @@ pub fn doorbell_off() {
     percpu::current().doorbell_until_ns.store(0, Ordering::Relaxed);
 }
 
+/// When this CPU's timer next interrupts: the earlier of its next tick
+/// and its deadline, or `u64::MAX` when it is not armed. With interrupts
+/// masked.
+pub fn next_interrupt_ns() -> u64 {
+    percpu::current().armed_ns.load(Ordering::Relaxed)
+}
+
 /// Times CPU `cpu` wrote its timer.
 pub fn writes(cpu: usize) -> u64 {
     percpu::get(cpu).map_or(0, |c| c.timer_writes.load(Ordering::Relaxed))

@@ -49,6 +49,9 @@ pub(crate) struct Context {
     /// Where the channels alerts are sent to stand, or why alertd could
     /// not say.
     pub(crate) channels: Result<Vec<Channel>, String>,
+    /// Whether the system runs in a virtual machine, whose host's
+    /// microcode the processor runs.
+    pub(crate) virtual_machine: bool,
 }
 
 impl Context {
@@ -63,6 +66,8 @@ impl Context {
             reached: firewall::reached().map_err(|fail| fail.message),
             alerts: command::active().map_err(|fail| fail.message),
             channels: command::channels().map_err(|fail| fail.message),
+            // CPUID leaf 1, ECX bit 31: a hypervisor runs the system.
+            virtual_machine: crate::lscpu::cpuid(1, 0)[2] & 1 << 31 != 0,
         }
     }
 
@@ -161,6 +166,7 @@ pub(crate) mod planted {
                     reached: Ok(Vec::new()),
                     alerts: Ok(Vec::new()),
                     channels: Ok(Vec::new()),
+                    virtual_machine: false,
                 },
             }
         }

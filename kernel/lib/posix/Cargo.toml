@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 radix-abi = { path = "../../abi" }
+radix-sync = { path = "../sync" }
 
 [dev-dependencies]
 # Host-side property tests: random operations keep the tree's invariants.

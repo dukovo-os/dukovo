@@ -196,6 +196,7 @@ void SlotClaim::keep_if_full() {
 
 void fd_taken(int fd) {
 	__atomic_fetch_or(word_of(fd), bit_of(fd), __ATOMIC_ACQUIRE);
+	note_socket_kind(fd, SocketKind::unknown);
 }
 
 void fd_freed(int fd) {
@@ -213,6 +214,7 @@ uint64_t delete_fd(int fd) {
 int close_fd(int fd) {
 	// One call from close's system layer, which these are inlined into.
 	forget_dir_path(fd);
+	note_socket_kind(fd, SocketKind::unknown);
 	return to_errno(delete_fd(fd));
 }
 
@@ -302,6 +304,7 @@ int free_slot(int min_fd, SlotClaim *claim) {
 			}
 			claim->slot_ = FD_BASE + static_cast<uint32_t>(fd);
 			forget_dir_path(fd);
+			note_socket_kind(fd, SocketKind::unknown);
 			// A claim that cannot be had is free again as it goes.
 			return reach_slot(claim->slot_);
 		}
@@ -690,6 +693,25 @@ size_t dir_path(int fd, char *out) {
 	size_t len = strlen(dir_paths[n].text);
 	memcpy(out, dir_paths[n].text, len + 1);
 	return len;
+}
+
+namespace {
+
+// Each descriptor's SocketKind, which only atomic stores change, as the
+// directory paths' notes are: close and dup2 are async-signal-safe.
+uint8_t socket_kinds[MAX_FDS];
+
+} // namespace
+
+SocketKind socket_kind(int fd) {
+	if(fd < 0 || fd >= MAX_FDS)
+		return SocketKind::unknown;
+	return static_cast<SocketKind>(__atomic_load_n(&socket_kinds[fd], __ATOMIC_RELAXED));
+}
+
+void note_socket_kind(int fd, SocketKind kind) {
+	if(fd >= 0 && fd < MAX_FDS)
+		__atomic_store_n(&socket_kinds[fd], static_cast<uint8_t>(kind), __ATOMIC_RELAXED);
 }
 
 // The numbers are the same up to CLOCK_BOOTTIME. TAI reads as REALTIME,

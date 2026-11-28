@@ -751,6 +751,42 @@ pub fn lookup(
     Ok((found.cap, object))
 }
 
+/// The address space the capability in slot `slot` of `cspace`
+/// designates, if it may be used with the rights `needs`; `None` if it is
+/// `own`, the caller's own, which the caller holds.
+///
+/// If this CPU's cache finds the capability designating `own`, no second
+/// reference is taken: two atomic read-modify-writes on a line every
+/// thread of the process shares, on every futex call. That is sound for
+/// the reason [`find_holding`] gives for a process: the caller's
+/// reference keeps the space's memory where it is, so the cache's weak
+/// reference to the same address is to the same object, which the
+/// capability designated while the slot's version word said what it says
+/// now.
+pub fn own_space(
+    cspace: SpaceId,
+    slot: u32,
+    needs: Rights,
+    own: &SpaceObject,
+) -> Result<Option<SpaceRef>> {
+    let at = SlotRef::new(cspace, slot);
+    'cached: {
+        let Some(cache) = CACHE.own() else { break 'cached };
+        let Some(entry) = &cache[cache_index(at)] else { break 'cached };
+        if entry.at != at || entry.version != entry.word.get() {
+            break 'cached;
+        }
+        let Some(Kept::Space(kept)) = &entry.object else { break 'cached };
+        if !core::ptr::eq(kept.as_ptr(), own) {
+            break 'cached;
+        }
+        entry.cap.check(ObjectKind::AddressSpace, needs).map_err(cap_error)?;
+        return Ok(None);
+    }
+    let (_, space) = space(cspace, slot, needs)?;
+    Ok((!core::ptr::eq(Arc::as_ptr(&space), own)).then_some(space))
+}
+
 /// The capability in slot `slot` of `cspace`, whatever it designates.
 pub fn capability(cspace: SpaceId, slot: u32) -> Result<Capability> {
     let mut place = None;

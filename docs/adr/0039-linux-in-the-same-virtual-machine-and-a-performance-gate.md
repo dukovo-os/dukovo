@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0039. Radix is held to Linux in the same kind of virtual machine, and CI fails when it is slower
 
-- Status: Accepted
+- Status: Accepted; Linux and Radix both run with their default protections against CPU flaws since [0790](0790-the-kernel-finds-the-processor-s-speculation-flaws-closes-them-by-default-and-reports-them-as-linux-does.md)
 - Date: 2026-10-21
 
 ## Context
@@ -32,10 +32,10 @@ no measurement on one side or the other.
   writes (a cpio archive in the "newc" format) holding only a static
   `linux-bench` as `/init` and `/dev/console`. `linux-bench` notices it
   is process 1, prints its lines and powers the machine off.
-- That Linux boots with `mitigations=off`. Radix has none of the
-  mitigations of CPU vulnerabilities yet (plan item 3.3), so this is the
-  like-for-like comparison, and the harder one. When Radix gains them,
-  the baseline gains Linux's defaults.
+- That Linux boots with its default protections against the flaws of
+  the CPU, as Radix does (amended 2026-11-27 by ADR 0790; before that
+  both ran with none, Radix having none yet and Linux booted with
+  `mitigations=off`).
 - Every row of the report pairs a Radix measurement with a Linux one:
   the null system call with `getppid`, a capability method with
   `fcntl(F_GETFD)`, 64 random bytes with `getrandom`, a context switch

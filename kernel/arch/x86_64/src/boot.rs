@@ -265,6 +265,19 @@ __krelocs_start:
     .global __krelocs_end
 __krelocs_end:
 
+    /* ---- Room for the table of thunk sites (radix-thunks) ----
+     * Written by `ob build` like the symbol table; the boot CPU rewrites
+     * every site it lists. Each site takes 4 bytes: the release kernel
+     * had some 21,000 sites when the table came (82 KiB), so this leaves
+     * more than as much again for what comes. */
+    .section .kthunks, "a", @progbits
+    .balign 16
+    .global __kthunks_start
+__kthunks_start:
+    .skip 192 * 1024
+    .global __kthunks_end
+__kthunks_end:
+
     .code64
     .text
 "#,

@@ -43,6 +43,7 @@
 const LONG: usize = 512;
 
 core::arch::global_asm!(
+    crate::thunks::asm_begin!(),
     r#"
     .pushsection .text
     .balign 64
@@ -63,7 +64,7 @@ memcpy:
     mov [rdi + 8], r8
     mov [rdi + rdx - 16], r9
     mov [rdi + rdx - 8], r10
-    ret
+    radix_ret
 
 10: /* Under 16 bytes. */
     cmp edx, 8
@@ -72,14 +73,14 @@ memcpy:
     mov r8, [rsi + rdx - 8]
     mov [rdi], rcx
     mov [rdi + rdx - 8], r8
-    ret
+    radix_ret
 11: cmp edx, 4
     jb 12f
     mov ecx, [rsi]
     mov r8d, [rsi + rdx - 4]
     mov [rdi], ecx
     mov [rdi + rdx - 4], r8d
-    ret
+    radix_ret
 12: test edx, edx
     jz 14f
     movzx ecx, byte ptr [rsi]
@@ -88,7 +89,7 @@ memcpy:
     movzx r8d, word ptr [rsi + rdx - 2]
     mov [rdi + rdx - 2], r8w
 13: mov [rdi], cl
-14: ret
+14: radix_ret
 
 20: /* 33 bytes or more. */
     cmp rdx, {long}
@@ -116,7 +117,7 @@ memcpy:
     mov [rdx + 8], r8
     mov [rdx + 16], r9
     mov [rdx + 24], r10
-    ret
+    radix_ret
 
 30: /* {long} bytes or more. */
     mov r8, [rsi]
@@ -135,7 +136,7 @@ memcpy:
     shr rcx, 3
     rep movsq
     mov [r10], r9
-    ret
+    radix_ret
     .size memcpy, . - memcpy
 
     /* radix_copy_in_order(rdi = to, rsi = from, rdx = length). */
@@ -196,6 +197,7 @@ radix_copy_in_order:
     .size radix_copy_in_order, . - radix_copy_in_order
     .popsection
 "#,
+    crate::thunks::asm_end!(),
     long = const LONG,
 );
 

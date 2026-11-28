@@ -11,9 +11,10 @@
 //! that moving a thread makes things more even (`should_pull`), takes a
 //! waiting thread from that group's busiest CPU. A busy CPU tries every
 //! [`interval_ticks`] ticks of a level, so farther levels are balanced less
-//! often; an idle CPU tries every level before it sleeps. Threads whose
-//! caches are probably still warm are left where they are, unless
-//! attempts at that level have failed several times in a row.
+//! often; an idle CPU tries every level before it sleeps, if any CPU has a
+//! thread waiting ([`WAITING`]). Threads whose caches are probably still
+//! warm are left where they are, unless attempts at that level have
+//! failed several times in a row.
 //!
 //! On a processor whose cores differ in speed, as Intel's performance and
 //! efficient cores do (ADR 0740), each CPU has a rank ([`rank_cores`]):
@@ -28,9 +29,9 @@
 //! the same way, from the ranks Intel's ITMT gives its CPUs. The kernel
 //! flag `hybrid=off` leaves the ranks unset, and the CPUs placed alike.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use radix_hal::{CoreKind, Smp};
+use radix_hal::{CoreKind, MAX_CPUS, Smp};
 use radix_klog::info;
 use radix_sched::{Level, interval_ticks};
 
@@ -90,11 +91,32 @@ pub fn rank_cores(off: bool) {
             _ => EFFICIENT,
         };
         slot.rank.store(rank, Ordering::Relaxed);
+        if rank == FASTEST {
+            FASTEST_CPUS.0[cpu / 64].fetch_or(1 << (cpu % 64), Ordering::Relaxed);
+        }
     }
     topology.set_ranked(true);
     info!(
         "Scheduler: {performance} CPUs on performance cores and {efficient} on efficient cores;          threads go to idle performance cores first"
     );
+}
+
+/// The CPUs [`rank_cores`] ranked fastest, a bit each, in a line of its
+/// own that nothing writes once they are ranked: [`fastest`] reads it
+/// rather than a CPU's own line, which its waker would then take again.
+static FASTEST_CPUS: FastestCpus = FastestCpus([const { AtomicU64::new(0) }; MAX_CPUS / 64]);
+
+#[repr(C, align(64))]
+struct FastestCpus([AtomicU64; MAX_CPUS / 64]);
+
+/// Whether a thread woken for idle CPU `cpu` would go nowhere else if
+/// `cpu` may run it (`choose_cpu`): the CPUs are not ranked, or `cpu` is
+/// among the fastest. False before the topology is known, when
+/// `choose_cpu` takes the first CPU allowed.
+pub(super) fn fastest(cpu: usize) -> bool {
+    let Some(topology) = TOPOLOGY.get() else { return false };
+    !topology.is_ranked()
+        || FASTEST_CPUS.0[cpu / 64].load(Ordering::Relaxed) & (1 << (cpu % 64)) != 0
 }
 
 /// From the timer tick on CPU `cpu`, busy, with interrupts off: when the
@@ -150,9 +172,34 @@ pub(super) fn tick(cpu: usize, now: u64) {
     }
 }
 
+/// How many CPUs have a thread waiting for them, as they last published
+/// their loads ([`waiting_changed`]). A CPU pulls only from one that has
+/// (`Topology::find_busiest`), so an idle CPU reads the others' loads
+/// only while this says there is one, as Linux's looks only while its
+/// root domain is overloaded: two threads that take turns on two CPUs, as
+/// a lock's do, leave it at 0. In a line of its own, which a CPU writes
+/// only as it starts or stops having a thread wait.
+static WAITING: Waiting = Waiting(AtomicU32::new(0));
+
+#[repr(C, align(64))]
+struct Waiting(AtomicU32);
+
+/// A CPU's run queue, locked, now has a thread waiting (`waiting`) or no
+/// longer has, as the CPU's published load says from now on.
+pub(super) fn waiting_changed(waiting: bool) {
+    if waiting {
+        WAITING.0.fetch_add(1, Ordering::Relaxed);
+    } else {
+        WAITING.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// From the idle loop of CPU `cpu`, with interrupts off: tries every
 /// level, closest first, until a thread comes.
 pub(super) fn idle(cpu: usize, now: u64) -> bool {
+    if WAITING.0.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
     let Some(topology) = TOPOLOGY.get() else { return false };
     topology.levels(cpu).any(|level| pull(cpu, level, now))
 }

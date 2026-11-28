@@ -41,7 +41,7 @@ use radix_hw::pci::{Bar, Function, Msi};
 use radix_hw::{Dma, MsiMessage};
 use radix_klog::info;
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_sync::{Mutex, Once, SpinLock};
+use radix_sync::{Mutex, Once, SpinLock, nospec};
 
 use super::memory::{Backing, SpaceObject, SpaceRef};
 use super::methods::{Answer, answer};
@@ -478,7 +478,13 @@ fn open(user: &UserRef, address: u32, to: u32) -> Result<()> {
 /// returns where, and its size.
 fn map_registers(user: &UserRef, device: &DeviceRef, a: &MapRegistersArgs) -> Result<(u64, u64)> {
     let left = device.left();
-    let bar = usize::try_from(a.bar).ok().and_then(|bar| left.bars.get(bar).copied().flatten());
+    let bars = &left.bars;
+    // A BAR the processor guesses in range, while the check is still to be
+    // done, is BAR 0 meanwhile (Spectre v1, ADR 0790).
+    let bar = usize::try_from(a.bar)
+        .ok()
+        .filter(|&bar| bar < bars.len())
+        .and_then(|bar| bars[nospec::index(bar, bars.len())]);
     let (phys, size) = bar.ok_or(error(Kernel::InvalidArgument))?;
     let pages = size / PAGE;
     check_range(a.address, pages)?;

@@ -58,6 +58,7 @@ pub mod cpu;
 pub mod cpu_ref;
 mod hooks;
 mod mutex;
+pub mod nospec;
 mod once;
 pub mod rcu;
 pub mod rcu_map;

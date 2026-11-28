@@ -288,7 +288,9 @@ and 9, and of every later phase. Each run does these steps, with the
 checks of every phase so far:
 
 1. Build the image, with the laptop's microcode if the build host has
-   Intel's (the `intel-microcode` package on Debian and Ubuntu), and write
+   Intel's (the `intel-microcode` package on Debian and Ubuntu; AMD's is
+   the `amd64-microcode` package, whose `/lib/firmware/amd-ucode` the same
+   option takes), and write
    it to a USB stick as in [Creating USB install media](usb-media.md):
 
    ```sh
@@ -401,10 +403,9 @@ Linux live system, Linux Mint or Ubuntu 22.04 or later.
    in all. Photograph the `disktest:` lines. The last one must say
    `disktest: passed; the report is saved on the disk`.
 4. Restart into the Linux live system with the Dukovo stick plugged in.
-   Linux measures with the mitigations of CPU vulnerabilities off, as
-   Dukovo has none yet: at the live stick's boot menu, press **e**, add
-   ` mitigations=off` to the end of the line that starts with `linux`,
-   and press **Ctrl-X** (or **F10**).
+   Linux measures with its default protections against CPU
+   vulnerabilities, as Dukovo does: at the live stick's boot menu, press
+   **Enter** on the Linux entry as it is.
 5. Open a terminal and run Linux's side, which reads back what Dukovo
    wrote, measures the same transfers on Linux, and asks before it
    writes:

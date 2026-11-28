@@ -150,6 +150,23 @@ Wherever `unsafe` is used:
   without a Multiboot2 boot loader.
 - Resources are released by `Drop` (RAII), not by hand on each exit path.
 
+## Indices a program chooses
+
+- An index a program chooses (a system call's number, a capability slot, a
+  method's argument, a signal, a timer or a request number, an entry read
+  from memory shared with the kernel) goes through
+  `radix_sync::nospec::index` after its bounds check, before it indexes
+  anything: the processor may run ahead of the check and read past the end
+  of the table (Spectre v1, ADR 0790). Indices the kernel computes, loop
+  counters and values masked to the table's size need nothing.
+
+  ```rust
+  if slot as usize >= slots.len() {
+      return Err(CapError::NoSuchSlot);
+  }
+  let slot = &slots[nospec::index(slot as usize, slots.len())];
+  ```
+
 ## Documentation
 
 - Every crate and module starts with a `//!` comment saying what it is for.

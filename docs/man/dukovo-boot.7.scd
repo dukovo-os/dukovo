@@ -76,7 +76,7 @@ _/boot/grub/grub.cfg_
 	The menu, generated from _image/grub/live.cfg.in_.
 
 _/boot/firmware/intel-ucode.bin_
-	Intel microcode updates, only when the image was built with
+	Intel updates and AMD containers, only when the image was built with
 	*image.microcode* (see *dukovo.toml*(5)) or *ob image --microcode*.
 	See *MICROCODE* below.
 
@@ -619,7 +619,16 @@ them to *init*, and the kernel does not read them.
 *nopcid*
 	Do not tag TLB entries with process-context identifiers (PCIDs), even
 	when the CPU has them: every switch between address spaces then
-	flushes the TLB. For debugging and for comparison.
+	flushes the TLB, and so does every entry to the kernel and exit from
+	it where the kernel isolates itself (*pti*). For debugging and for
+	comparison.
+
+*noinvpcid*
+	Do not use INVPCID, even when the CPU has it: where the kernel
+	isolates itself under PCIDs (*pti*), a program's pages that were
+	unmapped are then flushed by flushing its whole view on its next
+	return, as on CPUs without INVPCID. As Linux's flag of the same name;
+	for debugging and for comparison.
 
 *nox2apic*
 	Drive the local APICs in xAPIC mode (registers in memory) even when
@@ -658,10 +667,25 @@ them to *init*, and the kernel does not read them.
 	itself, as before Phase 11c. For firmware whose AML misbehaves. See
 	*ACPI*.
 
+*idle*=_mode_
+	How idle CPUs wait (see *IDLE STATES*). *halt* keeps them in C1,
+	with HLT, and uses no deeper state, as Linux's *idle=halt* does;
+	*nomwait* uses no MWAIT: C1 is HLT, the firmware hears that the
+	kernel has no MWAIT, and of the deeper states only those entered
+	by reading an I/O port are used, as with Linux's *idle=nomwait*.
+	For a machine whose firmware or processor misbehaves in a deeper
+	state.
+
+*max_cstate*=_count_
+	Use at most _count_ idle states, C1 included: *max_cstate=1* is C1
+	alone, *max_cstate=2* C1 and the shallowest deeper state, and so on.
+	As Linux's *processor.max_cstate*, which counts the same way.
+
 *pstate*=off
 	Leave the CPUs' speed to the firmware, though they have Intel's HWP
-	or AMD's CPPC, as Linux's *intel_pstate=disable* and
-	*amd_pstate=disable* do. See *CPU FREQUENCY*.
+	or AMD's CPPC, or P-states the kernel could choose, as Linux's
+	*intel_pstate=disable* and *amd_pstate=disable* do. See *CPU
+	FREQUENCY*.
 
 *ups*=show
 	Show the UPSes plugged in by USB in _/kernel/class/power_supply_
@@ -949,18 +973,176 @@ applies some; an operating system applies newer ones as early as possible.
 The updates are closed firmware, so Dukovo never includes them itself:
 the builder adds a file of them to an image with *image.microcode* or *ob
 image --microcode*, naming a file or a directory of Intel updates such as
-_/lib/firmware/intel-ucode_ from the *intel-microcode* package. *ob*
-checks every update and fails if it finds none.
+_/lib/firmware/intel-ucode_ from the *intel-microcode* package, of AMD
+containers such as _/lib/firmware/amd-ucode_ from the *amd64-microcode*
+package or linux-firmware, or of both. A directory that holds
+_intel-ucode_ and _amd-ucode_ is read one level down, and signatures
+beside the files (names that end in .asc or .md5) are skipped. One file serves every
+machine: each CPU reads the pieces for its own vendor. *ob* checks every
+update and container and fails if it finds none.
 
 GRUB loads the file as a module with the word *microcode* on its command
 line. Each CPU, the boot CPU before it builds the kernel's page tables and
-every other CPU as it starts, picks the newest update for its signature and
-platform and writes it to the processor if it is newer than the running
-revision. The boot CPU logs the revision before and after, or why nothing
+every other CPU as it starts, picks the newest update for its signature
+(on Intel, and platform) and writes it to the processor if it is newer
+than the running revision. An AMD patch is for a processor whose
+signature the container's equivalence table maps to the patch's
+equivalence ID. The boot CPU logs the revision before and after, or why nothing
 was loaded; the count of other CPUs that loaded the update follows the CPU
 list. Hyper-threads share microcode, so the second thread of a core finds
-the update already applied. AMD's format is not supported yet, and the
-module is ignored on AMD processors.
+the update already applied. Nothing is loaded after boot. Dukovo does not
+check AMD patches against a list of known ones: the firmware set that
+carries the file is signed, and the processor checks the patch's own
+signature.
+
+# CPU FLAWS
+
+Processors that run ahead of what a program asked for can be made to leak
+what the program may not read: Spectre, Meltdown, Retbleed, MDS and the
+flaws that followed. The kernel finds out which flaws the CPU has from its
+identification and capability registers, decides how to close each one, and
+patches the entry and exit paths at boot to match (ADR 0790). The kernel is
+built with every indirect branch and return going through a thunk, and at
+boot it rewrites each one for the CPU: plain where the CPU needs nothing,
+through a retpoline or a return thunk where it does (ADR 0793). On a CPU
+with Meltdown, programs run on page tables that leave the kernel out (ADR
+0794). Without a flag
+every protection is on where the CPU needs it (*auto*), as Linux's default
+is. *ob bench* compares Radix with Linux booted the same way.
+
+The flags below follow Linux's flags of the same names and take the same
+values. A later flag wins over an earlier one. A value a flag does not take
+is reported and the flag is ignored.
+_/kernel/devices/system/cpu/vulnerabilities/_ has one file for each flaw,
+with Linux's wording: whether the CPU has it and what the kernel does about
+it.
+
+*mitigations*=_mode_
+	*auto* closes every flaw the CPU has, the default. *off* closes none,
+	except what another flag asks for with *on*, *ibrs*, *ibpb*,
+	*retpoline*, *unret* or *safe-ret*.
+	*auto,nosmt* is *auto*, and turns the second hardware threads off on
+	CPUs where a flaw reaches from one thread to the other and nothing
+	else closes it.
+
+*nosmt*
+	Keep every core's second hardware thread off, whatever the CPU has.
+
+*pti*=_mode_
+	Whether programs run on page tables of their own that map almost
+	none of the kernel, against Meltdown, which lets a program read the
+	kernel's memory. *auto*, the default, isolates the kernel on CPUs with
+	Meltdown and not on others; *on* isolates it on any CPU, even with
+	*mitigations=off*; *off* never does. Each entry to the kernel and exit
+	from it then switches page tables, which costs most on CPUs without
+	PCIDs (see *nopcid*).
+
+*nopti*
+	The same as *pti=off*.
+
+*nospectre_v1*
+	Leave out the fence after the interrupt entry's *swapgs* choice. The
+	fence in copies from programs and the bounds of the indices they
+	name stay, as they cost almost nothing.
+
+*spectre_v2*=_mode_
+	How programs are kept from steering the kernel's indirect branches.
+	*auto* picks enhanced or automatic IBRS where the CPU has it, IBRS
+	while in the kernel on an Intel CPU without it whose returns need it
+	too (Retbleed), and retpolines otherwise, as on AMD's Zen 1 to 3: each
+	indirect call and jump goes through a thunk that the CPU cannot
+	predict anywhere but into a trap. *retpoline* and
+	*retpoline,generic* use retpolines even where the CPU's own
+	protection would do. *off* uses none, and the kernel's indirect
+	branches are plain. *on* picks as *auto* does and also turns on
+	*spectre_v2_user*'s *on*. *ibrs* sets IBRS on every entry to the
+	kernel and clears it on every exit.
+
+*nospectre_v2*
+	The same as *spectre_v2=off*.
+
+*spectre_v2_user*=_mode_
+	How programs are kept from steering each other's indirect branches.
+	*auto* keeps STIBP on where the CPU asks for it always on, or where
+	AMD's returns need it, and *spectre_v2* is not off; programs cannot
+	yet ask for IBPB for themselves, as Linux's *prctl* lets them. *off*
+	uses neither. *on* uses STIBP and IBPB between every two programs,
+	and so costs more.
+
+*spec_store_bypass_disable*=_mode_
+	Whether loads wait for the address of every older store (SSBD).
+	*auto* and *off* leave it off, as Linux's default does; *on* sets
+	it in the kernel and in every program.
+
+*nospec_store_bypass_disable*
+	The same as *spec_store_bypass_disable=off*.
+
+*retbleed*=_mode_
+	How returns are kept from being predicted from the branch target
+	buffer. *auto* uses the IBRS that *spectre_v2* chose on Intel. On
+	AMD's Zen 1 and 2 every return goes through one return thunk, whose
+	predictions the kernel clears on every entry from a program, so that
+	what a program trained cannot steer it; where
+	*spec_rstack_overflow*'s safe return is on, it serves for both.
+	*unret* asks for that thunk as *auto* does,
+	even with *mitigations=off*, and changes nothing on Intel. *off* uses
+	none. *ibpb* makes an AMD CPU flush its branch predictions on every
+	entry to the kernel, and returns stay plain.
+
+*spec_rstack_overflow*=_mode_
+	How the return stack overflow of AMD's Zen 1 to 4 is closed. *auto*
+	sends every return through a safe return, whose predictions the
+	kernel resets on every entry from a program. On Zen 3 and 4 the reset
+	and the safe return run from a second mapping of their code, at
+	addresses that the processor's predictor takes for each other. On Zen 1 and 2 running one thread a core the flaw is
+	closed already. *safe-ret* asks for the safe return as *auto* does,
+	even with *mitigations=off*. *off* uses none. *ibpb* flushes on every
+	entry to the kernel, if the microcode's flush covers return
+	predictions.
+
+*indirect_target_selection*=_mode_
+	On the Intel CPUs with indirect target selection, which predicts an
+	indirect branch or return that ends in the lower half of a 64-byte
+	cache line from the wrong history, *on*, the default, moves each of
+	the kernel's indirect branches and returns within its site so that it
+	ends in the upper half, or sends it through a thunk that does where
+	it cannot be moved. It needs *spectre_v2* to be on. *off* leaves them
+	where the compiler put them.
+
+*tsx*=_mode_
+	Whether Intel's transactional memory is on. *auto* and *off* turn it
+	off on CPUs that can, which closes TSX asynchronous abort without
+	clearing buffers; *on* leaves it on.
+
+*mds*=_mode_
+	Whether the CPU's buffers are cleared with *verw* before returning to
+	a program, against microarchitectural data sampling. *auto* clears
+	where the CPU has the flaw; *off* leaves the flaw alone. One clearing
+	serves every flaw below that asks for it.
+
+*tsx_async_abort*=_mode_
+	As *mds*, for TSX asynchronous abort. Nothing is cleared when TSX is
+	off.
+
+*mmio_stale_data*=_mode_
+	As *mds*, for stale data left by reads of device memory.
+
+*reg_file_data_sampling*=_mode_
+	As *mds*, for register file data sampling, on CPUs whose microcode
+	clears the register file.
+
+*tsa*=_mode_
+	As *mds*, for AMD's transient scheduler attacks.
+
+*srbds*=_mode_
+	Whether the microcode's control against special register buffer data
+	sampling, a flaw of the random number instructions, is set. *auto*
+	sets it where the CPU has the flaw; *off* does not.
+
+*gather_data_sampling*=_mode_
+	Whether the microcode's control against gather data sampling, a flaw
+	of vector gathers, is set. *auto* sets it where the CPU has the flaw;
+	*off* does not.
 
 # MACHINE CHECKS
 
@@ -1115,6 +1297,45 @@ runs; the kernel hears a fixed power button by itself and powers off
 with the sleep types of the DSDT's _\_S5_ (ADR 0142), and no battery,
 adapter, lid, thermal zone or USB-C port is found.
 
+# IDLE STATES
+
+An idle CPU first polls for a moment, for work that comes at once (ADR
+0037, ADR 0551), and then waits in an idle state: C1, with MWAIT where
+the processor has it and the machine is no virtual one, or HLT, or one
+of the deeper states the firmware describes in each processor object's
+_\_CST_, which save more power and take longer to leave (ADR 0795). Before
+reading them, the kernel tells the firmware, through the processor
+objects' _\_OSC_ or _\_PDC_, that it enters C1 with HLT and deeper states
+with MWAIT, each CPU its own; many firmwares describe the deeper states
+only then.
+
+A deeper state is used only where the processor lists its MWAIT hint
+(CPUID leaf 5), or, for one entered by reading an I/O port, where the
+machine is no virtual one and the state needs no bus-master arbitration
+(ACPI type 1 or 2, or any type on AMD's Zen processors), and only on a
+processor whose local APIC timer runs in every state and whose TSC is
+invariant. Where the firmware lists C1E as a state of its own, the
+kernel turns off Intel's promotion of C1 to C1E, so that C1 is short and
+C1E is chosen when it pays.
+
+Each time a CPU goes idle, the governor picks the deepest state whose
+target residency (three times its exit latency) the time until the
+CPU's next timer reaches, unless most of its recent idle periods were
+ended sooner by something else, interrupts or other CPUs' wake-ups: it
+then picks the state that the middle of those early ends allows. The log
+says what the CPUs have:
+
+	Idle: C1 (ACPI FFH MWAIT 0x0, 0 µs), C2 (ACPI FFH MWAIT 0x1, 2 µs), C3 (ACPI FFH MWAIT 0x20, 85 µs)
+
+and on machines whose firmware describes none, QEMU's among them:
+
+	Idle: C1 only; the firmware describes no deeper state the CPUs can use (4 processor objects)
+
+Each CPU's states, how often it entered each and how long it stayed, are
+in _/kernel/devices/system/cpu/cpu_*n*_/cpuidle_, as on Linux
+(*radix-sysfs*(5)); cpupower and powertop read them. *idle* and
+*max_cstate* limit the states the CPUs use.
+
 # CPU FREQUENCY
 
 Intel's CPUs from Skylake on and most of AMD's from Zen 3 on pick their
@@ -1132,10 +1353,27 @@ CPUs can do:
 	CPU frequency: Intel's HWP on 8 CPUs, 400 to 3400 MHz, base 1800 MHz, energy preference balance_performance
 
 Each CPU's policy is in _/kernel/devices/system/cpu/cpufreq_, as on Linux
-(*radix-sysfs*(5)). CPUs with neither control, as QEMU's even under KVM,
-keep the firmware's setting:
+(*radix-sysfs*(5)).
 
-	CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC
+CPUs with neither control, Intel's from before Skylake and those whose
+firmware keeps HWP off, and AMD's Zen 1 and 2 and those whose firmware
+offers no CPPC, run at one of the P-states their firmware's _\_PSS_
+describes, where _\_PCT_ says the processor's own register chooses them:
+Intel's Enhanced SpeedStep or AMD's hardware P-states (ADR 0796). The
+kernel picks the state then, as Linux's _acpi-cpufreq_ with its
+_schedutil_ governor does: at each tick, from how busy the CPU was since
+the last and how fast it ran, the slowest state at which the same work
+would keep it busy four fifths of the time, and the fastest allowed at
+once when it was busy throughout. _\_PPC_ keeps the fastest states off
+limits, and *cpu.boost*, *cpu.speed* and passive cooling apply as above.
+The log says so:
+
+	CPU frequency: the firmware's P-states on 8 CPUs, 800 to 3900 MHz, base 3400 MHz
+
+CPUs with none of these, as QEMU's even under KVM, keep the firmware's
+setting:
+
+	CPU frequency: left to the firmware: the CPUs have neither Intel's HWP nor AMD's CPPC, nor P-states from the firmware that the kernel can choose
 
 # SENSORS
 

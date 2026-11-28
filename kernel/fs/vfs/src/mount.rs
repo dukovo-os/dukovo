@@ -1040,22 +1040,27 @@ impl Vfs {
         path: &str,
         out: &mut dyn crate::Out,
     ) -> Result<usize> {
+        self.walk(who, base, path, true, |chain, names| put_real_path(chain, names, out))
+    }
+
+    /// [`Vfs::real_path`] for `who` to go into the directory `path` leads
+    /// to, as chdir(2) does: it must be a directory (`NotDirectory`) that
+    /// `who` may search (`Denied`), as stat(2) and access(2) with X_OK
+    /// would find, in that order. One walk does what took three.
+    pub fn enter(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &str,
+        out: &mut dyn crate::Out,
+    ) -> Result<usize> {
         self.walk(who, base, path, true, |chain, names| {
-            let steps = &chain[1..];
-            if steps.is_empty() {
-                put_within(out, 0, b".")?;
-                return Ok(1);
+            let (at, _) = chain.last().ok_or(Error::Outside)?;
+            if at.node.kind() != Kind::Directory {
+                return Err(Error::NotDirectory);
             }
-            let mut len = 0;
-            for (i, (_, name)) in steps.iter().enumerate() {
-                if i > 0 {
-                    put_within(out, len, b"/")?;
-                    len += 1;
-                }
-                put_within(out, len, &names[name.clone()])?;
-                len += name.len();
-            }
-            Ok(len)
+            who.check(&*at.node, want::EXECUTE)?;
+            put_real_path(chain, names, out)
         })
     }
 
@@ -1640,6 +1645,27 @@ impl Drop for Vfs {
 }
 
 /// Puts what of `bytes` fits in `out` at `at`.
+/// Writes the names a walk took from its base, `chain` past its first
+/// step, into `out`, joined by `/` (`.` for the base itself); returns
+/// their length, more than `out` holds when it was cut short.
+fn put_real_path(chain: &[Step], names: &[u8], out: &mut dyn crate::Out) -> Result<usize> {
+    let steps = &chain[1..];
+    if steps.is_empty() {
+        put_within(out, 0, b".")?;
+        return Ok(1);
+    }
+    let mut len = 0;
+    for (i, (_, name)) in steps.iter().enumerate() {
+        if i > 0 {
+            put_within(out, len, b"/")?;
+            len += 1;
+        }
+        put_within(out, len, &names[name.clone()])?;
+        len += name.len();
+    }
+    Ok(len)
+}
+
 fn put_within(out: &mut dyn crate::Out, at: usize, bytes: &[u8]) -> Result<()> {
     let room = out.len().saturating_sub(at).min(bytes.len());
     if room > 0 { out.put(at, &bytes[..room]) } else { Ok(()) }

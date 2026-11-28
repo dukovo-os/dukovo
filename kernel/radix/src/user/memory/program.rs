@@ -177,6 +177,41 @@ impl ProgramPages {
         Some(phys)
     }
 
+    /// [`take`](Self::take) for page `first + i` of the file, for each bit
+    /// `i` of `pages`, with the chunks locked once: puts the frame kept
+    /// for each that has one in `frames[i]`, counted as shared once more
+    /// for the space about to map it, and returns the bits of those. How a
+    /// fault maps the pages around it that are kept already; a page whose
+    /// memory went bad is let go of, and left out.
+    pub(super) fn take_run(&self, first: u64, pages: u64, frames: &mut [u64]) -> u64 {
+        let mut chunks = self.chunks.lock();
+        let mut found = 0;
+        for (bit, frame) in frames.iter_mut().enumerate().filter(|&(bit, _)| pages & 1 << bit != 0)
+        {
+            let index = first + bit as u64;
+            let Ok(at) = chunks.binary_search_by_key(&(index / CHUNK), |&(number, _)| number)
+            else {
+                continue;
+            };
+            let slot = &mut chunks[at].1[(index % CHUNK) as usize];
+            let phys = *slot;
+            if phys == 0 {
+                continue;
+            }
+            if FRAMES.retiring(phys) {
+                *slot = 0;
+                unshare(phys);
+                continue;
+            }
+            if let Some(info) = FRAMES.info(phys) {
+                info.share();
+                *frame = phys;
+                found |= 1 << bit;
+            }
+        }
+        found
+    }
+
     /// Keeps `phys`, a page just made and filled from page `index` of the
     /// file for a space about to map it, for the spaces that map that page
     /// after it. Returns the frame the space maps: `phys`, or the page

@@ -57,7 +57,7 @@ use radix_cap::{ObjectKind, Rights};
 use radix_hal::UserMode;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_posix::watch::{self, Asks, State, Then};
-use radix_sync::{Mutex, SpinLock, barrier};
+use radix_sync::{Mutex, SpinLock, barrier, nospec};
 
 use super::account::{Account, Charge};
 use super::methods::{Answer, answer};
@@ -354,8 +354,15 @@ impl Registry {
             let at = self.users.binary_search_by_key(&ident, |watch| watch.ident).ok()?;
             return self.users.get(at);
         }
-        let pair = self.descriptors.get(usize::try_from(ident).ok()?)?;
-        pair[pair_index(filter)].as_ref()
+        let at = usize::try_from(ident).ok()?;
+        let len = self.descriptors.len();
+        if at >= len {
+            return None;
+        }
+        // A descriptor the processor guesses in range, while the check is
+        // still to be done, is descriptor 0 meanwhile (Spectre v1, ADR
+        // 0790).
+        self.descriptors[nospec::index(at, len)][pair_index(filter)].as_ref()
     }
 
     fn take(&mut self, ident: u64, filter: QueueFilter) -> Option<WatchRef> {
@@ -363,8 +370,15 @@ impl Registry {
             let at = self.users.binary_search_by_key(&ident, |watch| watch.ident).ok()?;
             return Some(self.users.remove(at));
         }
-        let pair = self.descriptors.get_mut(usize::try_from(ident).ok()?)?;
-        pair[pair_index(filter)].take()
+        let at = usize::try_from(ident).ok()?;
+        let len = self.descriptors.len();
+        if at >= len {
+            return None;
+        }
+        // A descriptor the processor guesses in range, while the check is
+        // still to be done, is descriptor 0 meanwhile (Spectre v1, ADR
+        // 0790).
+        self.descriptors[nospec::index(at, len)][pair_index(filter)].take()
     }
 
     /// Makes room for a watch of `ident` and `filter`, so that [`put`]

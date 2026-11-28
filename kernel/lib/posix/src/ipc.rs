@@ -16,6 +16,8 @@
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
+use radix_sync::nospec;
+
 /// The key no other `get` finds an object by: IPC_PRIVATE.
 pub const PRIVATE: i32 = 0;
 
@@ -220,8 +222,16 @@ impl<T, A: Allocator> Table<T, A> {
         seq * IPCMNI + index as u32
     }
 
+    /// The place `id` names, if the table reaches it. A program chose the
+    /// number, so the processor that guesses it in range, while the check
+    /// is still to be done, reads place 0 meanwhile (Spectre v1, ADR 0790).
+    fn place(&self, id: u32) -> Option<usize> {
+        let place = (id % IPCMNI) as usize;
+        (place < self.slots.len()).then(|| nospec::index(place, self.slots.len()))
+    }
+
     fn entry(&self, id: u32) -> Option<&Entry<T>> {
-        let entry = self.slots.get((id % IPCMNI) as usize)?.as_ref()?;
+        let entry = self.slots[self.place(id)?].as_ref()?;
         (entry.seq == id / IPCMNI).then_some(entry)
     }
 
@@ -232,7 +242,8 @@ impl<T, A: Allocator> Table<T, A> {
 
     /// The object numbered `id`, to change.
     pub fn get_mut(&mut self, id: u32) -> Option<&mut T> {
-        let entry = self.slots.get_mut((id % IPCMNI) as usize)?.as_mut()?;
+        let place = self.place(id)?;
+        let entry = self.slots[place].as_mut()?;
         (entry.seq == id / IPCMNI).then_some(&mut entry.value)
     }
 
@@ -399,12 +410,14 @@ pub enum Outcome {
 /// but [`Outcome::Done`] both are as they were.
 pub fn operate(values: &mut [u16], adjust: &mut [i32], ops: &[Operation]) -> Outcome {
     for (done, op) in ops.iter().enumerate() {
-        let n = op.number as usize;
-        let Some(&value) = values.get(n) else {
+        if op.number as usize >= values.len() {
             roll_back(values, adjust, &ops[..done]);
             return Outcome::OutOfRange;
-        };
-        let value = i32::from(value);
+        }
+        // A semaphore the processor guesses in range, while the check is
+        // still to be done, is semaphore 0 meanwhile (Spectre v1, ADR 0790).
+        let n = nospec::index(op.number as usize, values.len());
+        let value = i32::from(values[n]);
         let result = value + i32::from(op.op);
         let blocked = if op.op == 0 { value != 0 } else { result < 0 };
         let undo_past = op.undo()

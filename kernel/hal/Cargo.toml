@@ -16,5 +16,8 @@ radix-pstate = { path = "../lib/pstate" }
 radix-sensors = { path = "../lib/sensors" }
 radix-vmware = { path = "../drivers/vmware" }
 
+[dev-dependencies]
+radix-cpuflaws = { path = "../lib/cpuflaws" }
+
 [lints]
 workspace = true
