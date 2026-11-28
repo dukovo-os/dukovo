@@ -41,7 +41,6 @@ mod devices;
 mod ec;
 mod efi;
 mod entry;
-mod fbdiag;
 mod firmware;
 mod fpu;
 mod hyperv;

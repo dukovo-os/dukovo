@@ -277,10 +277,7 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
     if let Some(map) = info.efi_memory_map() {
         let _ = EFI_MEMORY_MAP.set(map);
     }
-    let (mut framebuffer, text_screen) = framebuffer(&info);
-    if let Some(fb) = framebuffer.as_mut() {
-        crate::fbdiag::run(fb.phys_addr, fb.memory, fb.pitch, fb.width, fb.height);
-    }
+    let (framebuffer, text_screen) = framebuffer(&info);
     let modules = MODULES.take().expect("the boot CPU starts once");
     let mut count = 0;
     for module in info.modules() {
