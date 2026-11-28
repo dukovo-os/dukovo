@@ -69,7 +69,8 @@ connection's address, and two in nginx, in `connect` and in its
 
 - A connect, getsockopt or accept with an address on a socket the C
   library made or accepted asks the kernel nothing first: a PHP-FPM
-  request through nginx makes three fewer calls.
+  request through nginx makes three fewer calls. With ADR 0800's six,
+  `server_php_fpm` is 0.95 times Linux's time on optiplex-1.
 - Each process has a byte for each descriptor it may have, in memory
   that takes a page only once a descriptor in its range is noted.
 - `posix/inet` checks that a descriptor whose number a socket of the

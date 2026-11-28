@@ -74,7 +74,9 @@ answers from its string. That was eight calls a request against three.
 ## Consequences
 
 - `chdir` and `fchdir` are one call to the kernel, and a PHP-FPM request
-  makes six fewer.
+  makes six fewer. With ADR 0801's three, `server_php_fpm` took 37.8 µs
+  a request on optiplex-1 against Linux's 39.6 µs (0.95 times Linux's,
+  lab run 20261128-065028-18d8), where it took 42.2 µs.
 - The VFS's test checks that `enter` follows links and works out `.`
   and `..` as `real_path` does, that a missing path, a file and a link
   to a file fail before the search bit is looked at, that a directory

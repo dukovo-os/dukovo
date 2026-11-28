@@ -89,7 +89,12 @@ map.
 
 - A process that reads memory another process made, or runs a program
   another process ran, takes a fault for each run of 16 pages rather
-  than for each page, as on Linux.
+  than for each page, as on Linux. On optiplex-1 (lab run
+  20261128-065028-18d8), `server_postgresql_select` took 28,400 faults
+  in its 80,000 transactions against Linux's 27,600, and 16.2 µs a
+  transaction against 16.7 µs (0.97 times Linux's);
+  `posix_fork_exec_wait` took 228 µs a round against 271 µs (0.84
+  times), and `server_postgresql_tpcb` 108.6 µs against 111.2 µs.
 - A process is charged for the pages around a fault that it did not
   touch, if they were there already: its resident memory counts them,
   as Linux's does.
