@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0718. windowd draws every window's frame, from one table of values
+# 0719. windowd draws every window's frame, from one table of values
 
 - Status: Accepted
 - Date: 2026-11-28
@@ -38,7 +38,7 @@ part of what the screen shows.
   frame at the left, the right and the bottom, and outside the box a
   line and the shadow. A maximized window has the title bar alone. A
   program that draws a title bar of its own has both, until it uses the
-  title bar's region (ADR 0719).
+  title bar's region (ADR 0720).
 - **The frame is a library, `window-frame`**, with no unsafe code and
   nothing of Smithay or the display layer in it:
   - `Theme` is the one table: every size and every colour of the frame,
@@ -56,7 +56,7 @@ part of what the screen shows.
     pointer, the button held down) into a `Canvas`, which is any
     rectangle of the frame's plane with memory for its pixels.
   - `panel` places and draws the boxes windowd shows over the windows:
-    the window menu and the list of windows (ADR 0720).
+    the window menu and the list of windows (ADR 0721).
 - **The frame is drawn in strips**, the rectangles `Layout::strips`
   names: the title bar's, the two sides', and the bottom's with the
   shadow. windowd keeps each as a picture of the renderer's and draws
@@ -104,7 +104,7 @@ part of what the screen shows.
 - A window can always be moved, resized and closed by the same parts
   in the same places.
 - A program's own title bar shows under windowd's until the program
-  uses the region (ADR 0719). Programs ported to Dukovo are built
+  uses the region (ADR 0720). Programs ported to Dukovo are built
   without one.
 - Another look is another `Theme`: values, and no code.
 - The build tool depends on `window-frame`, so that a change of the

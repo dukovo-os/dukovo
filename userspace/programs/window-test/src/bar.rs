@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The program's side of `dukovo_title_bar_v1`: asking the window
-//! server for a part of the window's title bar (ADR 0719).
+//! server for a part of the window's title bar (ADR 0720).
 //!
 //! The protocol is spoken from the tables of `window-protocols`, by
 //! the numbers of its requests and events, with no code written by a

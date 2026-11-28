@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! `dukovo_title_bar_v1`: a program's own part of its window's title
-//! bar (ADR 0719, `protocols/dukovo-title-bar-v1.xml`).
+//! bar (ADR 0720, `protocols/dukovo-title-bar-v1.xml`).
 
 use wayland_backend::protocol::{AllowNull, ArgumentType, Interface, MessageDesc};
 

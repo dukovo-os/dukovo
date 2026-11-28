@@ -3,19 +3,19 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0719. A program shares its window's title bar by a protocol of Dukovo's own
+# 0720. A program shares its window's title bar by a protocol of Dukovo's own
 
 - Status: Accepted
 - Date: 2026-11-28
 
 ## Context
 
-windowd draws the frame of every window, title bar and all (ADR 0718).
+windowd draws the frame of every window, title bar and all (ADR 0719).
 Some programs put their own things where a title bar is: a browser its
 tabs, an editor its search box. On the systems they come from they do
 it by drawing the whole frame themselves and asking the compositor to
 draw none (xdg-decoration's client-side mode). That gives up what ADR
-0718 is for: the buttons are the program's to place and to leave out,
+0719 is for: the buttons are the program's to place and to leave out,
 and a program that hangs cannot be moved or closed.
 
 What such a program needs is less than the whole frame: a rectangle of
@@ -59,7 +59,7 @@ bar, or one application's tabs out of it.
   asks has a line, *Full title bar for this app*, which gives the
   application windowd's whole bar whatever it asks, and gives it back;
   the choice is kept by the application's name in the person's settings
-  (ADR 0721), where all applications can be given the full bar at once.
+  (ADR 0722), where all applications can be given the full bar at once.
   Every window of the application is told when the choice changes.
 - **xdg-decoration is offered and always answered `server_side`.** A
   toolkit that asks is told not to draw a frame of its own. One that

@@ -26,10 +26,10 @@ wayland-client = "0.31.14"
 # The feature `unstable` is where the crate keeps xdg-decoration.
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable"] }
 # Where the frame windowd draws around a window puts the window's own
-# pixels, which the program says in the log (ADR 0718).
+# pixels, which the program says in the log (ADR 0719).
 window-frame = { path = "../window-frame" }
 # The tables of the title bar's protocol, which the program speaks to
-# draw a part of its window's title bar (ADR 0719).
+# draw a part of its window's title bar (ADR 0720).
 window-protocols = { path = "../window-protocols" }
 
 [lints]

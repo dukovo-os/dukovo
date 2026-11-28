@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The frame windowd draws around every window (windowd(1), ADR 0718):
+//! The frame windowd draws around every window (windowd(1), ADR 0719):
 //! the title bar with the window's name and its three buttons, and the
 //! edges a window is resized by.
 //!

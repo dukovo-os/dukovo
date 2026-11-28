@@ -3,14 +3,14 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0720. The window manager is windowd's own state over the seat
+# 0721. The window manager is windowd's own state over the seat
 
 - Status: Accepted
 - Date: 2026-11-28
 
 ## Context
 
-With a frame on every window (ADR 0718) the pointer and the keys have
+With a frame on every window (ADR 0719) the pointer and the keys have
 work that is windowd's own: moving a window by its title bar, resizing
 it by an edge, its three buttons, the window menu, going through the
 windows with Alt+Tab. All of it happens between two things Smithay

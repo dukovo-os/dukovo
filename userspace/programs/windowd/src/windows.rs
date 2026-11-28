@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The windows and their frames: where each is, in which order they
-//! lie, and what changes that (ADR 0720).
+//! lie, and what changes that (ADR 0721).
 //!
-//! Every window has windowd's frame around it (ADR 0718). A window is
+//! Every window has windowd's frame around it (ADR 0719). A window is
 //! where its frame's box is; the program's own surface lies in the box
 //! as the frame's layout says, and shows cut to it, so that nothing a
 //! program draws reaches over the frame.

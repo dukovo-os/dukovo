@@ -96,9 +96,6 @@ pub struct Changed {
     pub windows: bool,
     /// The picture the pointer shows.
     pub pointer: bool,
-    /// Which applications may draw a part of their title bars: the
-    /// person chose for one, and their settings are to be written.
-    pub title_bars: bool,
 }
 
 /// The state of the protocols, and the windows.
@@ -135,6 +132,10 @@ pub struct Shell {
     pub pointer: CursorImageStatus,
     /// Which applications may draw a part of their title bars.
     pub title_bars: TitleBars,
+    /// The applications the person chose that for from a window's menu,
+    /// each with whether it may, until the choices are kept in the
+    /// person's settings.
+    pub chosen: Vec<(String, bool)>,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -168,6 +169,7 @@ impl Shell {
             asked: Vec::new(),
             pointer: CursorImageStatus::default_named(),
             title_bars: TitleBars::default(),
+            chosen: Vec::new(),
             changed: Changed::default(),
             lights: None,
         }
@@ -713,7 +715,7 @@ impl XdgDecorationHandler for Shell {
 
 /// Answers the program of `toplevel`, which said how it would have the
 /// window decorated, or that it can leave that to the window server:
-/// whatever it asks, the frame is windowd's (ADR 0718). The protocol
+/// whatever it asks, the frame is windowd's (ADR 0719). The protocol
 /// has the program wait for a configure, which for a window that has
 /// had none yet is its first.
 fn answer_decoration(toplevel: &ToplevelSurface) {

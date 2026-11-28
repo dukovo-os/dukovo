@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A title bar shared with a window's program (ADR 0719), the person's
+//! A title bar shared with a window's program (ADR 0720), the person's
 //! say in it, and a program that asks who decorates its window.
 
 use input::abi::{BTN_LEFT, KEY_ENTER, KEY_LEFTALT, KEY_SPACE, KEY_UP};
@@ -24,6 +24,9 @@ const FULL_BAR: BarSaid = BarSaid { mode: Mode::Full, ..SHARED_BAR };
 /// The part of the bar the test program asks for, from its window's
 /// corner.
 const REGION: (i32, i32, i32, i32) = (40, 4, 200, 28);
+
+/// The application the test program says its windows are of.
+const APP: &str = "org.dukovo.window-test";
 
 /// How wide the window menu is.
 const MENU_WIDTH: i32 = 330;
@@ -287,8 +290,11 @@ fn the_person_gives_an_application_the_full_bar_from_the_window_menu_and_takes_i
     world.tap(KEY_ENTER);
     world.settle();
     // Chosen, the program is told the bar is windowd's whole, and
-    // asked to draw its window so.
+    // asked to draw its window so. The choice is there to be kept in
+    // the person's settings, once.
     assert_eq!(world.ask(&program, |client| client.bar().unwrap()), Some(FULL_BAR));
+    assert_eq!(world.desktop.chosen(), [(APP.to_owned(), false)]);
+    assert!(world.desktop.chosen().is_empty());
     world.show(&program, FULL, 8);
     world.shows_frame(&full, corner, &look(true));
     world.shows_own(&full, corner, 8);
@@ -302,6 +308,7 @@ fn the_person_gives_an_application_the_full_bar_from_the_window_menu_and_takes_i
     world.tap(KEY_ENTER);
     world.settle();
     assert_eq!(world.ask(&program, |client| client.bar().unwrap()), Some(SHARED_BAR));
+    assert_eq!(world.desktop.chosen(), [(APP.to_owned(), true)]);
     world.show(&program, SHARED, 9);
     world.shows_frame(&shared(SHARED, Shape::Normal), corner, &look(true));
 }

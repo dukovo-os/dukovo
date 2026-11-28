@@ -11,7 +11,7 @@
 //! XML by this crate's tests. The Wayland crates' tool that writes
 //! such tables from the XML writes `unsafe` code with them, for the C
 //! library neither side uses, and the desktop's programs have none
-//! (docs/coding-standard.md, ADR 0719).
+//! (docs/coding-standard.md, ADR 0720).
 //!
 //! Requests and events are numbered in the order the XML has them.
 

@@ -8,7 +8,7 @@
 //! strips of its frame and its own surface. The surface is cut to the
 //! places the frame's layout gives it, so that a program draws nowhere
 //! else: the content, and the region of a title bar the program shares
-//! (ADR 0719). It lies behind the frame, which is see-through there.
+//! (ADR 0720). It lies behind the frame, which is see-through there.
 //!
 //! A surface is one piece of the frame however many parts it shows in:
 //! the damage tracker knows a piece by its surface, and two pieces of

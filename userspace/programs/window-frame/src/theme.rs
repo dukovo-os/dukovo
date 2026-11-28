@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The one table of a frame's sizes and colours (ADR 0718).
+//! The one table of a frame's sizes and colours (ADR 0719).
 //!
 //! Nothing else in the library or in windowd holds a size or a colour
 //! of the frame, so that the theme file of the looks (docs/deferred.md)

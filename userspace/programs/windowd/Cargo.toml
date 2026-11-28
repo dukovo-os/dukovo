@@ -16,15 +16,19 @@ input = { path = "../input" }
 keymap = { path = "../keymap" }
 libc = "0.2.191"
 radix-abi = { path = "../../../kernel/abi" }
+# The settings files (windowd.json(5)), read key by key, so that a
+# mistake in one costs that key alone and what windowd does not know is
+# kept when it writes the file.
+serde_json = "1.0.140"
 # The Wayland protocols, the windows' model and the pixman renderer (ADR
 # 0712). No backend of Smithay's is built: windowd's own reach the
 # display layer and inputd.
 smithay = { version = "0.7.0", default-features = false, features = ["desktop", "renderer_pixman", "wayland_frontend"] }
 sysapi = { path = "../sysapi" }
 # The frame around every window: its sizes and colours, where its parts
-# are, and its pixels (ADR 0718).
+# are, and its pixels (ADR 0719).
 window-frame = { path = "../window-frame" }
-# The tables of the title bar's protocol (ADR 0719).
+# The tables of the title bar's protocol (ADR 0720).
 window-protocols = { path = "../window-protocols" }
 
 [dev-dependencies]

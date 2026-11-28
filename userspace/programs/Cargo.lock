@@ -6125,6 +6125,7 @@ dependencies = [
  "libc",
  "radix-abi",
  "radix-display",
+ "serde_json",
  "smithay",
  "sysapi",
  "window-frame",

@@ -11,7 +11,7 @@
 //!
 //! The title bar is windowd's whole ([`Bar::Full`]), with the surface
 //! under it, or shared with the window's program ([`Bar::Shared`],
-//! ADR 0719): then the surface reaches to the top of the box, and its
+//! ADR 0720): then the surface reaches to the top of the box, and its
 //! rows in the bar show only in the region the program draws, which is
 //! cut so that the icon, the buttons and a strip to move the window by
 //! stay windowd's.

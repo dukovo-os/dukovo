@@ -51,7 +51,7 @@ audio = { path = "../../userspace/programs/audio" }
 # (ADR 0700).
 display-pattern = { path = "../../userspace/programs/display-pattern" }
 # The frame windowd draws around a window, so that the desktop's boot
-# tests compare the screen with it pixel for pixel (ADR 0718).
+# tests compare the screen with it pixel for pixel (ADR 0719).
 window-frame = { path = "../../userspace/programs/window-frame" }
 # The slot state on an installed system's EFI system partition and what
 # a slot says of itself, written as dukovo-install(8) and sysupdate(8)

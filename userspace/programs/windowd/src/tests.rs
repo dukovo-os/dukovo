@@ -5,6 +5,7 @@
 //! the kernel's own display layer on the other ([`rig`]), and the
 //! desktop told of each thing as `main` tells it.
 
+mod laid;
 mod managed;
 mod rig;
 mod shared;

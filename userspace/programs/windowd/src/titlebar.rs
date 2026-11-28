@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! A window's title bar, shared with the window's program
-//! (`dukovo_title_bar_v1`, ADR 0719).
+//! (`dukovo_title_bar_v1`, ADR 0720).
 //!
 //! A program that wants to draw a part of its window's title bar makes
 //! a title bar object for the window. Whether it may is the person's to

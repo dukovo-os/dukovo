@@ -11,6 +11,7 @@
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitCode};
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ use crate::desktop::Desktop;
 use crate::devices::Devices;
 use crate::keys::Chord;
 use crate::link::Card;
+use crate::settings::{self, Settings};
 use crate::socket::Listening;
 
 /// SIGTERM, SIGHUP or SIGINT came: the desktop is to end.
@@ -31,6 +33,10 @@ pub static END: Caught = Caught::new();
 
 /// SIGCHLD came: the command may have ended.
 pub static CHILD: Caught = Caught::new();
+
+/// SIGUSR1 came: the settings files changed, and are to be read again
+/// (windowd.json(5)).
+pub static RELOAD: Caught = Caught::new();
 
 /// How many of the layer's events are read at once.
 const EVENTS: usize = 32;
@@ -68,6 +74,8 @@ pub struct Session {
     pub woken: File,
     /// Whether inputd is still there to say which devices come and go.
     pub inputd_there: bool,
+    /// The person's settings file, if their home folder is known.
+    pub personal: Option<PathBuf>,
 }
 
 impl Session {
@@ -78,10 +86,12 @@ impl Session {
     ///
     /// Why the desktop cannot go on, for the person to read.
     pub fn run(&mut self) -> Result<ExitCode, String> {
+        self.lay_settings();
         loop {
             if let Some(lights) = self.desktop.lights() {
                 self.devices.light(lights);
             }
+            self.keep_choices();
             match self.desktop.asked() {
                 Some(Chord::End) => return Ok(ExitCode::SUCCESS),
                 Some(Chord::Console(console)) => self.leave_for(console)?,
@@ -96,6 +106,32 @@ impl Session {
             let woke = self.wait(until).map_err(|err| format!("poll: {err}"))?;
             if let Some(ended) = self.hear(woke)? {
                 return Ok(ended);
+            }
+        }
+    }
+
+    /// Reads the settings files and has the desktop be as they say.
+    /// What is wrong in them is said on the standard error.
+    fn lay_settings(&mut self) {
+        let files = [Some(Path::new(settings::SYSTEM)), self.personal.as_deref()];
+        let (settings, wrong) = Settings::read(files.into_iter().flatten());
+        for wrong in wrong {
+            eprintln!("desktop: {wrong}");
+        }
+        self.desktop.set(&settings);
+    }
+
+    /// Keeps what the person chose from a window's menu in their
+    /// settings file. A choice that cannot be kept holds until the
+    /// settings are next read.
+    fn keep_choices(&mut self) {
+        for (app, lets) in self.desktop.chosen() {
+            let kept = match &self.personal {
+                Some(file) => settings::keep_app(file, &app, lets),
+                None => Err("HOME is not set".to_owned()),
+            };
+            if let Err(why) = kept {
+                eprintln!("desktop: the choice for {app} is not kept: {why}");
             }
         }
     }
@@ -161,6 +197,9 @@ impl Session {
             && let Some(ended) = self.command_ended()
         {
             return Ok(Some(ended));
+        }
+        if RELOAD.take() {
+            self.lay_settings();
         }
         if woke.layer {
             self.hear_layer()?;

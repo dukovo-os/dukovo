@@ -39,13 +39,9 @@ use crate::manager::Manager;
 use crate::pointer::{Arrows, Picture, Shown};
 use crate::scene::Scene;
 use crate::screens::{Failed, Pointing, Screens, Told};
+use crate::settings::Settings;
 use crate::shell::Shell;
 use crate::windows::Under;
-
-/// How long a key is held before the program that has it repeats it,
-/// in milliseconds, and how many times a second it repeats then: as at
-/// the consoles (radix-input(2)).
-const REPEAT: (i32, i32) = (250, 30);
 
 /// How far one notch of a wheel scrolls, as the programs reckon it.
 const NOTCH: f64 = 15.0;
@@ -127,7 +123,10 @@ where
         let mut shell = Shell::new(&display.handle());
         let (layout, variant) = keys::xkb_names(layout);
         let named = XkbConfig { layout, variant, ..XkbConfig::default() };
-        let (delay, rate) = REPEAT;
+        // As built, until the person's settings are laid
+        // ([`Desktop::set`]).
+        let as_built = Settings::default();
+        let (delay, rate) = (as_built.repeat_delay_ms as i32, as_built.repeat_rate as i32);
         // A layout the XKB data has not is the default's, which the
         // data always has.
         let added = shell.seat.add_keyboard(named, delay, rate);
@@ -156,6 +155,29 @@ where
         };
         desktop.centre();
         Ok(desktop)
+    }
+
+    /// Has the desktop be as `settings`, the person's, say
+    /// (windowd.json(5)): from here on, and for the windows and the
+    /// programs that are there.
+    pub fn set(&mut self, settings: &Settings) {
+        self.curve.set_speed(settings.pointer_speed);
+        self.manager.double_click_ns = u64::from(settings.double_click_ms) * 1_000_000;
+        if let Some(keyboard) = self.shell.seat.get_keyboard() {
+            // The ranges a setting is held to fit both.
+            let (rate, delay) = (settings.repeat_rate as i32, settings.repeat_delay_ms as i32);
+            keyboard.change_repeat_info(rate, delay);
+        }
+        self.shell.title_bars = settings.title_bars.clone();
+        self.shell.settle_bars();
+        self.settle();
+    }
+
+    /// The applications the person chose, from a window's menu, to
+    /// give the full title bar or to let share it, each with whether
+    /// it may share, since this was last asked.
+    pub fn chosen(&mut self) -> Vec<(String, bool)> {
+        core::mem::take(&mut self.shell.chosen)
     }
 
     /// The holder of the screens.

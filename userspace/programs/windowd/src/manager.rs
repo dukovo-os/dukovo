@@ -3,7 +3,7 @@
 
 //! What the pointer and the keys do to the windows themselves: moving
 //! and resizing them, their buttons, the window menu and the list of
-//! windows (ADR 0720).
+//! windows (ADR 0721).
 //!
 //! While windowd does any of that, it has a [`Hold`]: the pointer is
 //! over no program's surface, as the programs see it, and for a menu,
@@ -28,6 +28,7 @@ use window_frame::{Button, Edge, Part};
 use crate::keys::Ask;
 use crate::panel::{Panel, Row};
 use crate::pointer::Picture;
+use crate::settings::Settings;
 use crate::shell::{Shell, app_of};
 use crate::titlebar::TitleBar;
 use crate::windows::{Framed, Under};
@@ -130,13 +131,15 @@ struct Click {
 pub struct Manager {
     hold: Hold,
     clicked: Option<Click>,
-    /// How long after a press a second makes a double click.
+    /// How long after a press a second makes a double click
+    /// (windowd.json(5)).
     pub double_click_ns: u64,
 }
 
 impl Default for Manager {
     fn default() -> Manager {
-        Manager { hold: Hold::None, clicked: None, double_click_ns: 500_000_000 }
+        let double_click_ns = u64::from(Settings::default().double_click_ms) * 1_000_000;
+        Manager { hold: Hold::None, clicked: None, double_click_ns }
     }
 }
 
@@ -557,7 +560,7 @@ impl Manager {
                     let lets = shell.title_bars.lets(&app);
                     shell.title_bars.set(&app, !lets);
                     shell.settle_bars();
-                    shell.changed.title_bars = true;
+                    shell.chosen.push((app, !lets));
                 }
                 Some(item @ (Item::Move | Item::Size)) => {
                     let size = item == Item::Size;
