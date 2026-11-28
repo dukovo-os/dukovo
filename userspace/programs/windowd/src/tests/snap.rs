@@ -6,8 +6,8 @@
 
 use display_pattern::pattern;
 use input::abi::{
-    BTN_LEFT, KEY_A, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_LEFTALT, KEY_LEFTMETA, KEY_RIGHT,
-    KEY_SPACE, KEY_UP,
+    BTN_LEFT, KEY_A, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_LEFTALT, KEY_LEFTMETA,
+    KEY_LEFTSHIFT, KEY_RIGHT, KEY_SPACE, KEY_UP,
 };
 use window_frame::panel::{Entry, Mark};
 use window_frame::{Bar, Button, Canvas, Layout, Rect, Shape, Theme};
@@ -148,6 +148,38 @@ fn a_snapped_window_fills_its_zone_of_a_screen_that_changes() {
     let (left, top) = ((256 + within.0) as u32 * 2, within.1 as u32 * 2);
     assert_eq!(world.colour(left, top), pattern::colour(7, 0, 0));
     assert_eq!(world.colour(left + 1, top + 1), pattern::colour(7, 0, 0));
+}
+
+#[test]
+fn a_snapped_window_s_line_and_shadow_stay_off_the_screen_beside_it() {
+    let mut world = World::new(&[Some((1024, 768)), Some((800, 600))], false);
+    let program = world.program();
+    world.show(&program, (320, 200), 5);
+    // The right side of the first screen: the frame ends at the
+    // screen's last column, and the line around it would be on the
+    // second screen's first.
+    let size = arrow(&mut world, &program, KEY_RIGHT, 6);
+    fills(&mut world, ((512, 0), (512, 768)), size, 6);
+    for y in [0, 300, 599] {
+        assert_eq!(pixel(&mut world, 1, (0, y)), BACKGROUND, "row {y}");
+    }
+    // Carried to the second screen it fills that screen's right side,
+    // and nothing of it is left on the first. Carried on, to the
+    // first screen again, it is as it was.
+    let carry = |world: &mut World| {
+        world.key(KEY_LEFTMETA, true);
+        world.key(KEY_LEFTSHIFT, true);
+        world.tap(KEY_RIGHT);
+        world.key(KEY_LEFTSHIFT, false);
+        world.key(KEY_LEFTMETA, false);
+    };
+    carry(&mut world);
+    let (size, _) = world.follow(&program, (320, 200), 7);
+    world.settle();
+    let (asked, within) = inside((400, 600));
+    assert_eq!(size, asked);
+    assert_eq!(pixel(&mut world, 1, (400 + within.0, within.1)), pattern::colour(7, 0, 0));
+    assert_eq!(pixel(&mut world, 0, (1023, 300)), BACKGROUND);
 }
 
 /// The colour a preview's inside shows over the desktop's own.

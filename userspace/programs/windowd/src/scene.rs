@@ -39,6 +39,7 @@ use window_frame::{Colour, Shape, Theme};
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
+use crate::windows::zones::Fills;
 use crate::windows::{Framed, Windows};
 
 render_elements! {
@@ -315,7 +316,11 @@ impl Scene<'_> {
         }
         let theme = self.windows.theme();
         for framed in self.windows.stacked() {
-            window(renderer, framed, onto, theme.content_line, &mut pieces)?;
+            // A window that fills a part of its screen is on that
+            // screen alone: the line and the shadow around its frame
+            // do not fall on the screen beside it.
+            let frame = framed.fills() == Fills::Nothing || framed.frame().overlaps(screen);
+            window(renderer, framed, onto, frame.then_some(theme.content_line), &mut pieces)?;
             if let Some(preview) = self.preview.filter(|preview| *preview.window == framed.window) {
                 preview.pieces(theme, onto, &mut pieces);
             }
@@ -356,13 +361,14 @@ impl Scene<'_> {
     }
 }
 
-/// Adds to `pieces` what `framed` is drawn from on the screen `onto`.
-/// `line` is the colour of the frame's line around a window's content.
+/// Adds to `pieces` what `framed` is drawn from on the screen `onto`:
+/// its popups, its own pixels, and its frame if `line` is the colour
+/// of the frame's line around a window's content.
 fn window(
     renderer: &mut PixmanRenderer,
     framed: &Framed,
     onto: Onto,
-    line: Colour,
+    line: Option<Colour>,
     pieces: &mut Vec<Piece>,
 ) -> Result<(), PixmanError> {
     let Some(surface) = framed.window.wl_surface() else { return Ok(()) };
@@ -378,7 +384,7 @@ fn window(
             Kind::Unspecified,
         ));
     }
-    for strip in framed.strips() {
+    for strip in framed.strips().iter().filter(|_| line.is_some()) {
         let at = framed.at() + Point::from((strip.rect.x, strip.rect.y));
         let own = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -411,7 +417,10 @@ fn window(
             solid(Colour::BLACK),
             Kind::Unspecified,
         )));
-    } else if onto.zoom.fract() != 0.0 && framed.layout().bar_rows() > 0 {
+    } else if let Some(line) = line
+        && onto.zoom.fract() != 0.0
+        && framed.layout().bar_rows() > 0
+    {
         let (id, ground) = framed.ground();
         pieces.push(Piece::Solid(SolidColorRenderElement::new(
             id.clone(),

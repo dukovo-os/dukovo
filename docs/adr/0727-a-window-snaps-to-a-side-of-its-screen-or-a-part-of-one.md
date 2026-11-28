@@ -72,6 +72,12 @@ parts meet, are the screen's splits.
 - **A snapped window follows its screen.** When the screen's area
   changes it fills the same zone of the new area, and carried to
   another screen it fills that zone there (ADR 0725).
+- **A window that fills a part of its screen is on that screen
+  alone.** The line and the shadow around a frame fall outside it. For
+  a snapped window whose zone ends at the screen's edge they would
+  show as a stray line along the edge of the screen beside it, so that
+  screen draws nothing of the window's frame. A window that fills
+  nothing lies on the desktop wherever it is put, across screens too.
 
 ## Alternatives
 
