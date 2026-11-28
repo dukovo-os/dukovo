@@ -1132,6 +1132,55 @@ static void busy_while_shared(void) {
 	CHECK(unlink(path) == 0 && unlink("/tmp/files-busy-2") == 0);
 }
 
+// A fault on a file's kept pages maps those around it that are kept
+// already, of the aligned run of 16 that holds it (ADR 0799), as Linux
+// maps a program's pages from its page cache: a second mapping of a file
+// no one may write, read through, takes a fault for each run rather than
+// for each page. The last page, which the file fills only in part, is not
+// kept, and reads as the file's bytes and then zeros; and a page made
+// writable is copied at its first write, leaving the file and the first
+// mapping as they were.
+static void kept_around(void) {
+	enum { PAGE = 4096, PAGES = 64, TAIL = 100, SIZE = PAGES * PAGE + TAIL, LENGTH = (PAGES + 1) * PAGE };
+	static char pattern[SIZE];
+	for(int i = 0; i < SIZE; i++)
+		pattern[i] = (char)(i % 251);
+	const char *path = "/tmp/files-around";
+	int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd >= 0 && write(fd, pattern, SIZE) == SIZE);
+	CHECK(fchmod(fd, 0555) == 0 && close(fd) == 0);
+	fd = open(path, O_RDONLY);
+	CHECK(fd >= 0);
+	// The first mapping makes and keeps each whole page.
+	char *first = mmap(NULL, LENGTH, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(first != MAP_FAILED && !memcmp(first, pattern, SIZE));
+	char *second = mmap(NULL, LENGTH, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(second != MAP_FAILED);
+	long before = check_page_faults();
+	int sum = 0, expected = 0;
+	for(int i = 0; i <= PAGES; i++)
+		sum += second[i * PAGE];
+	long faults = check_page_faults() - before;
+	for(int i = 0; i <= PAGES; i++)
+		expected += pattern[i * PAGE];
+	// Four runs of 16, or five where the mapping starts inside one; the
+	// tail on its own; one more for the status file's read at most.
+	CHECK(before >= 0 && faults >= PAGES / 16 && faults <= PAGES / 16 + 3);
+	CHECK(sum == expected && !memcmp(second, pattern, SIZE));
+	int zeros = 1;
+	for(int i = SIZE; i < LENGTH; i++)
+		zeros &= second[i] == 0;
+	CHECK(zeros);
+	CHECK(mprotect(second + 3 * PAGE, PAGE, PROT_READ | PROT_WRITE) == 0);
+	second[3 * PAGE] = (char)~pattern[3 * PAGE];
+	CHECK(first[3 * PAGE] == pattern[3 * PAGE]);
+	char byte = 0;
+	CHECK(pread(fd, &byte, 1, 3 * PAGE) == 1 && byte == pattern[3 * PAGE]);
+	CHECK(!memcmp(second + 4 * PAGE, pattern + 4 * PAGE, PAGE));
+	CHECK(munmap(first, LENGTH) == 0 && munmap(second, LENGTH) == 0);
+	CHECK(close(fd) == 0 && unlink(path) == 0);
+}
+
 // A tmpfs charges a file by the pages it holds, as Linux's does: a byte
 // written far past the end costs one page and the hole before it none, so
 // a sparse file longer than the limit of /tmp fits (CPython's test_io
@@ -1924,6 +1973,7 @@ int main(void) {
 	RUN(path_forms);
 	RUN(mapped);
 	RUN(busy_while_shared);
+	RUN(kept_around);
 	RUN(tmpfs_space);
 	RUN(large_folder);
 	RUN(folder_names);

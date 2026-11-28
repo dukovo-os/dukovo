@@ -995,6 +995,28 @@ impl UserMode for Arch {
         space.space().set(virt, phys, access.map(space::access), upgrade)
     }
 
+    fn empty_pages(space: &Self::Space, start: u64, count: u32) -> u64 {
+        assert!(
+            (user::USER_START..user::USER_TOP).contains(&start),
+            "{start:#x} is outside the user half"
+        );
+        space.space().empty(start, count)
+    }
+
+    fn fill_pages(
+        space: &Self::Space,
+        start: u64,
+        frames: &[u64],
+        pages: u64,
+        access: UserAccess,
+    ) -> u64 {
+        assert!(
+            (user::USER_START..user::USER_TOP).contains(&start),
+            "{start:#x} is outside the user half"
+        );
+        space.space().fill(start, frames, pages, space::access(access))
+    }
+
     fn edit_pages(
         space: &Self::Space,
         start: u64,

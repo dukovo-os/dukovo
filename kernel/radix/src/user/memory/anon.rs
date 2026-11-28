@@ -106,6 +106,11 @@ pub struct Anon {
     pub segment: Option<crate::fs::shm::Attachment>,
 }
 
+/// How many pages a fault maps at most, of those around its own that are
+/// there already: an aligned run of 64 KiB, as Linux's
+/// `fault_around_bytes` (ADR 0799).
+const AROUND: u64 = 16;
+
 /// How many pages a chunk of a [`SharedPages`] or a
 /// [`ProgramPages`](super::program::ProgramPages) holds the frames of.
 pub(super) const CHUNK: u64 = 512;
@@ -322,6 +327,36 @@ impl SharedPages {
         Some(phys)
     }
 
+    /// [`peek`](Self::peek) at page `first + i` for each bit `i` of
+    /// `pages`, with the chunks locked once: puts the frame of each that
+    /// has been made in `frames[i]`, counted as shared once more for the
+    /// caller, and returns the bits of those. How a fault maps the pages
+    /// around it that are there already.
+    pub(super) fn peek_run(&self, first: u64, pages: u64, frames: &mut [u64]) -> u64 {
+        let chunks = self.chunks.lock();
+        let end = self.end.load(Ordering::Relaxed);
+        let mut found = 0;
+        for (bit, frame) in frames.iter_mut().enumerate().filter(|&(bit, _)| pages & 1 << bit != 0)
+        {
+            let index = first + bit as u64;
+            if index >= end {
+                break;
+            }
+            let Ok(at) = chunks.binary_search_by_key(&(index / CHUNK), |&(n, _)| n) else {
+                continue;
+            };
+            let phys = chunks[at].1[(index % CHUNK) as usize];
+            if phys != 0
+                && let Some(info) = FRAMES.info(phys)
+            {
+                info.share();
+                *frame = phys;
+                found |= 1 << bit;
+            }
+        }
+        found
+    }
+
     /// Lets it have `end` pages, more than it may now: a memory file grew.
     pub fn grow(&self, end: u64) {
         let _chunks = self.chunks.lock();
@@ -415,12 +450,28 @@ impl FileSource {
     /// whole page of the file, which cannot change, in a region whose
     /// `access` lets no one write it.
     fn kept_page(&self, from: u64, access: UserAccess) -> Option<(&ProgramRef, u64)> {
-        let pages = self.kept.as_ref().filter(|pages| pages.usable(&self.node))?;
+        let pages = self.kept_for(access)?;
         let at = self.base.checked_add(from)?;
-        (access != UserAccess::ReadWrite
-            && self.size.saturating_sub(from) >= PAGE_SIZE
-            && at.is_multiple_of(PAGE_SIZE))
-        .then_some((pages, at / PAGE_SIZE))
+        (self.size.saturating_sub(from) >= PAGE_SIZE && at.is_multiple_of(PAGE_SIZE))
+            .then_some((pages, at / PAGE_SIZE))
+    }
+
+    /// The pages kept of the file, if a region whose `access` lets no one
+    /// write it may share them: the file cannot change.
+    fn kept_for(&self, access: UserAccess) -> Option<&ProgramRef> {
+        if access == UserAccess::ReadWrite {
+            return None;
+        }
+        self.kept.as_ref().filter(|pages| pages.usable(&self.node))
+    }
+
+    /// [`ProgramPages::take_run`](super::program::ProgramPages::take_run)
+    /// for page `first + i` of the source, for each bit `i` of `pages`, in
+    /// `kept`: only the pages the file fills whole are kept.
+    fn take_kept_run(&self, kept: &ProgramRef, first: u64, pages: u64, frames: &mut [u64]) -> u64 {
+        let whole = (self.size / PAGE_SIZE).saturating_sub(first);
+        let pages = pages & if whole >= 64 { u64::MAX } else { (1 << whole) - 1 };
+        kept.take_run(self.base / PAGE_SIZE + first, pages, frames)
     }
 }
 
@@ -930,7 +981,13 @@ impl SpaceObject {
             }
             None => {
                 if let Some(pages) = &anon.shared {
-                    return self.map_shared(pages, region, page, access);
+                    let fault = self.map_shared(pages, region, page, access);
+                    if fault == Fault::Resolved && !write {
+                        self.map_around(region, page, access, |first, wanted, frames| {
+                            pages.peek_run(first, wanted, frames)
+                        });
+                    }
+                    return fault;
                 }
                 if self.swapped.load(Ordering::Relaxed) > 0
                     && let Some(slot) = Arch::swapped(&self.arch, page)
@@ -946,8 +1003,59 @@ impl SpaceObject {
                     self.uncharge(1);
                     return Fault::NoMemory;
                 }
+                if let Some(file) = &anon.file
+                    && let Some(kept) = file.kept_for(access)
+                {
+                    self.map_around(region, page, access, |first, wanted, frames| {
+                        file.take_kept_run(kept, first, wanted, frames)
+                    });
+                }
                 Fault::Resolved
             }
+        }
+    }
+
+    /// Maps the pages around `page` of `region`, which a fault that did
+    /// not write just mapped, that are there already and that the space
+    /// does not hold yet, with `access`: those of the aligned run of
+    /// [`AROUND`] pages that holds it, within the region (ADR 0799). A
+    /// program that reads a shared mapping or runs a program's code then
+    /// takes a fault for every run of them rather than for every page, as
+    /// on Linux. `find(first, pages, frames)` finds them, page `first + i`
+    /// of the region's source for each bit `i` of `pages`, as
+    /// [`SharedPages::peek_run`] does. Each page mapped is charged to the
+    /// space; none is mapped if its domain has no room for them.
+    fn map_around(
+        &self,
+        region: &Region,
+        page: u64,
+        access: UserAccess,
+        find: impl FnOnce(u64, u64, &mut [u64]) -> u64,
+    ) {
+        let run = AROUND * PAGE_SIZE;
+        let start = (page & !(run - 1)).max(region.start);
+        let end = ((page & !(run - 1)) + run).min(region.end());
+        // At most AROUND pages.
+        let count = ((end - start) / PAGE_SIZE) as u32;
+        let empty = Arch::empty_pages(&self.arch, start, count);
+        if empty == 0 {
+            return;
+        }
+        let mut frames = [0; AROUND as usize];
+        let frames = &mut frames[..count as usize];
+        let found = find(region.offset + (start - region.start) / PAGE_SIZE, empty, frames);
+        if found == 0 {
+            return;
+        }
+        let charged = self.charge(u64::from(found.count_ones())).is_ok();
+        let mapped =
+            if charged { Arch::fill_pages(&self.arch, start, frames, found, access) } else { 0 };
+        let left = found & !mapped;
+        for (_, &phys) in frames.iter().enumerate().filter(|&(bit, _)| left & 1 << bit != 0) {
+            unshare(phys);
+        }
+        if charged {
+            self.uncharge(u64::from(left.count_ones()));
         }
     }
 
