@@ -81,10 +81,12 @@ one on its way to it. Its threads are what wakes a thread here.
 
 ## Consequences
 
-- On the same machine the two CPUs poll for 63 to 66 µs a frame, and the
-  host runs 743 to 749 µs for it. The frame's row goes from 1.50 and
-  1.52 times Linux's to 1.22 and 1.33, and a step of a resize from 1.08
-  and 1.11 to 1.00 and 1.02.
+- On the same machine the two CPUs poll for 92 to 94 µs a frame where
+  they polled for 259 to 291 µs, and 2.3 polls a frame end in a wake-up.
+  With this and the changes beside it (ADRs 0812, 0814 and 0815) the
+  host runs 684 and 717 µs for the frame in two runs: the frame's row is
+  1.24 and 1.41 times Linux's, from 1.44 and 1.58, and a step of a
+  resize 0.90 and 0.97 times, from 1.13 and 1.35.
 - A wake-up that an interrupt handler on an otherwise idle CPU sends to
   another idle CPU finds it halted where it found it polling: a disk's
   completion that wakes a thread on another CPU pays the interrupt. The
@@ -94,4 +96,5 @@ one on its way to it. Its threads are what wakes a thread here.
   does not yet tell a wake-up that comes in microseconds from one that
   comes when the other CPU's work is done.
 - The loop reads one more cache line each time round, another CPU's
-  load, which that CPU writes only as its count of threads changes.
+  request word, idle flag and load, which that CPU writes as its count
+  of threads changes and as its idle periods begin and end.
