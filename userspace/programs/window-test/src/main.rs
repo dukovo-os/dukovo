@@ -34,7 +34,6 @@
 mod cost;
 mod panes;
 mod screens;
-mod tally;
 mod windows;
 
 use std::path::Path;
