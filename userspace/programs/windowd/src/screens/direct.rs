@@ -44,6 +44,8 @@ const KEPT: usize = 8;
 /// A buffer that is all a screen shows, pixel for pixel.
 #[derive(Debug)]
 pub struct Fit {
+    /// The surface the buffer is of.
+    pub surface: WlSurface,
     /// The buffer. While this is kept, the buffer is not given back to
     /// its program.
     pub buffer: Buffer,
@@ -103,6 +105,7 @@ pub fn fit(
             rect.intersection(screen)
         });
         Some(Fit {
+            surface: surface.clone(),
             buffer: buffer.clone(),
             source: Source { offset: u64::try_from(data.offset).ok()?, size, row_bytes },
             commit: state.current_commit(),

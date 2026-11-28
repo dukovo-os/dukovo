@@ -18,7 +18,7 @@ use crate::screens::BACKGROUND;
 
 /// Shows a window of `program` and has it fill the first screen, of
 /// 1024 by 768, with the pattern of `seed`.
-fn fills(world: &mut World, program: &Program, seed: u32) {
+pub(super) fn fills(world: &mut World, program: &Program, seed: u32) {
     world.show(program, (320, 200), 5);
     assert_eq!(asks(world, program, true, None), (1024, 768));
     world.show(program, (1024, 768), seed);

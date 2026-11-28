@@ -90,6 +90,12 @@ pub struct FakeCard {
     pub asked: Cell<u32>,
     /// Whether the card takes no picture of a program's own pixels.
     pub takes_none: Cell<bool>,
+    /// How many changes were asked for that were to show at once, and
+    /// not at a beat.
+    pub at_once: Cell<u32>,
+    /// Whether the card's device has stopped answering: nothing it is
+    /// asked to show shows.
+    pub fails: Cell<bool>,
 }
 
 /// A picture of a program's own pixels.
@@ -132,6 +138,9 @@ impl frame::Card<Pixels> for Rc<FakeCard> {
     }
 
     fn show(&self, frame: &Frame<'_, Pixels>, change: &Change<'_>) -> Result<(), Failed> {
+        if self.fails.get() {
+            return Err(Failed);
+        }
         self.showed.borrow_mut().push(Showed {
             pipe: frame.pipe,
             mode: change.mode,
@@ -328,7 +337,11 @@ impl FakeKernel {
             }
             CHANGE => {
                 let asked = kernel::ChangeRequest::read(buffer).ok_or_else(invalid)?;
-                match self.layer.change(me, Asked::of(&asked), &asked) {
+                let how = Asked::of(&asked);
+                if how.now && !how.check_only {
+                    self.card.1.at_once.set(self.card.1.at_once.get() + 1);
+                }
+                match self.layer.change(me, how, &asked) {
                     Ok(Made::Done) => Ok(0),
                     Ok(Made::Wait(seq)) => {
                         self.wait_shown(seq);

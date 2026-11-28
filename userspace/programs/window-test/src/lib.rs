@@ -17,7 +17,7 @@ mod bar;
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use display_pattern::pattern;
 use sysapi::memory::MemoryFile;
+use wayland_client::backend::WaylandError;
 use wayland_client::protocol::{
     wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region,
     wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
@@ -35,6 +36,10 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 };
 use wayland_protocols::wp::input_timestamps::zv1::client::{
     zwp_input_timestamps_manager_v1, zwp_input_timestamps_v1,
+};
+use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
+use wayland_protocols::wp::tearing_control::v1::client::{
+    wp_tearing_control_manager_v1, wp_tearing_control_v1,
 };
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::decoration::zv1::client::{
@@ -111,6 +116,22 @@ pub enum Heard {
     /// The window server asked for the window to be drawn full screen,
     /// or no longer. The size to draw it at follows ([`Heard::Size`]).
     Full(bool),
+    /// A commit the program asked about ([`Client::ask_shown`]) showed
+    /// on a screen.
+    Shown {
+        /// The time from one beat of the screen to the next, in
+        /// nanoseconds, or 0 if the screen has no steady beat.
+        beat_ns: u32,
+        /// The number of the beat it showed at.
+        beat: u64,
+        /// Whether it showed at a beat, and not at once.
+        at_beat: bool,
+        /// Whether the screen showed the program's pixels from where
+        /// the program drew them.
+        from_own: bool,
+    },
+    /// A commit the program asked about never showed.
+    NotShown,
     /// The popup is done: the person went elsewhere.
     PopupDone,
     /// The window server said who draws the window's frame: itself, or
@@ -185,6 +206,8 @@ struct Told {
     times: Option<zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1>,
     viewporter: Option<wp_viewporter::WpViewporter>,
     fractions: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    presentation: Option<wp_presentation::WpPresentation>,
+    tearing: Option<wp_tearing_control_manager_v1::WpTearingControlManagerV1>,
     /// The whole zoom each surface was last told to draw at
     /// (`wl_surface.preferred_buffer_scale`).
     zooms: Vec<(wl_surface::WlSurface, i32)>,
@@ -253,6 +276,9 @@ struct Window {
     /// The object the program says with which part of its buffer
     /// shows, at which size.
     view: Option<wp_viewport::WpViewport>,
+    /// The object the program says with that the window's frames need
+    /// not wait for the screen's beat.
+    tearing: Option<wp_tearing_control_v1::WpTearingControlV1>,
 }
 
 /// How a buffer's pixels are a window's points.
@@ -290,6 +316,9 @@ pub struct Client {
     /// whether the window says it hides everything under it all the
     /// same.
     covers: Option<bool>,
+    /// Whether the program asks, with the window's next commit, to be
+    /// told when that shows.
+    asks_shown: bool,
 }
 
 impl Client {
@@ -335,7 +364,8 @@ impl Client {
         }
         let connection = connection.clone();
         let (window, popup, pointer_shown) = (None, None, None);
-        Ok(Client { connection, queue, told, window, popup, pointer_shown, covers: None })
+        let (covers, asks_shown) = (None, false);
+        Ok(Client { connection, queue, told, window, popup, pointer_shown, covers, asks_shown })
     }
 
     /// The screens.
@@ -387,7 +417,14 @@ impl Client {
         if let Some(reading) = self.queue.prepare_read() {
             let came = sysapi::poll::wait_readable(reading.connection_fd(), patience);
             if came.map_err(|err| gone(&err))? {
-                reading.read().map_err(|err| gone(&err))?;
+                match reading.read() {
+                    Ok(_) => {}
+                    // All that came was for the connection itself, as
+                    // that an object's number is free again: nothing
+                    // for the program, which is not the server gone.
+                    Err(WaylandError::Io(err)) if err.kind() == ErrorKind::WouldBlock => {}
+                    Err(err) => return Err(gone(&err)),
+                }
             }
         }
         self.queue.dispatch_pending(&mut self.told).map_err(|err| gone(&err))?;
@@ -431,6 +468,7 @@ impl Client {
             spare: None,
             _fraction: fraction,
             view: None,
+            tearing: None,
         };
         self.window = Some(window);
         if how.shares_bar {
@@ -509,6 +547,68 @@ impl Client {
         region.destroy();
     }
 
+    /// With the window's next commit, the program asks to be told when
+    /// that commit shows ([`Heard::Shown`]) or that it never did
+    /// ([`Heard::NotShown`]).
+    pub fn ask_shown(&mut self) {
+        self.asks_shown = true;
+    }
+
+    /// Asks about the commit of `surface` that comes next, if
+    /// [`Client::ask_shown`] said to.
+    fn ask_about(&mut self, surface: &wl_surface::WlSurface) -> Outcome {
+        if !core::mem::take(&mut self.asks_shown) {
+            return Ok(());
+        }
+        let Some(presentation) = &self.told.presentation else {
+            return Err("the window server offers no wp_presentation".into());
+        };
+        presentation.feedback(surface, &self.queue.handle(), ());
+        Ok(())
+    }
+
+    /// Says that the window's frames need not wait for the screen's
+    /// beat, if `at_once`, or that they do again. It holds from the
+    /// window's next commit on.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, or the window server does not offer
+    /// `wp_tearing_control_manager_v1`.
+    pub fn tear(&mut self, at_once: bool) -> Outcome {
+        use wp_tearing_control_v1::PresentationHint;
+        let handle = self.queue.handle();
+        let Some(tearing) = &self.told.tearing else {
+            return Err("the window server offers no wp_tearing_control_manager_v1".into());
+        };
+        let Some(window) = &mut self.window else { return Err("no window".into()) };
+        let control = window
+            .tearing
+            .get_or_insert_with(|| tearing.get_tearing_control(&window.surface, &handle, ()));
+        control.set_presentation_hint(if at_once {
+            PresentationHint::Async
+        } else {
+            PresentationHint::Vsync
+        });
+        Ok(())
+    }
+
+    /// Asks for a second object to say the same with, which a window
+    /// may not have: the window server refuses it, and the program is
+    /// disconnected.
+    ///
+    /// # Errors
+    ///
+    /// When the window server refuses, as it should.
+    pub fn tear_again(&mut self) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(tearing), Some(window)) = (&self.told.tearing, &self.window) else {
+            return Err("no window, or no wp_tearing_control_manager_v1".into());
+        };
+        let _second = tearing.get_tearing_control(&window.surface, &handle, ());
+        self.sent()
+    }
+
     /// The zoom the window was last told to draw at: the whole number
     /// (`wl_surface.preferred_buffer_scale`) and the 120ths
     /// (`wp_fractional_scale_v1`), each if it was told.
@@ -542,6 +642,9 @@ impl Client {
         let shown = self.buffer((width, height), pixels)?;
         if let (Some(window), None) = (&self.window, drawn) {
             self.say_cover(&window.surface, (width, height));
+        }
+        if let Some(surface) = self.window.as_ref().map(|window| window.surface.clone()) {
+            self.ask_about(&surface)?;
         }
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
@@ -599,6 +702,9 @@ impl Client {
             }
             None => self.buffer((width, height), &pixels)?,
         };
+        if let Some(surface) = self.window.as_ref().map(|window| window.surface.clone()) {
+            self.ask_about(&surface)?;
+        }
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         window.surface.attach(Some(&spare.0), 0, 0);
         window.surface.damage_buffer(0, 0, width as i32, height as i32);
@@ -939,6 +1045,9 @@ impl Client {
     /// When no window shows, or the window server is gone.
     pub fn ask_frame(&mut self) -> Outcome {
         let handle = self.queue.handle();
+        if let Some(surface) = self.window.as_ref().map(|window| window.surface.clone()) {
+            self.ask_about(&surface)?;
+        }
         let Some(window) = &self.window else { return Err("no window".into()) };
         window.surface.frame(&handle, ());
         window.surface.commit();
@@ -1180,6 +1289,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                     told.times = Some(registry.bind(name, 1, handle, ()));
                 }
                 "wp_viewporter" => told.viewporter = Some(registry.bind(name, 1, handle, ())),
+                "wp_presentation" => told.presentation = Some(registry.bind(name, 1, handle, ())),
+                "wp_tearing_control_manager_v1" => {
+                    told.tearing = Some(registry.bind(name, 1, handle, ()));
+                }
                 "wp_fractional_scale_manager_v1" => {
                     told.fractions = Some(registry.bind(name, 1, handle, ()));
                 }
@@ -1430,6 +1543,33 @@ impl Dispatch<wl_callback::WlCallback, ()> for Told {
     }
 }
 
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _feedback: &wp_presentation_feedback::WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        use wp_presentation_feedback::{Event, Kind};
+        match event {
+            Event::Presented { refresh, seq_hi, seq_lo, flags, .. } => {
+                let flags = flags.into_result().unwrap_or(Kind::empty());
+                told.heard.push_back(Heard::Shown {
+                    beat_ns: refresh,
+                    beat: u64::from(seq_hi) << 32 | u64::from(seq_lo),
+                    at_beat: flags.contains(Kind::Vsync),
+                    from_own: flags.contains(Kind::ZeroCopy),
+                });
+            }
+            Event::Discarded => told.heard.push_back(Heard::NotShown),
+            // Which screen it showed on.
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<wl_buffer::WlBuffer, ()> for Told {
     fn event(
         told: &mut Told,
@@ -1463,6 +1603,9 @@ impl Dispatch<zwp_input_timestamps_v1::ZwpInputTimestampsV1, ()> for Told {
 
 delegate_noop!(Told: wl_compositor::WlCompositor);
 delegate_noop!(Told: wl_region::WlRegion);
+delegate_noop!(Told: ignore wp_presentation::WpPresentation);
+delegate_noop!(Told: wp_tearing_control_manager_v1::WpTearingControlManagerV1);
+delegate_noop!(Told: wp_tearing_control_v1::WpTearingControlV1);
 delegate_noop!(Told: xdg_positioner::XdgPositioner);
 delegate_noop!(Told: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Told: zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1);

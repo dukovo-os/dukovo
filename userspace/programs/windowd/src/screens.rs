@@ -26,6 +26,7 @@
 //! still waits (`NEWEST_WINS`).
 
 mod direct;
+mod feedback;
 pub mod layout;
 pub mod pace;
 
@@ -34,7 +35,7 @@ use std::io;
 use display::abi::{
     CARD_SHARED_PAGES, DisplayEvent, EVENT_BACK, EVENT_BEAT, EVENT_FAILED, EVENT_FRONT,
     EVENT_OVERFLOW, EVENT_SCREEN, EVENT_SHOWN, FORMAT_ARGB8888, FORMAT_XRGB8888, NEWEST_WINS,
-    NO_WAIT, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PICTURE, PLANE_PIPE, PLANE_POINTER,
+    NO_WAIT, NOW, PLANE_CHANGED, PLANE_HOT_SPOT, PLANE_PICTURE, PLANE_PIPE, PLANE_POINTER,
 };
 use display::outputs::{self, Found};
 use display::wire::{self, ChangeBytes};
@@ -44,6 +45,7 @@ use smithay::backend::renderer::pixman::{PixmanError, PixmanRenderer};
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer, TextureFilter};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
@@ -54,7 +56,9 @@ use crate::pointer::{self, Arrows, SIDE, Shown};
 use crate::scene::Scene;
 use crate::settings::screens::{ScreensSet, Turn, Zoom};
 use crate::shell::Shell;
+use crate::tearing;
 use direct::{Direct, Fit};
+use feedback::Waiting;
 use pace::Pace;
 
 /// The colour of the desktop where no window is, a dark blue grey: red,
@@ -183,6 +187,12 @@ struct Screen<L: Link> {
     pointer: Option<PointerPlane<L>>,
     /// What it shows straight from a program's memory.
     direct: Direct,
+    /// Whether the change that was asked for last was to show at once,
+    /// and not at a beat.
+    at_once: bool,
+    /// What the programs asked to be told of the frames that have not
+    /// shown yet.
+    waiting: Waiting,
 }
 
 /// Where the pointer is and what it shows, for the screens' frames.
@@ -373,7 +383,8 @@ where
         let scene = Scene { windows: &shell.windows, over: None, preview: None };
         self.first_frames(renderer, &scene)?;
         // The change above stopped showing them.
-        for gone in before {
+        for mut gone in before {
+            gone.waiting.discard();
             let pointer = gone.pointer.iter().flat_map(|pointer| pointer.pictures.numbers());
             let own = gone.pictures.numbers().chain(pointer).chain(gone.direct.numbers());
             for number in own.chain([gone.mode_value]) {
@@ -496,6 +507,8 @@ where
             pace: Pace::default(),
             pointer,
             direct: Direct::default(),
+            at_once: false,
+            waiting: Waiting::default(),
         })
     }
 
@@ -546,10 +559,18 @@ where
         match event.kind {
             EVENT_SHOWN | EVENT_BEAT => {
                 let Some(screen) = self.of_pipe(pipe) else { return Told::Nothing };
-                if event.kind == EVENT_SHOWN {
-                    screen.direct.shown(event.cookie);
+                let change = (event.kind == EVENT_SHOWN).then_some(event.cookie);
+                if let Some(cookie) = change {
+                    screen.direct.shown(cookie);
                 }
-                screen.pace.shown(event.deadline_ns);
+                let (time, beat) = (event.time_ns, event.count);
+                screen.waiting.shown(&screen.output, &screen.on.mode, change, time, beat);
+                if core::mem::take(&mut screen.at_once) {
+                    // The next frame waits for no beat either.
+                    screen.pace.reset();
+                } else {
+                    screen.pace.shown(event.deadline_ns);
+                }
                 Told::Shown(screen.output.clone(), event.time_ns)
             }
             EVENT_FAILED => {
@@ -560,7 +581,10 @@ where
             }
             EVENT_BACK => {
                 self.front = false;
-                self.shown.iter_mut().for_each(|screen| screen.pace.reset());
+                for screen in &mut self.shown {
+                    screen.pace.reset();
+                    screen.waiting.discard();
+                }
                 Told::Nothing
             }
             EVENT_FRONT => {
@@ -738,6 +762,7 @@ where
     fn lost(&mut self) {
         self.pictures.forget();
         self.direct.lost();
+        self.waiting.discard();
         self.pace.reset();
         self.pace.stale();
         if let Some(pointer) = &mut self.pointer {
@@ -807,7 +832,8 @@ where
     /// without waiting. When all the screen shows is one buffer of a
     /// program's that the card shows from where it is, nothing is
     /// drawn: the layer is asked to show that buffer's picture
-    /// ([`direct`]). A frame in which nothing changed is not shown;
+    /// ([`direct`]), at once if the program said its frames need not
+    /// wait ([`tearing`]). A frame in which nothing changed is not shown;
     /// the beat alone is asked for if a program on the screen waits to
     /// hear of one. Returns whether the pointer's picture is another.
     fn frame(
@@ -820,11 +846,14 @@ where
         cookie: u64,
     ) -> Result<bool, Failed> {
         let started = monotonic_ns();
+        let mut straight = self.straight(holder, shell, scene);
+        let lone = straight.as_ref().map(|(_, fit)| fit.surface.clone());
+        let at_once = lone.as_ref().is_some_and(tearing::at_once);
         // A frame that still waits for its beat is one the screen was
         // lost sight of after: this one, drawn whole, takes its place,
         // so that busy says only that the desktop is not in front.
-        let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS, cookie);
-        let mut straight = self.straight(holder, shell, scene);
+        let when = if at_once { NOW } else { 0 };
+        let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS | when, cookie);
         // Whether the frame is one of windowd's own after a program's.
         let back = straight.is_none() && self.direct.shows();
         let mut drew = false;
@@ -850,6 +879,8 @@ where
         }
         let main = !change.is_empty();
         let pointer = self.point(renderer, pointing, &mut change)?;
+        // A beat that is only asked for comes when it comes.
+        let at_once = at_once && !change.is_empty();
         if change.is_empty() {
             if !shell.owes_frame(&self.output) {
                 self.pace.unchanged();
@@ -859,6 +890,12 @@ where
         } else {
             holder.change(&mut change).map_err(unmade)?;
         }
+        self.at_once = at_once;
+        let mut kind = Kind::empty();
+        kind.set(Kind::ZeroCopy, lone.is_some());
+        kind.set(Kind::Vsync, !at_once);
+        let asked = shell.feedback(&self.output, lone.as_ref());
+        self.waiting.handed(cookie, asked, kind, at_once.then_some(started));
         if drew {
             self.pictures.drew();
         }

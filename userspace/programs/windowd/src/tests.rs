@@ -7,6 +7,7 @@
 
 mod desks;
 mod direct;
+mod feedback;
 mod full;
 mod laid;
 mod managed;

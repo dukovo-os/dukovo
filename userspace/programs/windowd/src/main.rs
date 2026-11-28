@@ -31,6 +31,7 @@ mod shell;
 mod shm;
 mod socket;
 mod stamps;
+mod tearing;
 mod titlebar;
 mod windows;
 

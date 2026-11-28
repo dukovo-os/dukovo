@@ -41,7 +41,7 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
-use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::utils::{send_frames_surface_tree, with_surfaces_surface_tree};
 use smithay::desktop::{
     PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
     Window, find_popup_root_surface,
@@ -63,11 +63,14 @@ use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
-    is_sync_subsurface, with_states,
+    CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, SurfaceData,
+    get_parent, is_sync_subsurface, with_states,
 };
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::presentation::{
+    PresentationFeedbackCachedState, PresentationFeedbackCallback, PresentationState,
+};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
@@ -77,8 +80,8 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::{
-    delegate_compositor, delegate_fractional_scale, delegate_output, delegate_seat,
-    delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_fractional_scale, delegate_output, delegate_presentation,
+    delegate_seat, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
 };
 use sysapi::time::monotonic_ns;
 use window_frame::{Bar, Edge};
@@ -88,6 +91,7 @@ use crate::manager::Asked;
 use crate::settings::TitleBars;
 use crate::shm::Files;
 use crate::stamps::Stamps;
+use crate::tearing;
 use crate::titlebar::{self, TitleBar};
 use crate::windows::resize::answered;
 use crate::windows::{Desk, Windows};
@@ -116,6 +120,10 @@ pub struct Shell {
     _decorations: XdgDecorationState,
     _views: ViewporterState,
     _fractions: FractionalScaleManagerState,
+    /// Kept for as long as programs may ask when their frames showed,
+    /// and say that their frames need not wait for a beat.
+    _presentation: PresentationState,
+    _tearing: GlobalId,
     /// Kept for as long as programs may ask for a part of a title bar.
     _title_bars: GlobalId,
     /// Where events of windowd's own protocols are sent from.
@@ -175,6 +183,9 @@ impl Shell {
             _decorations: XdgDecorationState::new::<Shell>(display),
             _views: ViewporterState::new::<Shell>(display),
             _fractions: FractionalScaleManagerState::new::<Shell>(display),
+            // The times are the monotonic clock's, as the layer's are.
+            _presentation: PresentationState::new::<Shell>(display, libc::CLOCK_MONOTONIC as u32),
+            _tearing: tearing::offer(display),
             _title_bars: titlebar::offer(display),
             stamps: Stamps::offer(display),
             files: Files::default(),
@@ -437,16 +448,45 @@ impl Shell {
     }
 
     /// Whether a program with a window on `screen` waits to hear that a
-    /// frame was shown.
+    /// frame was shown, or when.
     pub fn owes_frame(&self, screen: &Output) -> bool {
         self.windows_on(screen).any(|window| {
             let mut owed = false;
             window.with_surfaces(|_, states| {
                 let mut attributes = states.cached_state.get::<SurfaceAttributes>();
                 owed |= !attributes.current().frame_callbacks.is_empty();
+                let mut asked = states.cached_state.get::<PresentationFeedbackCachedState>();
+                owed |= !asked.current().callbacks.is_empty();
             });
             owed
         })
+    }
+
+    /// Takes what the programs asked to be told of when the frame that
+    /// is handed over for `screen` shows: of every surface of the
+    /// windows on it and of the pointer's, or of `only` alone while
+    /// that surface is all the screen shows.
+    pub fn feedback(
+        &self,
+        screen: &Output,
+        only: Option<&WlSurface>,
+    ) -> Vec<PresentationFeedbackCallback> {
+        let mut taken = Vec::new();
+        let mut take = |_: &WlSurface, states: &SurfaceData| {
+            let mut asked = states.cached_state.get::<PresentationFeedbackCachedState>();
+            taken.append(&mut asked.current().callbacks);
+        };
+        if let Some(only) = only {
+            with_surfaces_surface_tree(only, &mut take);
+            return taken;
+        }
+        for window in self.windows_on(screen) {
+            window.with_surfaces(&mut take);
+        }
+        if let CursorImageStatus::Surface(surface) = &self.pointer {
+            with_surfaces_surface_tree(surface, &mut take);
+        }
+        taken
     }
 
     /// A frame showed on `screen` at `time` on the monotonic clock: the
@@ -811,6 +851,7 @@ delegate_seat!(Shell);
 delegate_output!(Shell);
 delegate_xdg_decoration!(Shell);
 delegate_viewporter!(Shell);
+delegate_presentation!(Shell);
 delegate_fractional_scale!(Shell);
 
 impl FractionalScaleHandler for Shell {
