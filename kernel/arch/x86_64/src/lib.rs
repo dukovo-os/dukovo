@@ -1146,6 +1146,14 @@ impl UserMode for Arch {
         user::copy_to_user(dst, src)
     }
 
+    fn copy_user_to_frames(phys: u64, src: u64, len: usize) -> bool {
+        user::copy_user_to_frames(phys, src, len)
+    }
+
+    fn copy_frames_to_user(dst: u64, phys: u64, len: usize) -> bool {
+        user::copy_frames_to_user(dst, phys, len)
+    }
+
     fn new_shared(pages: usize) -> Option<Self::Shared> {
         user::Shared::new(pages)
     }

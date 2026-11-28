@@ -1128,6 +1128,30 @@ pub fn copy_to_user(dst: u64, src: &[u8]) -> bool {
     unsafe { radix_user_copy(dst as *mut u8, src.as_ptr(), src.len()) == 0 }
 }
 
+/// Copies user memory at `src` into RAM at `phys`; see the HAL.
+pub fn copy_user_to_frames(phys: u64, src: u64, len: usize) -> bool {
+    assert!(memory::is_ram(phys..phys + len as u64), "writing {phys:#x}: not RAM");
+    if !user_range(src, len) {
+        return false;
+    }
+    // SAFETY: the destination is RAM (checked above), which the direct map
+    // covers, and the caller holds its frames; the source is in the user
+    // half (checked above), where a fault ends the copy early, as in
+    // `copy_from_user`.
+    unsafe { radix_user_copy(memory::phys_to_virt(phys) as *mut u8, src as *const u8, len) == 0 }
+}
+
+/// Copies RAM at `phys` into user memory at `dst`; see the HAL.
+pub fn copy_frames_to_user(dst: u64, phys: u64, len: usize) -> bool {
+    assert!(memory::is_ram(phys..phys + len as u64), "reading {phys:#x}: not RAM");
+    if !user_range(dst, len) {
+        return false;
+    }
+    // SAFETY: as in `copy_user_to_frames`, the other way round: the RAM is
+    // only read.
+    unsafe { radix_user_copy(dst as *mut u8, memory::phys_to_virt(phys) as *const u8, len) == 0 }
+}
+
 /// Leaves for user mode; see the HAL.
 pub fn enter_user(entry: u64, stack_top: u64, arg: u64) -> ! {
     assert!(entry < USER_TOP && stack_top <= USER_TOP, "entering user mode outside the user half");

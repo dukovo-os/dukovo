@@ -196,9 +196,11 @@ struct CpuSched {
     idle_ns: AtomicU64,
     idle_since: AtomicU64,
     idle_seq: AtomicU64,
-    /// Idle periods that ended while polling, and that halted.
+    /// Idle periods that ended while polling, and that halted, and the
+    /// nanoseconds polled in both.
     polls: AtomicU64,
     halts: AtomicU64,
+    poll_ns: AtomicU64,
     /// Times each idle state was entered, and nanoseconds spent in it
     /// (ADR 0795).
     state_entries: [AtomicU64; idle::MAX_STATES],
@@ -245,6 +247,7 @@ impl CpuSched {
             given: SpinLock::new((Split::new(), 0)),
             polls: AtomicU64::new(0),
             halts: AtomicU64::new(0),
+            poll_ns: AtomicU64::new(0),
             state_entries: [const { AtomicU64::new(0) }; idle::MAX_STATES],
             state_ns: [const { AtomicU64::new(0) }; idle::MAX_STATES],
             balance_failures: [const { AtomicU32::new(0) }; 4],
@@ -2196,7 +2199,10 @@ fn idle_loop(cpu: usize) -> ! {
         }
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
-        if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
+        let limit_ns = haltpoll.limit_ns();
+        // When the poll ended, if a wake-up did not end it.
+        let mut polled_until = None;
+        if poll(slot, started.saturating_add(limit_ns)) {
             bump(&slot.polls, 1);
         } else {
             // The deepest state that pays before the timer, unless recent
@@ -2205,6 +2211,7 @@ fn idle_loop(cpu: usize) -> ! {
             let (states, count) = governed(hal_states);
             let states = &states[..count];
             let halted = Arch::now_ns();
+            polled_until = Some(halted);
             let sleep_ns = Arch::next_interrupt_ns().saturating_sub(halted);
             let state = governor.choose(states, |_| true, u64::MAX, sleep_ns);
             // Only a state that watches the word (MWAIT's) ends on the
@@ -2232,6 +2239,10 @@ fn idle_loop(cpu: usize) -> ! {
             }
         }
         let idle = Arch::now_ns().saturating_sub(started);
+        if limit_ns > 0 {
+            let polled = polled_until.map_or(idle, |until| until.saturating_sub(started));
+            bump(&slot.poll_ns, polled);
+        }
         // A reader on another CPU sees the period under way, or ended,
         // never both or neither (`idle_time`).
         // Only this CPU writes them.
@@ -2426,9 +2437,11 @@ pub struct Counters {
     pub timer_writes: u64,
     /// Interprocessor interrupts sent.
     pub ipis: u64,
-    /// Idle periods that halted, and that a wake-up ended while polling.
+    /// Idle periods that halted, and that a wake-up ended while polling,
+    /// and the nanoseconds idle CPUs polled.
     pub halts: u64,
     pub polls: u64,
+    pub poll_ns: u64,
     /// Nanoseconds TLB shootdowns waited for other CPUs, and the CPUs
     /// they left to the hypervisor instead.
     pub shootdown_wait_ns: u64,
@@ -2447,6 +2460,7 @@ impl Counters {
             ipis: self.ipis.wrapping_sub(earlier.ipis),
             halts: self.halts.wrapping_sub(earlier.halts),
             polls: self.polls.wrapping_sub(earlier.polls),
+            poll_ns: self.poll_ns.wrapping_sub(earlier.poll_ns),
             shootdown_wait_ns: self.shootdown_wait_ns.wrapping_sub(earlier.shootdown_wait_ns),
             shootdowns_left: self.shootdowns_left.wrapping_sub(earlier.shootdowns_left),
         }
@@ -2472,6 +2486,7 @@ pub fn counters() -> Counters {
         total.ipis += Arch::ipis_sent(cpu);
         total.halts += slot.halts.load(Ordering::Relaxed);
         total.polls += slot.polls.load(Ordering::Relaxed);
+        total.poll_ns += slot.poll_ns.load(Ordering::Relaxed);
         let shootdowns = Arch::shootdowns(cpu);
         total.shootdown_wait_ns += shootdowns.wait_ns;
         total.shootdowns_left += shootdowns.left;

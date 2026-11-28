@@ -170,6 +170,15 @@ impl Out for UserOut {
         Ok(())
     }
 
+    fn put_frames(&mut self, at: usize, phys: u64, len: usize) -> Option<radix_vfs::Result<()>> {
+        if at.checked_add(len).is_none_or(|end| end > self.len)
+            || !Arch::copy_frames_to_user(self.address + at as u64, phys, len)
+        {
+            return Some(Err(radix_vfs::Error::BadAddress));
+        }
+        Some(Ok(()))
+    }
+
     fn lend(
         &mut self,
         at: usize,
@@ -215,6 +224,15 @@ impl In for UserIn {
             return Err(radix_vfs::Error::BadAddress);
         }
         Ok(())
+    }
+
+    fn get_frames(&self, at: usize, phys: u64, len: usize) -> Option<radix_vfs::Result<()>> {
+        if at.checked_add(len).is_none_or(|end| end > self.len)
+            || !Arch::copy_user_to_frames(phys, self.address + at as u64, len)
+        {
+            return Some(Err(radix_vfs::Error::BadAddress));
+        }
+        Some(Ok(()))
     }
 
     fn lend(

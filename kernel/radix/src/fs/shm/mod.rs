@@ -624,8 +624,12 @@ impl Node for ShmFile {
     }
 }
 
-/// Copies `len` bytes of RAM from `phys` to `out`, from its byte `at`.
+/// Copies `len` bytes of RAM from `phys` to `out`, from its byte `at`: in
+/// one copy to a program's memory, through the stack to any other.
 fn copy_out(phys: u64, out: &mut dyn Out, at: usize, len: usize) -> Result<()> {
+    if let Some(copied) = out.put_frames(at, phys, len) {
+        return copied;
+    }
     let mut buffer = [0u8; STEP];
     let mut done = 0;
     while done < len {
@@ -637,8 +641,12 @@ fn copy_out(phys: u64, out: &mut dyn Out, at: usize, len: usize) -> Result<()> {
     Ok(())
 }
 
-/// Copies `len` bytes of `data`, from its byte `at`, to RAM at `phys`.
+/// Copies `len` bytes of `data`, from its byte `at`, to RAM at `phys`: in
+/// one copy from a program's memory, through the stack from any other.
 fn copy_in(data: &dyn In, at: usize, phys: u64, len: usize) -> Result<()> {
+    if let Some(copied) = data.get_frames(at, phys, len) {
+        return copied;
+    }
     let mut buffer = [0u8; STEP];
     let mut done = 0;
     while done < len {

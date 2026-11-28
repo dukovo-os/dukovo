@@ -111,6 +111,61 @@ static void objects(void) {
 	CHECK(statvfs("/dev/shm", &vfs) == 0 && vfs.f_blocks > 0);
 }
 
+// A read or a write moves its bytes straight between the program's
+// memory and the object's pages (ADR 0814): from any offset, across any
+// pages, to the byte; a page never written reads as zeros; and memory that
+// is not there gives EFAULT, or what was written before it began.
+static void copies(void) {
+	int fd = shm_open(NAME, O_CREAT | O_EXCL | O_RDWR, 0600);
+	CHECK(fd >= 0);
+	static unsigned char out[3 * PAGE + 123], in[3 * PAGE + 123];
+	for(size_t i = 0; i < sizeof out; i++)
+		out[i] = (unsigned char)(i * 7 + i / PAGE + 1);
+	const off_t at = 2 * PAGE + 1000;
+	CHECK(pwrite(fd, out, sizeof out, at) == (ssize_t)sizeof out);
+	struct stat st;
+	CHECK(fstat(fd, &st) == 0 && st.st_size == at + (off_t)sizeof out);
+	CHECK(pread(fd, in, sizeof in, at) == (ssize_t)sizeof in && !memcmp(in, out, sizeof out));
+	// From inside one page to inside the next but one.
+	memset(in, 0xff, sizeof in);
+	CHECK(pread(fd, in, PAGE + 9, at + PAGE - 5) == PAGE + 9);
+	CHECK(!memcmp(in, out + PAGE - 5, PAGE + 9) && in[PAGE + 9] == 0xff);
+	// Up to the end, and no further.
+	CHECK(pread(fd, in, 2 * PAGE, at + (off_t)sizeof out - 10) == 10);
+	CHECK(!memcmp(in, out + sizeof out - 10, 10));
+	// The pages before the write were never made: zeros, and the bytes
+	// of the first page written that come before it.
+	memset(in, 0xff, sizeof in);
+	CHECK(pread(fd, in, at, 0) == at);
+	int zeros = 1;
+	for(off_t i = 0; i < at; i++)
+		zeros &= in[i] == 0;
+	CHECK(zeros);
+	// One byte over a page's end changes that byte and its neighbour's
+	// page only.
+	CHECK(pwrite(fd, "ab", 2, at + PAGE - 1001) == 2);
+	CHECK(pread(fd, in, 4, at + PAGE - 1002) == 4);
+	CHECK(in[0] == out[PAGE - 1002] && in[1] == 'a' && in[2] == 'b' && in[3] == out[PAGE - 999]);
+	// Memory that ends after a page: the page before the end is written
+	// and read, and the call says so; memory that is not there at all is
+	// EFAULT, and the object keeps its size.
+	unsigned char *two
+	    = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	CHECK(two != MAP_FAILED && munmap(two + PAGE, PAGE) == 0);
+	if(two != MAP_FAILED) {
+		memset(two, 'e', PAGE);
+		CHECK(pwrite(fd, two, 2 * PAGE, 0) == PAGE);
+		CHECK(pread(fd, in, PAGE + 1, 0) == PAGE + 1 && in[0] == 'e' && in[PAGE - 1] == 'e');
+		CHECK(in[PAGE] == 0);
+		CHECK_ERROR(pwrite(fd, two + PAGE, 16, 0), EFAULT);
+		CHECK_ERROR(pread(fd, two + PAGE, 16, 0), EFAULT);
+		CHECK(fstat(fd, &st) == 0 && st.st_size == at + (off_t)sizeof out);
+		CHECK(munmap(two, PAGE) == 0);
+	}
+	close(fd);
+	CHECK(shm_unlink(NAME) == 0);
+}
+
 // A mapping past its object's end gets SIGBUS, on Linux's page rule: the
 // pages the object reaches into can be read, the rest cannot; shrinking
 // an object takes the pages past its new end away from every mapping, and
@@ -545,6 +600,7 @@ static void fault_around(void) {
 int main(void) {
 	check_start("shm");
 	RUN(objects);
+	RUN(copies);
 	RUN(sizes);
 	RUN(rights);
 	RUN(semaphores);

@@ -603,6 +603,14 @@ impl UserMode for Arch {
         false
     }
 
+    fn copy_user_to_frames(_: u64, _: u64, _: usize) -> bool {
+        false
+    }
+
+    fn copy_frames_to_user(_: u64, _: u64, _: usize) -> bool {
+        false
+    }
+
     fn new_shared(_: usize) -> Option<Shared> {
         None
     }

@@ -97,6 +97,11 @@ const KEY_PAUSE: Duration = Duration::from_millis(5);
 /// after its last event, to finish what it was at.
 const SETTLE: Duration = Duration::from_millis(500);
 
+/// How long the machine is left alone before it is watched with nothing
+/// moving: the desktop shows while the last services still start, and
+/// what they run is not the desktop at rest.
+const REST_SETTLE: Duration = Duration::from_secs(3);
+
 /// How long the desktop is watched with nothing moving.
 const IDLE_FOR: Duration = Duration::from_secs(3);
 
@@ -453,7 +458,7 @@ fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, Stri
 
     // The window shows and nothing moves.
     step_said(vm, "cost: ready for a key")?;
-    std::thread::sleep(SETTLE);
+    std::thread::sleep(REST_SETTLE);
     let counted = vm.host_counts();
     let from = Ran::now(cpus)?;
     std::thread::sleep(IDLE_FOR);
