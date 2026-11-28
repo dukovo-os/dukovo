@@ -747,7 +747,10 @@ are not there, as they are not POSIX's. There is no program break:
 blocks of each size up to 4 KiB for its next *malloc*, as glibc's
 tcache does, and, as glibc, ends the process with SIGABRT on a double
 *free* of a block it keeps or on a write to a kept block's link to the
-next. There are no huge pages, and
+next. A block above 32 KiB is a mapping of its own. The last four of
+those that were freed, of up to 16 MiB together, are kept with their
+pages for the next *malloc* of their size or a little less, so *free*
+does not give their memory back at once. There are no huge pages, and
 <sys/mman.h> has no *MAP_HUGETLB*; *mmap* given Linux's number for it
 fails with ENOMEM, or EINVAL for a file, as on Linux when none is
 reserved.
