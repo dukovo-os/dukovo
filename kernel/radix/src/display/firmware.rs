@@ -223,6 +223,9 @@ impl Firmware {
         let source = Source { main, pointer: frame.pointer.as_ref().filter(|_| frame.active) };
         let row_bytes = rect.width as usize * usize::from(self.layout.bytes);
         let at_once = (HOLD_BYTES / row_bytes.max(1)).max(1);
+        static FBDIAG_LOGGED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let fbdiag_whole = rect.width == self.width && rect.height == self.height;
+        let fbdiag_started = <crate::Arch as radix_hal::Timer>::now_ns();
         let mut rows = (rect.y..).take(rect.height as usize).peekable();
         while rows.peek().is_some() {
             let held = console::with_pixels(|screen| {
@@ -234,6 +237,16 @@ impl Firmware {
             if held.is_none() {
                 return;
             }
+        }
+        if fbdiag_whole && FBDIAG_LOGGED.fetch_add(1, Ordering::Relaxed) % 64 < 4 {
+            let took = <crate::Arch as radix_hal::Timer>::now_ns() - fbdiag_started;
+            let start = source.main.map(|(_, pages)| pages.start);
+            let over = source.pointer.is_some();
+            radix_klog::info!(
+                "FBDIAG draw: {took} ns, picture starts at {start:?} in its page, pointer {over}, \
+                 layout XRGB8888 {}, rows a hold {at_once}",
+                self.layout == Layout::XRGB8888
+            );
         }
     }
 
