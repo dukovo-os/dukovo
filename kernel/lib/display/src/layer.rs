@@ -776,11 +776,14 @@ where
     }
 
     /// The card did not show what the pipe at `place` was to: its
-    /// screens are marked failed, and every holder is told.
+    /// screens are marked failed, and every holder is told, once. A
+    /// holder that answers by taking its picture off a failed screen
+    /// asks the card again, which fails again: told a second time, it
+    /// would ask a third.
     fn failed(&mut self, place: usize) {
         let pipe = self.pipes[place].id;
         for at in 0..self.screens.len() {
-            if self.shown.screens[at].pipe == pipe {
+            if self.shown.screens[at].pipe == pipe && !self.screens[at].failed {
                 self.screens[at].failed = true;
                 let thing = self.screens[at].id;
                 self.post_all(DisplayEvent { kind: EVENT_SCREEN, thing, ..self.event() });
