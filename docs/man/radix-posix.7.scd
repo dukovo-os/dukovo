@@ -207,7 +207,12 @@ taken and chooses the next. One emptied some other way, such as a
 capability revoked from outside the program, stays taken until the
 program closes it: a new descriptor is then the lowest free one after
 it, never the same one twice. A program with the dynamic linker shares
-one table between it and the C library, since both open files.
+one table between it and the C library, since both open files. Beside
+it the C library notes which family each descriptor's socket is of, as
+*socket*, *socketpair* and *accept* make them and *dup* and *dup2* copy
+them, so that the calls that differ for network and Unix sockets, such
+as *connect* and *getsockopt*, ask the kernel at most once for a
+descriptor (ADR 0801).
 
 The C library keeps the working directory as a canonical string. It
 hands the kernel an absolute path, or a relative one joined to the

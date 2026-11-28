@@ -39,7 +39,9 @@
 // with 0 seconds resets a connection on close, TCP_QUICKACK and
 // SO_OOBINLINE are kept, getpeername finds a connection made while its
 // non-blocking connect waited, a plain recvmsg receives from a network
-// socket, and a datagram cut short says MSG_TRUNC.
+// socket, and a datagram cut short says MSG_TRUNC. And the family the C
+// library notes for each descriptor (ADR 0801), through reuse, dup2,
+// copies, accept and descriptors received over a Unix socket.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1798,9 +1800,110 @@ static void found_by_python(void) {
 	close(b);
 }
 
+// The family and type of descriptor `fd`'s socket, as getsockname and
+// SO_TYPE give them.
+static int family_of(int fd, int *type) {
+	struct sockaddr_storage name;
+	socklen_t len = sizeof(name);
+	CHECK(getsockname(fd, (struct sockaddr *)&name, &len) == 0);
+	socklen_t size = sizeof(*type);
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_TYPE, type, &size) == 0 && size == sizeof(*type));
+	return name.ss_family;
+}
+
+// Sends descriptor `fd` over the Unix socket `over`, and returns the one
+// the other end, `to`, receives.
+static int passed(int over, int to, int fd) {
+	char byte = 'x';
+	struct iovec iov = {&byte, 1};
+	union {
+		char buffer[CMSG_SPACE(sizeof(int))];
+		struct cmsghdr align;
+	} control;
+	memset(&control, 0, sizeof(control));
+	struct msghdr out = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control.buffer,
+			.msg_controllen = sizeof(control.buffer)};
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&out);
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+	memcpy(CMSG_DATA(cmsg), &fd, sizeof(int));
+	CHECK(sendmsg(over, &out, 0) == 1);
+	memset(&control, 0, sizeof(control));
+	struct msghdr in = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control.buffer,
+			.msg_controllen = sizeof(control.buffer)};
+	CHECK(recvmsg(to, &in, 0) == 1);
+	cmsg = CMSG_FIRSTHDR(&in);
+	CHECK(cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS);
+	int got;
+	memcpy(&got, CMSG_DATA(cmsg), sizeof(int));
+	return got;
+}
+
+// The C library notes which family each descriptor's socket is of, so
+// that it need not ask the kernel at each call that depends on it
+// (ADR 0801). A descriptor number a socket of the other family takes
+// next, a descriptor dup2 puts either family's socket in, copies, an
+// accepted connection and a socket received over a Unix socket are each
+// taken for what they hold now, and connect and getsockopt work on both.
+static void families_noted(void) {
+	int type;
+	int local = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(local >= 0 && family_of(local, &type) == AF_UNIX && type == SOCK_STREAM);
+	CHECK(close(local) == 0);
+	int tcp = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK(tcp == local && family_of(tcp, &type) == AF_INET && type == SOCK_STREAM);
+	CHECK(close(tcp) == 0);
+	int datagrams = socket(AF_UNIX, SOCK_DGRAM, 0);
+	CHECK(datagrams == tcp && family_of(datagrams, &type) == AF_UNIX && type == SOCK_DGRAM);
+	CHECK(close(datagrams) == 0);
+	int udp = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(udp == datagrams && family_of(udp, &type) == AF_INET && type == SOCK_DGRAM);
+	// dup2 over a socket of the other family, both ways, and copies.
+	int pair[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+	CHECK(family_of(pair[0], &type) == AF_UNIX && family_of(pair[1], &type) == AF_UNIX);
+	int server = listener();
+	CHECK(dup2(server, pair[1]) == pair[1]);
+	CHECK(family_of(pair[1], &type) == AF_INET && type == SOCK_STREAM);
+	CHECK(dup2(pair[0], udp) == udp && family_of(udp, &type) == AF_UNIX && type == SOCK_STREAM);
+	int copy = fcntl(server, F_DUPFD, 100);
+	CHECK(copy >= 100 && family_of(copy, &type) == AF_INET && type == SOCK_STREAM);
+	int local_copy = dup(udp);
+	CHECK(local_copy >= 0 && family_of(local_copy, &type) == AF_UNIX);
+	// A connection, accepted from a copy, and connect and SO_ERROR on it.
+	int client = connected(port_of(server));
+	int error = -1;
+	socklen_t size = sizeof(error);
+	CHECK(getsockopt(client, SOL_SOCKET, SO_ERROR, &error, &size) == 0 && error == 0);
+	struct sockaddr_in peer;
+	socklen_t len = sizeof(peer);
+	int accepted = accept(copy, (struct sockaddr *)&peer, &len);
+	CHECK(accepted >= 0 && len == sizeof(peer) && peer.sin_family == AF_INET);
+	CHECK(family_of(accepted, &type) == AF_INET && type == SOCK_STREAM);
+	// A network socket received over a Unix socket, at a new number.
+	int ends[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, ends) == 0);
+	int received = passed(ends[0], ends[1], accepted);
+	CHECK(received >= 0 && received != accepted);
+	CHECK(family_of(received, &type) == AF_INET && type == SOCK_STREAM);
+	CHECK(write(client, "ab", 2) == 2);
+	char got[2];
+	CHECK(read(received, got, 2) == 2 && !memcmp(got, "ab", 2));
+	// And a Unix socket received where a network socket was.
+	CHECK(close(received) == 0);
+	int local_received = passed(ends[0], ends[1], pair[0]);
+	CHECK(local_received >= 0 && family_of(local_received, &type) == AF_UNIX);
+	int fds[] = {local_received, ends[0], ends[1], accepted, client, local_copy, copy, server,
+			pair[0], pair[1], udp};
+	for(size_t i = 0; i < sizeof(fds) / sizeof(fds[0]); i++)
+		CHECK(close(fds[i]) == 0);
+}
+
 int main(void) {
 	check_start("inet");
 	RUN(bench_order);
+	RUN(families_noted);
 	RUN(short_connections);
 	RUN(many_connections);
 	RUN(accept_while_another_opens);
