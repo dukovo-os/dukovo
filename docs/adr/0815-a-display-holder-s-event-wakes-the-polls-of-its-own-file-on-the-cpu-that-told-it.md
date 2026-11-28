@@ -61,7 +61,8 @@ thread went to sleep and its own CPU halted.
 
 ## Consequences
 
-- TODO-NUMBERS
+- The consoles' service sleeps through the frames of a desktop that
+  stands over it, and one CPU is woken at each beat where two were.
 - A thread that reads a holder's file and waits in the read, and one
   that waits for its change to show, are still woken at every change
   and look again. The desktop and the consoles' service poll.
