@@ -143,8 +143,11 @@ memcpy:
     .global radix_copy_in_order
     .type radix_copy_in_order, @function
 radix_copy_in_order:
-    cmp rdx, 32
-    jb 41f
+    /* Where the source's whole 32 bytes end. */
+    mov r11, rdx
+    and r11, -32
+    jz 41f
+    add r11, rsi
 40: mov rcx, [rsi]
     mov r8, [rsi + 8]
     mov r9, [rsi + 16]
@@ -155,9 +158,8 @@ radix_copy_in_order:
     mov [rdi + 24], r10
     add rsi, 32
     add rdi, 32
-    sub rdx, 32
-    cmp rdx, 32
-    jae 40b
+    cmp rsi, r11
+    jb 40b
 41: /* Under 32 bytes are left: 16, 8, 4, 2 and 1 of them, as the bits
        of their number say. */
     test dl, 16
