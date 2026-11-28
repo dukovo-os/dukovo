@@ -228,9 +228,17 @@ impl Firmware {
         };
         let source = Source { main, pointer: frame.pointer.as_ref().filter(|_| frame.active) };
         let row_bytes = rect.width as usize * usize::from(self.layout.bytes);
-        let at_once = (HOLD_BYTES / row_bytes.max(1)).max(1);
-        static FBDIAG_LOGGED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        static FBDIAG_DRAWS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        static FBDIAG_LEAST: [core::sync::atomic::AtomicU64; 4] =
+            [const { core::sync::atomic::AtomicU64::new(u64::MAX) }; 4];
+        static FBDIAG_SUM: [core::sync::atomic::AtomicU64; 4] =
+            [const { core::sync::atomic::AtomicU64::new(0) }; 4];
+        const FBDIAG_HOLDS: [usize; 4] = [16 << 10, 64 << 10, 256 << 10, 16 << 20];
         let fbdiag_whole = rect.width == self.width && rect.height == self.height;
+        let fbdiag_draw = FBDIAG_DRAWS.load(Ordering::Relaxed);
+        let fbdiag_way = (fbdiag_draw / 8 % 4) as usize;
+        let hold_bytes = if fbdiag_whole { FBDIAG_HOLDS[fbdiag_way] } else { HOLD_BYTES };
+        let at_once = (hold_bytes / row_bytes.max(1)).max(1);
         let fbdiag_started = <crate::Arch as radix_hal::Timer>::now_ns();
         let mut rows = (rect.y..).take(rect.height as usize).peekable();
         while rows.peek().is_some() {
@@ -244,15 +252,24 @@ impl Firmware {
                 return;
             }
         }
-        if fbdiag_whole && FBDIAG_LOGGED.fetch_add(1, Ordering::Relaxed) % 64 < 4 {
+        if fbdiag_whole {
             let took = <crate::Arch as radix_hal::Timer>::now_ns() - fbdiag_started;
-            let start = source.main.map(|(_, pages)| pages.start);
-            let over = source.pointer.is_some();
-            radix_klog::info!(
-                "FBDIAG draw: {took} ns, picture starts at {start:?} in its page, pointer {over}, \
-                 layout XRGB8888 {}, rows a hold {at_once}",
-                self.layout == Layout::XRGB8888
-            );
+            FBDIAG_LEAST[fbdiag_way].fetch_min(took, Ordering::Relaxed);
+            FBDIAG_SUM[fbdiag_way].fetch_add(took, Ordering::Relaxed);
+            let draws = FBDIAG_DRAWS.fetch_add(1, Ordering::Relaxed) + 1;
+            if draws.is_multiple_of(32) {
+                let over = source.pointer.is_some();
+                let start = source.main.map(|(_, pages)| pages.start);
+                for (way, hold) in FBDIAG_HOLDS.iter().enumerate() {
+                    let least = FBDIAG_LEAST[way].swap(u64::MAX, Ordering::Relaxed);
+                    let mean = FBDIAG_SUM[way].swap(0, Ordering::Relaxed) / 8;
+                    radix_klog::info!(
+                        "FBDIAG draw: hold {} KiB: least {least} ns, mean {mean} ns of 8; \
+                         pointer {over}, picture starts at {start:?}",
+                        hold >> 10
+                    );
+                }
+            }
         }
     }
 

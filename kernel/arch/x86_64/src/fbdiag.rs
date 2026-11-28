@@ -70,6 +70,14 @@ unsafe fn registers(dst: *mut u8, src: *const u8, len: usize) {
     }
 }
 
+unsafe fn in_order(dst: *mut u8, src: *const u8, len: usize) {
+    // SAFETY: the caller's.
+    unsafe { crate::copy::in_order(dst, src, len) };
+}
+
+/// What a locked instruction is done on, as taking a lock does one.
+static LOCKED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 unsafe fn movnti(dst: *mut u8, src: *const u8, len: usize) {
     // SAFETY: the caller's; every length here is a multiple of 32.
     unsafe {
@@ -105,8 +113,11 @@ enum Rows {
     Cut,
     /// Every row in one copy.
     Frame,
+    /// As `Cut`, with a locked instruction after every so many rows.
+    Locked(usize),
 }
 
+#[derive(Clone, Copy)]
 struct Screen {
     pitch: usize,
     row: usize,
@@ -128,7 +139,7 @@ fn once(screen: *mut u8, shape: &Screen, source: usize, copy: Copy, rows: Rows) 
         }
         while left > 0 {
             let step = match rows {
-                Rows::Cut => left.min(4096 - from % 4096),
+                Rows::Cut | Rows::Locked(_) => left.min(4096 - from % 4096),
                 Rows::Whole | Rows::Frame => left,
             };
             // SAFETY: within the row and within the RAM the caller checked.
@@ -137,6 +148,11 @@ fn once(screen: *mut u8, shape: &Screen, source: usize, copy: Copy, rows: Rows) 
             to = unsafe { to.add(step) };
             from += step;
             left -= step;
+        }
+        if let Rows::Locked(every) = rows
+            && y % every == every - 1
+        {
+            LOCKED.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         }
     }
     cpu::rdtsc() - started
@@ -194,6 +210,20 @@ pub fn run(phys: u64, screen: &mut [u8], pitch: usize, width: usize, height: usi
         time("rep movsq, whole rows", to, &shape, source, movsq, Rows::Whole);
         time("registers, whole rows", to, &shape, source, registers, Rows::Whole);
         time("movnti, whole rows", to, &shape, source, movnti, Rows::Whole);
+        time("in order, whole rows", to, &shape, source, in_order, Rows::Whole);
+        time("in order, rows cut at pages", to, &shape, source, in_order, Rows::Cut);
+        time("in order, rows cut, source +16", to, &shape, source + 16, in_order, Rows::Cut);
+        time("in order, rows cut, source +2048", to, &shape, source + 2048, in_order, Rows::Cut);
+        time("in order, rows cut, source +2", to, &shape, source + 2, in_order, Rows::Cut);
+        let shorter = Screen { height: height - 1, ..shape };
+        // SAFETY: four bytes on, with a row fewer, is within the mapping.
+        let on = unsafe { to.add(4) };
+        time("in order, rows cut, screen +4", on, &shorter, source, in_order, Rows::Cut);
+        time("in order, cut, locked every row", to, &shape, source, in_order, Rows::Locked(1));
+        time("in order, cut, locked every 3 rows", to, &shape, source, in_order, Rows::Locked(3));
+        time("in order, cut, locked every 12 rows", to, &shape, source, in_order, Rows::Locked(12));
+        time("in order, cut, locked every 48 rows", to, &shape, source, in_order, Rows::Locked(48));
+        time("in order, one copy", to, &shape, source, in_order, frame);
     }
     radix_klog::info!("FBDIAG done");
 }
