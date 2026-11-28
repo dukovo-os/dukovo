@@ -54,15 +54,17 @@ put back, about 21 µs of the host's.
   for it. Tried and measured: the desktop wakes the card's thread as
   it asks for its next change, while it runs, so the card's thread
   goes to the other CPU and the desktop follows it there at the beat.
-  The two changed CPUs three times a frame between them, the desktop
-  ran 3.8 times a frame where it ran 3.4, and the CPUs halted a
-  quarter of a time less a frame, where the consoles' service alone
-  had been one.
+  The two changed CPUs three times a frame between them and the
+  desktop ran 3.8 times a frame where it runs 3.4. The CPUs halted
+  9.3 times a frame where they halt 9.5, and the frame's row was 1.30
+  and 1.37 times Linux's where it is 1.19 and 1.27 without.
 
 ## Consequences
 
 - The consoles' service sleeps through the frames of a desktop that
   stands over it: on the same machine it ran once in a hundred frames.
+  The CPUs halt as often as before, 9.5 times a frame: the service ran
+  on a CPU that the frame's own work had awake.
 - A thread that reads a holder's file and waits in the read, and one
   that waits for its change to show, are still woken at every change
   and look again. The desktop and the consoles' service poll.
