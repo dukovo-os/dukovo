@@ -24,12 +24,15 @@
 #include "radix.hpp"
 
 // Where new threads start (x86_64/thread-entry.S), and the labels of the
-// cancellable system call (x86_64/cancel.S).
+// cancellable system calls (x86_64/cancel.S).
 #ifndef MLIBC_BUILDING_RTLD
 extern "C" void __mlibc_thread_entry();
 extern "C" [[gnu::visibility("hidden")]] const char __radix_cancel_begin[];
 extern "C" [[gnu::visibility("hidden")]] const char __radix_cancel_end[];
 extern "C" [[gnu::visibility("hidden")]] const char __radix_cancel_now[];
+extern "C" [[gnu::visibility("hidden")]] const char __radix_cancel_masked_begin[];
+extern "C" [[gnu::visibility("hidden")]] const char __radix_cancel_masked_end[];
+extern "C" [[gnu::visibility("hidden")]] const char __radix_cancel_masked_now[];
 #endif
 
 // frigg's assertions call frg_panic (options/internal/generic/frigg.cpp)
@@ -293,10 +296,15 @@ int Sysdeps<CancellableFutexWait>::operator()(int *pointer, int expected,
 // the handler returns.
 int Sysdeps<CancelInContext>::operator()(ucontext_t *uctx) {
 	auto &pc = uctx->uc_mcontext.gregs[REG_RIP];
-	if(pc < reinterpret_cast<uintptr_t>(__radix_cancel_begin)
-			|| pc >= reinterpret_cast<uintptr_t>(__radix_cancel_end))
+	auto between = [pc](const char *begin, const char *end) {
+		return pc >= reinterpret_cast<uintptr_t>(begin) && pc < reinterpret_cast<uintptr_t>(end);
+	};
+	if(between(__radix_cancel_begin, __radix_cancel_end))
+		pc = reinterpret_cast<uintptr_t>(__radix_cancel_now);
+	else if(between(__radix_cancel_masked_begin, __radix_cancel_masked_end))
+		pc = reinterpret_cast<uintptr_t>(__radix_cancel_masked_now);
+	else
 		return 0;
-	pc = reinterpret_cast<uintptr_t>(__radix_cancel_now);
 	return 1;
 }
 #endif

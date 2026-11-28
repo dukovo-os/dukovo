@@ -123,7 +123,6 @@ struct RadixSysdepTags :
 	Pause,
 	Peername,
 	Pipe,
-	Poll,
 	PosixMadvise,
 	Ppoll,
 	Pread,

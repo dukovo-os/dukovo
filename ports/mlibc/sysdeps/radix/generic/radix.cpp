@@ -793,43 +793,24 @@ void log(const char *text, size_t len) {
 
 #ifndef MLIBC_BUILDING_RTLD
 
-extern "C" uint64_t __radix_cancellable_syscall(uint64_t number, const uint64_t in[10],
-		uint64_t out[10], uint64_t masked);
-
-// Acts on a cancel that is due (x86_64/cancel.S): ends the thread, or
-// returns CANCELED for the call that is masked.
-extern "C" [[gnu::visibility("hidden")]] uint64_t __radix_cancel(uint64_t masked) {
-	if(masked)
-		return radix::CANCELED;
+// Ends the thread for a cancel that is due (x86_64/cancel.S's
+// __radix_cancel_now).
+extern "C" [[gnu::visibility("hidden"), noreturn]] void __radix_cancel() {
 	__mlibc_do_cancel();
 	__builtin_unreachable();
 }
 
 namespace radix {
 
-namespace {
-
-uint64_t cancellable_call(uint64_t number, const uint64_t in[10], uint64_t out[10],
-		uint64_t masked) {
-	uint64_t status = __radix_cancellable_syscall(number, in, out, masked);
-	// A signal interrupted the call before it did anything: a cancel that
-	// came while it waited is acted on as one due before it.
-	if(RADIX_STATUS_DOMAIN(status) == RADIX_KERNEL_ERROR_DOMAIN
-			&& RADIX_STATUS_CODE(status) == RADIX_KERNEL_INTERRUPTED
-			&& mlibc::tcb_cancelled(__atomic_load_n(&mlibc::get_current_tcb()->cancelBits,
-					__ATOMIC_RELAXED)))
-		return __radix_cancel(masked);
-	return status;
-}
-
-} // namespace
-
-uint64_t cancellable(uint64_t number, const uint64_t in[10], uint64_t out[10]) {
-	return cancellable_call(number, in, out, 0);
-}
-
-uint64_t cancellable_masked(uint64_t number, const uint64_t in[10], uint64_t out[10]) {
-	return cancellable_call(number, in, out, 1);
+// A signal interrupted the call before it did anything: a cancel that
+// came while it waited is acted on as one due before it.
+uint64_t after_interrupt(uint64_t status, bool masked) {
+	if(!mlibc::tcb_cancelled(__atomic_load_n(&mlibc::get_current_tcb()->cancelBits,
+			__ATOMIC_RELAXED)))
+		return status;
+	if(masked)
+		return CANCELED;
+	__radix_cancel();
 }
 
 } // namespace radix

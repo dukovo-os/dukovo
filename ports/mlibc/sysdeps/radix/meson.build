@@ -14,6 +14,10 @@ sysdep_supported_options = {
 	'bsd': true,
 }
 
+# poll is the system layer's own (patch 0144, ADR 0802): generic/poll.cpp
+# makes the kernel's call in it, with no sysdep between.
+internal_conf.set10('MLIBC_SYSTEM_POLL', true)
+
 radix_sources = files(
 	'generic/core.cpp',
 	'generic/files.cpp',

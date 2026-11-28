@@ -473,6 +473,19 @@ pub(super) fn children_changed(process: &ProcessObject) {
     }
 }
 
+/// `poll` on `target`, which must be the caller's own process, as for
+/// [`method`]'s others but `exec` and `start_limit`. The capability call
+/// comes here from [`super::process::poll`], past [`method`] (ADR 0804).
+#[inline(always)]
+pub fn poll_method(user: &UserRef, target: &ProcessRef, args: &[u64; 8]) -> Result<Answer> {
+    if !ProcessRef::ptr_eq(target, &user.process) {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    let a = process::PollArgs::decode(args)?;
+    let ready = poll::poll(user, a)?;
+    answer(process::POLL, process::PollResults::WORDS, process::PollResults { ready }.encode())
+}
+
 /// The methods of radix-process(2) from `fork` on, called by `user`'s
 /// thread on `target`, whose capability is in its slot `slot`: its own
 /// process, or for `exec` one `create` made.
@@ -663,11 +676,7 @@ pub fn method(
             crate::fs::socket::make_datagram_pair(user, a.first, a.second, a.flags)?;
             answer(label, 0, [0; 8])
         }
-        process::POLL => {
-            let a = process::PollArgs::decode(args)?;
-            let ready = poll::poll(user, a)?;
-            answer(label, process::PollResults::WORDS, process::PollResults { ready }.encode())
-        }
+        process::POLL => poll_method(user, target, args),
         process::CLOCK => {
             let a = process::ClockArgs::decode(args)?;
             let ns = clock(user, a.clock)?;

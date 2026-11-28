@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0104. Thread cancellation points are system calls made as musl makes them, through a stub the signal handler can see
 
-- Status: Accepted
+- Status: Accepted; the stubs take the call in its registers, from inline code, and a masked point has its own stub, since [0802](0802-a-cancellation-point-s-call-passes-its-arguments-and-results-in-registers.md)
 - Date: 2026-10-24
 
 ## Context

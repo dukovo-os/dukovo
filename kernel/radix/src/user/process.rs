@@ -1145,6 +1145,18 @@ pub fn install(at: SlotRef, kind: ObjectKind, object: Object) -> Result<()> {
     install_charged(at, kind, object, None)
 }
 
+/// The process a method of the process interface acts on, `found` with a
+/// capability that has `needs`.
+fn target<'a>(user: &'a UserRef, found: &'a Found, needs: Rights) -> Result<&'a ProcessRef> {
+    found.cap.check(ObjectKind::Process, needs).map_err(cap_error)?;
+    match &found.object {
+        Some(Object::Process(target)) => Ok(target),
+        // Its own process, which the lookup did not take again.
+        None if found.held => Ok(&user.process),
+        _ => Err(error(Kernel::Gone)),
+    }
+}
+
 /// The process interface, on the process `found` in slot `slot`, kept
 /// out of line, as [`super::methods::call`] says.
 #[inline(never)]
@@ -1156,14 +1168,7 @@ pub fn method(
     args: &[u64; 8],
 ) -> Result<Answer> {
     let reads = label == process::INFO || label == process::IDENTITY;
-    let needs = if reads { Rights::READ } else { Rights::CONTROL };
-    found.cap.check(ObjectKind::Process, needs).map_err(cap_error)?;
-    let target = match &found.object {
-        Some(Object::Process(target)) => target,
-        // Its own process, which the lookup did not take again.
-        None if found.held => &user.process,
-        _ => return Err(error(Kernel::Gone)),
-    };
+    let target = target(user, found, if reads { Rights::READ } else { Rights::CONTROL })?;
     let at = |slot| SlotRef::new(user.cspace, slot);
     match label {
         process::CREATE => {
@@ -1301,6 +1306,16 @@ pub fn method(
         _ if label >= process::FORK => posix::method(user, slot, target, label, args),
         _ => Err(error(Kernel::NoSuchMethod)),
     }
+}
+
+/// `poll` on the process `found`, which [`super::methods::call`] sends
+/// here straight from the capability call: the most frequent of a POSIX
+/// program's calls on its own process skips [`method`]'s match and
+/// [`posix::method`]'s, and their frames (ADR 0804). It checks what both
+/// do.
+#[inline(never)]
+pub fn poll(user: &UserRef, found: &Found, args: &[u64; 8]) -> Result<Answer> {
+    posix::poll_method(user, target(user, found, Rights::CONTROL)?, args)
 }
 
 /// `process.create`: makes an object of `kind` charged to `target`, with

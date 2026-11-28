@@ -3,7 +3,8 @@
 
 // poll, ppoll and pselect on Radix (ADR 0065): the process's `poll`
 // method takes POSIX's `struct pollfd` array as it is; select's sets
-// become such an array.
+// become such an array. poll itself is here, rather than mlibc's, which
+// would call a sysdep (patch 0144).
 
 #include <bits/ensure.h>
 #include <errno.h>
@@ -51,9 +52,59 @@ short found_events(short events, short found) {
 	return out;
 }
 
+// Makes the poll call of poll_ns with `entries`, which ask only for
+// events the kernel knows, and, if it succeeds, stores how many it found
+// in `ready`.
+[[gnu::always_inline]] inline uint64_t poll_call(struct pollfd *entries, nfds_t count,
+		int64_t timeout_ns, uint64_t kernel_mask, uint32_t flags, uint32_t *ready) {
+	struct radix_process_poll_results r;
+	uint64_t status = radix_process_poll_with(radix::cancellable_masked, radix::SLOT_PROCESS,
+			reinterpret_cast<uint64_t>(entries), static_cast<uint32_t>(count), radix::FD_BASE,
+			timeout_ns < 0 ? 0 : static_cast<uint64_t>(timeout_ns), kernel_mask, flags, &r);
+	if(!status)
+		*ready = r.ready;
+	return status;
+}
+
+// The errno of a poll call that failed with `status`. A cancel is acted
+// on here, once nothing is held.
+[[gnu::noinline, gnu::cold]] int poll_failed(uint64_t status) {
+	if(status == radix::CANCELED)
+		mlibc::thread_testcancel();
+	return radix::to_errno(status);
+}
+
+// poll_ns of entries among which one asks for an event the kernel does
+// not know: the kernel polls a copy with the events that stand for theirs.
+[[gnu::noinline]] int poll_copy(struct pollfd *fds, nfds_t count, int64_t timeout_ns,
+		uint64_t kernel_mask, uint32_t flags, int *num_events) {
+	auto entries = static_cast<struct pollfd *>(malloc(count * sizeof(struct pollfd)));
+	if(!entries)
+		return ENOMEM;
+	for(nfds_t i = 0; i < count; i++) {
+		entries[i].fd = fds[i].fd;
+		entries[i].events = kernel_events(fds[i].events);
+		entries[i].revents = 0;
+	}
+	uint32_t ready;
+	uint64_t status = poll_call(entries, count, timeout_ns, kernel_mask, flags, &ready);
+	if(!status) {
+		for(nfds_t i = 0; i < count; i++)
+			fds[i].revents = found_events(fds[i].events, entries[i].revents);
+	}
+	// A cancel is acted on once the copy is freed.
+	free(entries);
+	if(status)
+		return poll_failed(status);
+	*num_events = static_cast<int>(ready);
+	return 0;
+}
+
 // Polls `fds` for at most `timeout_ns` (forever if negative), with the
 // signal mask `mask` while it waits if there is one. A cancellation point.
-int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout_ns, const sigset_t *mask,
+// The path every poll takes, with no copy, stays short and inlines into
+// each caller (ADR 0802).
+[[gnu::always_inline]] inline int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout_ns, const sigset_t *mask,
 		int *num_events) {
 	if(count > RADIX_PROCESS_MAX_SLOTS)
 		return EINVAL;
@@ -63,41 +114,19 @@ int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout_ns, const sigset_t
 	uint64_t kernel_mask = 0;
 	if(mask) {
 		flags |= RADIX_POLL_FLAGS_MASK;
-		memcpy(&kernel_mask, mask, sizeof(kernel_mask));
+		__builtin_memcpy(&kernel_mask, mask, sizeof(kernel_mask));
 	}
 	// The kernel takes the array as it is unless an entry asks for an
 	// event it does not know.
-	bool plain = true;
-	for(nfds_t i = 0; i < count && plain; i++)
-		plain = !(fds[i].events & ~KERNEL_EVENTS);
-	struct pollfd *entries = fds;
-	if(!plain) {
-		entries = static_cast<struct pollfd *>(malloc(count * sizeof(struct pollfd)));
-		if(!entries)
-			return ENOMEM;
-		for(nfds_t i = 0; i < count; i++) {
-			entries[i].fd = fds[i].fd;
-			entries[i].events = kernel_events(fds[i].events);
-			entries[i].revents = 0;
-		}
+	for(nfds_t i = 0; i < count; i++) {
+		if(fds[i].events & ~KERNEL_EVENTS) [[unlikely]]
+			return poll_copy(fds, count, timeout_ns, kernel_mask, flags, num_events);
 	}
-	// A cancel is acted on once the copy is freed.
-	struct radix_process_poll_results r;
-	uint64_t status = radix_process_poll_with(radix::cancellable_masked, radix::SLOT_PROCESS,
-			reinterpret_cast<uint64_t>(entries), static_cast<uint32_t>(count), radix::FD_BASE,
-			timeout_ns < 0 ? 0 : static_cast<uint64_t>(timeout_ns), kernel_mask, flags, &r);
-	if(!plain) {
-		if(!status) {
-			for(nfds_t i = 0; i < count; i++)
-				fds[i].revents = found_events(fds[i].events, entries[i].revents);
-		}
-		free(entries);
-	}
-	if(status == radix::CANCELED)
-		mlibc::thread_testcancel();
-	if(status)
-		return radix::to_errno(status);
-	*num_events = static_cast<int>(r.ready);
+	uint32_t ready;
+	uint64_t status = poll_call(fds, count, timeout_ns, kernel_mask, flags, &ready);
+	if(status) [[unlikely]]
+		return poll_failed(status);
+	*num_events = static_cast<int>(ready);
 	return 0;
 }
 
@@ -114,12 +143,17 @@ int64_t ns_of(const struct timespec *ts) {
 
 } // namespace
 
-namespace mlibc {
-
-int Sysdeps<Poll>::operator()(struct pollfd *fds, nfds_t count, int timeout, int *num_events) {
+int poll(struct pollfd *fds, nfds_t count, int timeout) {
 	int64_t ns = timeout < 0 ? -1 : static_cast<int64_t>(timeout) * 1000000;
-	return poll_ns(fds, count, ns, nullptr, num_events);
+	int ready;
+	if(int e = poll_ns(fds, count, ns, nullptr, &ready); e) [[unlikely]] {
+		errno = e;
+		return -1;
+	}
+	return ready;
 }
+
+namespace mlibc {
 
 int Sysdeps<Ppoll>::operator()(struct pollfd *fds, nfds_t count, const struct timespec *ts,
 		const sigset_t *mask, int *num_events) {

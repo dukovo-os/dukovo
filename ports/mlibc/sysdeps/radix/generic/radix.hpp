@@ -56,18 +56,80 @@ constexpr uint64_t CANCELED = UINT64_MAX;
 // The system call function (radix/abi.h's radix_syscall_fn) of a
 // cancellation point, which acts on a cancel that is due when the call is
 // to be made, or that came while it waited and a signal interrupted it
-// before it did anything: the thread ends (pthread_cancel(3)). The
-// x86_64/cancel.S stub makes the call; the C library's own calls, and the
-// dynamic linker's, are plain ones. `cancellable_masked` returns CANCELED
-// instead, for a caller that acts on the cancel itself once it has put
-// back what it holds.
+// before it did anything: the thread ends (pthread_cancel(3)). A stub in
+// x86_64/cancel.S makes the call, which takes it in the system call's own
+// registers, so that it inlines into a method's `_with` function as
+// radix_syscall does, with no memory for the arguments and results (ADR
+// 0802). The C library's own calls, and the dynamic linker's, are plain
+// ones. `cancellable_masked` returns CANCELED instead, for a caller that
+// acts on the cancel itself once it has put back what it holds.
 #ifdef MLIBC_BUILDING_RTLD
 inline uint64_t cancellable(uint64_t number, const uint64_t in[10], uint64_t out[10]) {
 	return radix_syscall(number, in, out);
 }
 #else
-uint64_t cancellable(uint64_t number, const uint64_t in[10], uint64_t out[10]);
-uint64_t cancellable_masked(uint64_t number, const uint64_t in[10], uint64_t out[10]);
+// What a cancellable call that a signal interrupted before it did anything
+// returns: its status, or, if a cancel came while it waited, what one due
+// before it gives (radix.cpp).
+uint64_t after_interrupt(uint64_t status, bool masked);
+
+// Makes the call through __radix_cancellable_syscall, or, if `masked`,
+// __radix_cancellable_syscall_masked.
+template<bool masked>
+[[gnu::always_inline]] inline uint64_t cancellable_call(uint64_t number, const uint64_t in[10],
+		uint64_t out[10]) {
+	register uint64_t rax asm("rax") = number;
+	register uint64_t rdi asm("rdi") = in[0];
+	register uint64_t rsi asm("rsi") = in[1];
+	register uint64_t rdx asm("rdx") = in[2];
+	register uint64_t r10 asm("r10") = in[3];
+	register uint64_t r8 asm("r8") = in[4];
+	register uint64_t r9 asm("r9") = in[5];
+	register uint64_t r12 asm("r12") = in[6];
+	register uint64_t r13 asm("r13") = in[7];
+	register uint64_t r14 asm("r14") = in[8];
+	register uint64_t r15 asm("r15") = in[9];
+	// The call's return address goes beneath the stack pointer, where the
+	// 128-byte red zone may hold the caller's values, so the stack pointer
+	// moves past the zone for it.
+#define RADIX_CANCELLABLE_CALL(stub) \
+	asm volatile("lea -128(%%rsp), %%rsp\n\t" \
+			"call " stub "\n\t" \
+			"lea 128(%%rsp), %%rsp" \
+			: "+r"(rax), "+r"(rdi), "+r"(rsi), "+r"(rdx), "+r"(r10), "+r"(r8), "+r"(r9), \
+			"+r"(r12), "+r"(r13), "+r"(r14), "+r"(r15) \
+			: \
+			: "rcx", "r11", "memory")
+	if constexpr (masked)
+		RADIX_CANCELLABLE_CALL("__radix_cancellable_syscall_masked");
+	else
+		RADIX_CANCELLABLE_CALL("__radix_cancellable_syscall");
+#undef RADIX_CANCELLABLE_CALL
+	out[0] = rdi;
+	out[1] = rsi;
+	out[2] = rdx;
+	out[3] = r10;
+	out[4] = r8;
+	out[5] = r9;
+	out[6] = r12;
+	out[7] = r13;
+	out[8] = r14;
+	out[9] = r15;
+	if(RADIX_STATUS_DOMAIN(rax) == RADIX_KERNEL_ERROR_DOMAIN
+			&& RADIX_STATUS_CODE(rax) == RADIX_KERNEL_INTERRUPTED) [[unlikely]]
+		return after_interrupt(rax, masked);
+	return rax;
+}
+
+[[gnu::always_inline]] inline uint64_t cancellable(uint64_t number, const uint64_t in[10],
+		uint64_t out[10]) {
+	return cancellable_call<false>(number, in, out);
+}
+
+[[gnu::always_inline]] inline uint64_t cancellable_masked(uint64_t number, const uint64_t in[10],
+		uint64_t out[10]) {
+	return cancellable_call<true>(number, in, out);
+}
 #endif
 
 // The slot of file descriptor `fd`, or NO_SLOT if it cannot be one.
