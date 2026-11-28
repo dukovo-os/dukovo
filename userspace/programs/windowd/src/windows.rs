@@ -1489,8 +1489,12 @@ impl Windows {
         let Some(toplevel) = framed.window.toplevel() else { return };
         let bar = TitleBar::of(window).told();
         let size = framed.restore.frame.map(|frame| inside(&theme, Shape::Normal, bar, frame));
+        // A resize of the split it lay along, whose last size its
+        // program has yet to draw, is over for it.
+        framed.resize = None;
         toplevel.with_pending_state(|state| {
             state.states.unset(State::Maximized);
+            state.states.unset(State::Resizing);
             tiled(&mut state.states, None);
             state.size = size;
         });

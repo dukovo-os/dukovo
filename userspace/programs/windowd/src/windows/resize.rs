@@ -9,7 +9,9 @@
 //! the one before, and is the newest the person asked for, so that a
 //! slow program is never sent sizes it will not show. The frame follows
 //! what the program draws, with the sides that are not dragged where
-//! they were when the resize began.
+//! they were when the resize began. Only a new size is waited for: that
+//! a resize began or is over a program is told with the size it has,
+//! and need not draw anything for.
 
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
@@ -35,6 +37,9 @@ pub struct Resize {
     start: Rectangle<i32, Logical>,
     /// The size of the content the person wants now.
     wanted: Size<i32, Logical>,
+    /// The size the program was last asked for, or has from before the
+    /// resize.
+    asked: Size<i32, Logical>,
     /// The size the program was asked for and has not drawn yet, as the
     /// serial of its configure.
     out: Option<Serial>,
@@ -46,7 +51,7 @@ impl Resize {
     /// A resize by `edge` of a window whose frame's box is `frame` and
     /// whose content is `content` wide and high.
     pub fn new(edge: Edge, frame: Rectangle<i32, Logical>, content: Size<i32, Logical>) -> Resize {
-        Resize { edge, start: frame, wanted: content, out: None, over: false }
+        Resize { edge, start: frame, wanted: content, asked: content, out: None, over: false }
     }
 
     /// Where the corner of the frame's box is when the box is `frame`
@@ -129,7 +134,12 @@ impl Resize {
             }
         });
         // Nothing goes out when the program has all of that already.
-        self.out = toplevel.send_pending_configure();
+        let sent = toplevel.send_pending_configure();
+        // A program told only that a resize began or is over, with the
+        // size it was asked for before, has nothing new to draw, and
+        // may commit nothing: that is not waited for.
+        self.out = sent.filter(|_| wanted != self.asked);
+        self.asked = wanted;
     }
 
     fn finished(&self) -> bool {

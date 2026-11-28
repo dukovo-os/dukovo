@@ -216,6 +216,34 @@ fn an_edge_resizes_its_window_one_size_at_a_time_and_the_other_sides_stay() {
 }
 
 #[test]
+fn a_resize_is_over_when_its_last_size_is_drawn_and_the_edge_is_let_go() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, SIZE, 7);
+    world.settle();
+    let (_, (left, top)) = framed(SIZE);
+    // The left edge is dragged, and the right one stays.
+    world.point(left, top + 120);
+    world.button(BTN_LEFT, true);
+    world.point(left - 40, top + 120);
+    assert_eq!(world.follow(&program, SIZE, 8), ((360, 200), false));
+    world.settle();
+    // The program is told that the resize is over with the size it
+    // has, and draws nothing for that.
+    world.button(BTN_LEFT, false);
+    world.settle();
+    world.shows_frame(&frame_of((360, 200), Shape::Normal), (left - 40, top), &look(true));
+    // A size it then draws of its own accord is its to keep, and no
+    // part of the resize: the window's corner stays, as any window's
+    // does that is drawn smaller.
+    world.show(&program, (300, 180), 9);
+    world.settle();
+    let told = world.told(&program);
+    assert!(!told.iter().any(|heard| matches!(heard, Heard::Size { .. })), "{told:?}");
+    world.shows_frame(&frame_of((300, 180), Shape::Normal), (left - 40, top), &look(true));
+}
+
+#[test]
 fn a_window_moved_before_its_program_drew_a_resize_s_last_size_stays_where_it_was_put() {
     let mut world = World::one_screen();
     let program = world.program();

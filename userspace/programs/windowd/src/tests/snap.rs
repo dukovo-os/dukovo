@@ -443,6 +443,37 @@ fn the_edge_two_snapped_windows_share_resizes_both() {
     assert_eq!(draws_on(&mut world, &second, 11), None);
 }
 
+#[test]
+fn a_window_along_a_split_that_was_dragged_is_as_it_was_when_dragged_by_its_bar() {
+    let mut world = World::one_screen();
+    let (first, second) = (world.program(), world.program());
+    world.show(&first, (320, 200), 7);
+    world.show(&second, (280, 180), 8);
+    // The second on the left and, from the offer, the first on the
+    // right. The edge they share is dragged a hundred to the right,
+    // and both have drawn the last size when it is let go.
+    arrow(&mut world, &second, KEY_LEFT, 9);
+    world.tap(KEY_ENTER);
+    world.follow(&first, (320, 200), 10);
+    world.settle();
+    world.point(510, 400);
+    world.button(BTN_LEFT, true);
+    world.point(610, 400);
+    draws_on(&mut world, &second, 11).unwrap();
+    draws_on(&mut world, &first, 12).unwrap();
+    world.button(BTN_LEFT, false);
+    world.settle();
+    // Dragged by its bar the left one is asked for the size it had
+    // before it was snapped, and for nothing after it has drawn that.
+    world.point(300, 15);
+    world.button(BTN_LEFT, true);
+    world.point(420, 330);
+    assert_eq!(world.follow(&second, (320, 200), 13), ((280, 180), false));
+    assert_eq!(draws_on(&mut world, &second, 13), None);
+    assert_eq!(world.colour(20, 700), BACKGROUND);
+    world.button(BTN_LEFT, false);
+}
+
 /// Has the pointer rest where it is for longer than the picker of
 /// layouts waits.
 fn rest(world: &mut World) {
