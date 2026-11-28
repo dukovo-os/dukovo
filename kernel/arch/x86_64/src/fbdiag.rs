@@ -70,6 +70,46 @@ unsafe fn registers(dst: *mut u8, src: *const u8, len: usize) {
     }
 }
 
+unsafe fn registers64(dst: *mut u8, src: *const u8, len: usize) {
+    // SAFETY: the caller's; every length here is a multiple of 32, and
+    // the last 32 of an odd number of them are copied by the second half.
+    unsafe {
+        asm!(
+            "test rcx, 32",
+            "jz 2f",
+            "sub rsi, 32",
+            "sub rdi, 32",
+            "add rcx, 32",
+            "jmp 3f",
+            "2:",
+            "mov {a}, [rsi]",
+            "mov {b}, [rsi + 8]",
+            "mov {c}, [rsi + 16]",
+            "mov {d}, [rsi + 24]",
+            "mov [rdi], {a}",
+            "mov [rdi + 8], {b}",
+            "mov [rdi + 16], {c}",
+            "mov [rdi + 24], {d}",
+            "3:",
+            "mov {a}, [rsi + 32]",
+            "mov {b}, [rsi + 40]",
+            "mov {c}, [rsi + 48]",
+            "mov {d}, [rsi + 56]",
+            "mov [rdi + 32], {a}",
+            "mov [rdi + 40], {b}",
+            "mov [rdi + 48], {c}",
+            "mov [rdi + 56], {d}",
+            "add rsi, 64",
+            "add rdi, 64",
+            "sub rcx, 64",
+            "ja 2b",
+            a = out(reg) _, b = out(reg) _, c = out(reg) _, d = out(reg) _,
+            inout("rdi") dst => _, inout("rsi") src => _, inout("rcx") len => _,
+            options(nostack),
+        );
+    }
+}
+
 unsafe fn in_order(dst: *mut u8, src: *const u8, len: usize) {
     // SAFETY: the caller's.
     unsafe { crate::copy::in_order(dst, src, len) };
@@ -224,6 +264,11 @@ pub fn run(phys: u64, screen: &mut [u8], pitch: usize, width: usize, height: usi
         time("in order, cut, locked every 12 rows", to, &shape, source, in_order, Rows::Locked(12));
         time("in order, cut, locked every 48 rows", to, &shape, source, in_order, Rows::Locked(48));
         time("in order, one copy", to, &shape, source, in_order, frame);
+        time("registers by 64, whole rows", to, &shape, source, registers64, Rows::Whole);
+        time("registers by 64, rows cut at pages", to, &shape, source, registers64, Rows::Cut);
+        time("registers, rows cut at pages", to, &shape, source, registers, Rows::Cut);
+        time("in order again, rows cut at pages", to, &shape, source, in_order, Rows::Cut);
+        time("kernel memcpy again, rows cut at pages", to, &shape, source, kernel_memcpy, Rows::Cut);
     }
     radix_klog::info!("FBDIAG done");
 }
