@@ -3,7 +3,8 @@
 
 // poll, ppoll and pselect on Radix (ADR 0065): the process's `poll`
 // method takes POSIX's `struct pollfd` array as it is; select's sets
-// become such an array.
+// become such an array. poll itself is here, rather than mlibc's, which
+// would call a sysdep (patch 0144).
 
 #include <bits/ensure.h>
 #include <errno.h>
@@ -101,8 +102,9 @@ short found_events(short events, short found) {
 
 // Polls `fds` for at most `timeout_ns` (forever if negative), with the
 // signal mask `mask` while it waits if there is one. A cancellation point.
-// The path every poll takes, with no copy, stays short (ADR 0802).
-int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout_ns, const sigset_t *mask,
+// The path every poll takes, with no copy, stays short and inlines into
+// each caller (ADR 0802).
+[[gnu::always_inline]] inline int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout_ns, const sigset_t *mask,
 		int *num_events) {
 	if(count > RADIX_PROCESS_MAX_SLOTS)
 		return EINVAL;
@@ -141,12 +143,17 @@ int64_t ns_of(const struct timespec *ts) {
 
 } // namespace
 
-namespace mlibc {
-
-int Sysdeps<Poll>::operator()(struct pollfd *fds, nfds_t count, int timeout, int *num_events) {
+int poll(struct pollfd *fds, nfds_t count, int timeout) {
 	int64_t ns = timeout < 0 ? -1 : static_cast<int64_t>(timeout) * 1000000;
-	return poll_ns(fds, count, ns, nullptr, num_events);
+	int ready;
+	if(int e = poll_ns(fds, count, ns, nullptr, &ready); e) [[unlikely]] {
+		errno = e;
+		return -1;
+	}
+	return ready;
 }
+
+namespace mlibc {
 
 int Sysdeps<Ppoll>::operator()(struct pollfd *fds, nfds_t count, const struct timespec *ts,
 		const sigset_t *mask, int *num_events) {

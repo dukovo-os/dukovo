@@ -1,0 +1,54 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+A system layer may have poll itself (MLIBC_SYSTEM_POLL in
+internal-config.h, false unless its meson.build sets it), so that the
+call is one function rather than poll calling the Poll sysdep for an
+errno and a count in memory. Radix's makes the kernel's call inline
+there (ADR 0802): a poll of one ready descriptor ran 17 instructions in
+this wrapper and its call, of about 85 in the C library.
+
+diff -ruN a/internal-config.h.in b/internal-config.h.in
+--- a/internal-config.h.in
++++ b/internal-config.h.in
+@@ -9,4 +9,5 @@
+ #mesondefine MLIBC_STATIC_BUILD
+ #mesondefine MLIBC_DEBUG_ALLOCATOR
+ #mesondefine MLIBC_IFUNCS_SUPPORTED
++#mesondefine MLIBC_SYSTEM_POLL
+ 
+diff -ruN a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -241,6 +241,7 @@
+ internal_conf.set10('MLIBC_MAP_FILE_WINDOWS', false)
+ internal_conf.set10('MLIBC_DEBUG_ALLOCATOR', get_option('debug_allocator'))
+ internal_conf.set10('MLIBC_IFUNCS_SUPPORTED', ifuncs_supported)
++internal_conf.set10('MLIBC_SYSTEM_POLL', false)
+ 
+ #----------------------------------------------------------------------------------------
+ # Configuration based on sysdeps.
+diff -ruN a/options/posix/generic/poll.cpp b/options/posix/generic/poll.cpp
+--- a/options/posix/generic/poll.cpp
++++ b/options/posix/generic/poll.cpp
+@@ -3,9 +3,12 @@
+ #include <poll.h>
+ 
+ #include <bits/ensure.h>
++#include <internal-config.h>
+ #include <mlibc/all-sysdeps.hpp>
+ #include <mlibc/debug.hpp>
+ 
++// A system layer with MLIBC_SYSTEM_POLL has poll itself.
++#if !MLIBC_SYSTEM_POLL
+ int poll(struct pollfd *fds, nfds_t count, int timeout) {
+ 	int num_events;
+ 	if(int e = mlibc::sysdep_or_enosys<Poll>(fds, count, timeout, &num_events); e) {
+@@ -14,6 +17,7 @@
+ 	}
+ 	return num_events;
+ }
++#endif
+ 
+ int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout_ts, const sigset_t *sigmask) {
+ 	if constexpr (mlibc::IsImplemented<Ppoll>) {
