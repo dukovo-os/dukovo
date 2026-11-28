@@ -40,6 +40,7 @@ use crate::pointer::{Arrows, Picture, Shown};
 use crate::scene::Scene;
 use crate::screens::{Failed, Pointing, Screens, Told};
 use crate::settings::Settings;
+use crate::settings::screens::ScreensSet;
 use crate::shell::Shell;
 use crate::windows::Under;
 
@@ -80,6 +81,11 @@ where
     clients: Clients,
     renderer: PixmanRenderer,
     screens: Screens<L>,
+    /// What the person has set of the screens.
+    screens_set: ScreensSet,
+    /// What of the settings could not be followed, a line for each
+    /// thing, until `main` says it.
+    said: Vec<String>,
     manager: Manager,
     /// What is under the pointer.
     under: Under,
@@ -134,13 +140,18 @@ where
         added.map_err(|err| start("the keyboard's layout", &err))?;
         let mut renderer = PixmanRenderer::new()?;
         let mut screens = Screens::new(holder);
-        screens.arrange(&mut renderer, &mut shell, &display.handle())?;
+        // As built, until the person's settings are laid
+        // ([`Desktop::set`]).
+        let screens_set = ScreensSet::default();
+        screens.arrange(&mut renderer, &mut shell, &display.handle(), &screens_set)?;
         let mut desktop = Desktop {
             display,
             shell,
             clients: Clients::default(),
             renderer,
             screens,
+            screens_set,
+            said: Vec::new(),
             manager: Manager::default(),
             under: Under::Nothing,
             pictures: Arrows::default(),
@@ -160,7 +171,11 @@ where
     /// Has the desktop be as `settings`, the person's, say
     /// (windowd.json(5)): from here on, and for the windows and the
     /// programs that are there.
-    pub fn set(&mut self, settings: &Settings) {
+    ///
+    /// # Errors
+    ///
+    /// What showing on the screens as they are set fails with.
+    pub fn set(&mut self, settings: &Settings) -> Result<(), Failed> {
         self.curve.set_speed(settings.pointer_speed);
         self.manager.double_click_ns = u64::from(settings.double_click_ms) * 1_000_000;
         if let Some(keyboard) = self.shell.seat.get_keyboard() {
@@ -170,7 +185,28 @@ where
         }
         self.shell.title_bars = settings.title_bars.clone();
         self.shell.settle_bars();
+        if self.screens_set != settings.screens {
+            self.screens_set = settings.screens.clone();
+            self.arrange()?;
+        }
         self.settle();
+        Ok(())
+    }
+
+    /// What of the settings could not be followed since this was last
+    /// asked, a line for each thing.
+    pub fn said(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.said)
+    }
+
+    /// Shows on the screens there are now, as the person has set them.
+    fn arrange(&mut self) -> Result<(), Failed> {
+        let display = self.display.handle();
+        let (renderer, shell) = (&mut self.renderer, &mut self.shell);
+        let said = self.screens.arrange(renderer, shell, &display, &self.screens_set)?;
+        self.said.extend(said);
+        self.put_pointer();
+        Ok(())
     }
 
     /// The applications the person chose, from a window's menu, to
@@ -318,11 +354,7 @@ where
                 self.shell.frame_shown(&screen, Duration::from_nanos(time_ns));
             }
             Told::Front => self.put_pointer(),
-            Told::Rearrange => {
-                let display = self.display.handle();
-                self.screens.arrange(&mut self.renderer, &mut self.shell, &display)?;
-                self.put_pointer();
-            }
+            Told::Rearrange => self.arrange()?,
         }
         self.settle();
         Ok(())

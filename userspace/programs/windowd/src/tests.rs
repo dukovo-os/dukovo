@@ -8,6 +8,7 @@
 mod laid;
 mod managed;
 mod rig;
+mod screens;
 mod shared;
 
 use std::cell::RefCell;

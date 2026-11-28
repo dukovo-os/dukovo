@@ -159,11 +159,29 @@ pub struct Scene<'a> {
     pub panel: Option<&'a Panel>,
 }
 
-/// The place of the desktop `at` as a place of the frame of the screen
-/// whose top left corner is at `screen`. A screen shows the desktop at
-/// its own size in release 1.1.
-fn on_screen(at: Point<i32, Logical>, screen: Point<i32, Logical>) -> Point<i32, Physical> {
-    (at - screen).to_physical(1)
+/// A screen as a frame is drawn for it: where the top left corner of
+/// its area of the desktop is, and how many of its pixels a point of
+/// the desktop is across.
+#[derive(Clone, Copy)]
+struct Onto {
+    corner: Point<i32, Logical>,
+    zoom: f64,
+}
+
+impl Onto {
+    /// The place of the desktop `at` as a place of the frame, to the
+    /// nearest pixel.
+    fn place(self, at: Point<i32, Logical>) -> Point<i32, Physical> {
+        (at - self.corner).to_physical_precise_round(self.zoom)
+    }
+
+    /// The rectangle of the desktop `rect` as one of the frame, each
+    /// of its edges to the nearest pixel, so that two that share an
+    /// edge on the desktop share it in the frame.
+    fn rect(self, rect: Rectangle<i32, Logical>) -> Rectangle<i32, Physical> {
+        let (from, to) = (self.place(rect.loc), self.place(rect.loc + rect.size.to_point()));
+        Rectangle::new(from, (to - from).to_size())
+    }
 }
 
 impl Scene<'_> {
@@ -177,10 +195,12 @@ impl Scene<'_> {
         &self,
         renderer: &mut PixmanRenderer,
         screen: Rectangle<i32, Logical>,
+        zoom: f64,
     ) -> Result<Vec<Piece>, PixmanError> {
+        let onto = Onto { corner: screen.loc, zoom };
         let mut pieces = Vec::new();
         if let Some(panel) = self.panel {
-            let at = on_screen(panel.area().loc, screen.loc).to_f64();
+            let at = onto.place(panel.area().loc).to_f64();
             let own = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 at,
@@ -193,29 +213,28 @@ impl Scene<'_> {
             pieces.push(Piece::Own(own));
         }
         for framed in self.windows.stacked() {
-            window(renderer, framed, screen.loc, &mut pieces)?;
+            window(renderer, framed, onto, &mut pieces)?;
         }
         Ok(pieces)
     }
 }
 
-/// Adds to `pieces` what `framed` is drawn from on the screen whose top
-/// left corner is at `screen`.
+/// Adds to `pieces` what `framed` is drawn from on the screen `onto`.
 fn window(
     renderer: &mut PixmanRenderer,
     framed: &Framed,
-    screen: Point<i32, Logical>,
+    onto: Onto,
     pieces: &mut Vec<Piece>,
 ) -> Result<(), PixmanError> {
     let Some(surface) = framed.window.wl_surface() else { return Ok(()) };
-    let origin = on_screen(framed.surface_at(), screen);
+    let origin = onto.place(framed.surface_at());
     for (popup, within) in PopupManager::popups_for_surface(&surface) {
         let offset = framed.window.geometry().loc + within - popup.geometry().loc;
         pieces.extend(render_elements_from_surface_tree(
             renderer,
             popup.wl_surface(),
-            origin + offset.to_physical(1),
-            1.0,
+            onto.place(framed.surface_at() + offset),
+            onto.zoom,
             1.0,
             Kind::Unspecified,
         ));
@@ -224,7 +243,7 @@ fn window(
         let at = framed.at() + Point::from((strip.rect.x, strip.rect.y));
         let own = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            on_screen(at, screen).to_f64(),
+            onto.place(at).to_f64(),
             &strip.buffer,
             None,
             None,
@@ -233,12 +252,16 @@ fn window(
         )?;
         pieces.push(Piece::Own(own));
     }
-    let mut parts = framed
-        .shows()
-        .map(|part| Rectangle::new(on_screen(part.loc, screen), part.size.to_physical(1)));
+    let mut parts = framed.shows().map(|part| onto.rect(part));
     let parts = [parts.next(), parts.next()];
-    let whole: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> =
-        render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
+    let whole: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> = render_elements_from_surface_tree(
+        renderer,
+        &surface,
+        origin,
+        onto.zoom,
+        1.0,
+        Kind::Unspecified,
+    );
     let cut = whole.into_iter().filter_map(|surface| Cut::of(surface, parts));
     pieces.extend(cut.map(Piece::Window));
     Ok(())

@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod screens;
+
+use screens::ScreensSet;
+
 /// The system's settings.
 pub const SYSTEM: &str = "/system/settings/windowd.json";
 
@@ -96,6 +100,8 @@ pub struct Settings {
     pub repeat_delay_ms: u32,
     /// How many times a second it repeats then.
     pub repeat_rate: u32,
+    /// What is set of the screens (ADR 0725).
+    pub screens: ScreensSet,
 }
 
 impl Default for Settings {
@@ -106,6 +112,7 @@ impl Default for Settings {
             double_click_ms: 500,
             repeat_delay_ms: 250,
             repeat_rate: 30,
+            screens: ScreensSet::default(),
         }
     }
 }
@@ -185,6 +192,17 @@ impl Settings {
             return vec![format!("{file}: not a JSON object")];
         };
         for (key, value) in root {
+            match key.as_str() {
+                "screens" => {
+                    self.screens.lay_screens(&mut reading, value);
+                    continue;
+                }
+                "layouts" => {
+                    self.screens.lay_layouts(&mut reading, value);
+                    continue;
+                }
+                _ => {}
+            }
             let name = |within: &str| format!("{key}.{within}");
             let Some(group) = reading.object(key, value) else { continue };
             for (within, value) in group {

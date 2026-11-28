@@ -23,7 +23,7 @@ use smithay::backend::renderer::element::{Kind, render_elements};
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::Transform;
+use smithay::utils::{Logical, Point, Transform};
 use smithay::wayland::compositor::with_states;
 use window_frame::Edge;
 
@@ -198,12 +198,13 @@ fn pixels(marks: &[Vec<u8>]) -> MemoryRenderBuffer {
 }
 
 /// What the pointer's picture is drawn from when the pointer shows
-/// `shown`, and the picture's hot spot. `None` for a pointer that is
-/// hidden.
+/// `shown`, at `zoom` pixels to a point, and the picture's hot spot in
+/// points. `None` for a pointer that is hidden.
 pub fn drawn(
     renderer: &mut PixmanRenderer,
     shown: Shown<'_>,
     own: &Arrows,
+    zoom: f64,
 ) -> Option<(Vec<Drawn>, (u16, u16))> {
     // The programs of release 1.1 that name a pointer get the arrow
     // (docs/deferred.md).
@@ -212,7 +213,7 @@ pub fn drawn(
         Shown::Programs(CursorImageStatus::Named(_)) => Picture::Arrow,
         Shown::Programs(CursorImageStatus::Hidden) => return None,
         Shown::Programs(CursorImageStatus::Surface(surface)) => {
-            return Some(of_surface(renderer, surface));
+            return Some(of_surface(renderer, surface, zoom));
         }
     };
     let (pixels, spot) = own.of(picture);
@@ -232,7 +233,11 @@ pub fn drawn(
 
 /// What the pointer's picture is drawn from when it is the surface
 /// `surface` of a program, and its hot spot.
-fn of_surface(renderer: &mut PixmanRenderer, surface: &WlSurface) -> (Vec<Drawn>, (u16, u16)) {
+fn of_surface(
+    renderer: &mut PixmanRenderer,
+    surface: &WlSurface,
+    zoom: f64,
+) -> (Vec<Drawn>, (u16, u16)) {
     let hot = with_states(surface, |states| {
         let role = states.data_map.get::<Mutex<CursorImageAttributes>>();
         role.and_then(|role| role.lock().ok().map(|role| role.hotspot))
@@ -242,7 +247,8 @@ fn of_surface(renderer: &mut PixmanRenderer, surface: &WlSurface) -> (Vec<Drawn>
     // that far in, and the picture's corner is the spot.
     let at = ((-hot.x).max(0), (-hot.y).max(0));
     let spot = (hot.x.clamp(0, SIDE as i32 - 1) as u16, hot.y.clamp(0, SIDE as i32 - 1) as u16);
-    let drawn = render_elements_from_surface_tree(renderer, surface, at, 1.0, 1.0, Kind::Cursor);
+    let at = Point::<i32, Logical>::from(at).to_physical_precise_round::<_, i32>(zoom);
+    let drawn = render_elements_from_surface_tree(renderer, surface, at, zoom, 1.0, Kind::Cursor);
     (drawn, spot)
 }
 

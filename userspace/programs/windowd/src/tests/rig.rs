@@ -194,6 +194,18 @@ impl FakeKernel {
         assert_eq!(self.layer.screen_found(self.card.0, index, &found), Ok(true));
     }
 
+    /// The card's screen at `index` is found anew with a monitor that
+    /// offers `modes`, each a width, a height and its frames in 1000
+    /// seconds, the one it prefers first.
+    pub fn offers(&mut self, index: usize, modes: &[(u32, u32, u32)]) {
+        let modes: Vec<Mode> = modes
+            .iter()
+            .map(|(width, height, mhz)| Mode { refresh_mhz: *mhz, ..mode(*width, *height) })
+            .collect();
+        let found = Found { plugged: true, modes: &modes, data: &[] };
+        assert_eq!(self.layer.screen_found(self.card.0, index, &found), Ok(true));
+    }
+
     /// The lender takes the screens back, as when the person chooses a
     /// console, or lends them to the desktop again.
     pub fn lend(&mut self, to_desktop: bool) {

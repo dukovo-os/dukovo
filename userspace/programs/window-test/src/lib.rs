@@ -158,6 +158,11 @@ pub struct Screen {
     pub x: i32,
     /// Where its top edge is.
     pub y: i32,
+    /// The whole zoom a program is to draw for it at.
+    pub scale: i32,
+    /// How many quarters, counter-clockwise, the protocol says a
+    /// program's picture is turned by to undo the screen's turn.
+    pub turned: u32,
 }
 
 /// What the window server offers and has said.
@@ -485,6 +490,20 @@ impl Client {
     fn sent(&mut self) -> Outcome {
         let gone = |err| format!("the window server: {err}");
         self.queue.roundtrip(&mut self.told).map(|_| ()).map_err(gone)
+    }
+
+    /// Waits until the program has read what the window server had to
+    /// say of everything there is now: a screen that came since has
+    /// said its mode and its place.
+    ///
+    /// # Errors
+    ///
+    /// If the window server is gone.
+    pub fn caught_up(&mut self) -> Outcome {
+        // What is offered now, and then what each new thing says of
+        // itself.
+        self.sent()?;
+        self.sent()
     }
 
     /// The window, if it shows.
@@ -1025,7 +1044,16 @@ impl Dispatch<wl_output::WlOutput, u32> for Told {
             return;
         };
         match event {
-            wl_output::Event::Geometry { x, y, .. } => (screen.x, screen.y) = (x, y),
+            wl_output::Event::Geometry { x, y, transform, .. } => {
+                (screen.x, screen.y) = (x, y);
+                screen.turned = match transform {
+                    WEnum::Value(wl_output::Transform::_90) => 1,
+                    WEnum::Value(wl_output::Transform::_180) => 2,
+                    WEnum::Value(wl_output::Transform::_270) => 3,
+                    _ => 0,
+                };
+            }
+            wl_output::Event::Scale { factor } => screen.scale = factor,
             wl_output::Event::Mode { flags: WEnum::Value(flags), width, height, .. }
                 if flags.contains(wl_output::Mode::Current) =>
             {
