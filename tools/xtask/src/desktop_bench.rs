@@ -466,6 +466,29 @@ fn drive(vm: &mut Vm, cpus: &Cpus) -> std::result::Result<Vec<Measurement>, Stri
     host_said(vm, &counted, "rest, a second", IDLE_FOR.as_secs() as u32, ran, took);
     let idle = ran / took.as_secs_f64();
     rows.push(row("desktop_idle", idle, 1));
+    // MEASUREMENT ONLY: the seconds after, each by itself, which show
+    // whether the machine had come to rest.
+    for second in 1..=8 {
+        let counted = vm.host_counts();
+        let from = Ran::now(cpus)?;
+        std::thread::sleep(Duration::from_secs(1));
+        let (ran, _) = from.since(cpus)?;
+        let now = vm.host_counts();
+        let since = |name: &str| {
+            let of = |counts: &[(String, u64)]| {
+                counts.iter().find(|(key, _)| key == name).map_or(0, |(_, value)| *value)
+            };
+            of(&now).saturating_sub(of(&counted))
+        };
+        println!(
+            "HOST rest later, second {second}: ran {:.1} us, {} halts, {} mmio, {} io, {} exits",
+            ran / 1000.0,
+            since("halt_exits"),
+            since("mmio_exits"),
+            since("io_exits"),
+            since("exits")
+        );
+    }
 
     // A key starts the frames.
     let counted = vm.host_counts();

@@ -17,8 +17,9 @@ pub(crate) struct Tally {
     at: Instant,
     /// The system's own counters, by name.
     system: BTreeMap<String, u64>,
-    /// The nanoseconds each process has run, by number and name.
-    ran: BTreeMap<(u32, String), u64>,
+    /// The nanoseconds each process has run and the times it was given a
+    /// CPU, by number and name.
+    ran: BTreeMap<(u32, String), (u64, u64)>,
 }
 
 /// The `key: value` numbers of `text`.
@@ -40,7 +41,7 @@ fn processes(root: &str) -> Vec<u32> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read(system: &mut BTreeMap<String, u64>, ran: &mut BTreeMap<(u32, String), u64>) {
+fn read(system: &mut BTreeMap<String, u64>, ran: &mut BTreeMap<(u32, String), (u64, u64)>) {
     if let Ok(text) = std::fs::read_to_string("/processes/stat") {
         numbers(&text, system);
     }
@@ -51,14 +52,16 @@ fn read(system: &mut BTreeMap<String, u64>, ran: &mut BTreeMap<(u32, String), u6
         let of =
             |key: &str| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix(": "));
         let name = of("name").unwrap_or("?").to_string();
+        let count = |key: &str| of(key).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
         if let Some(ns) = of("cpu_ns").and_then(|ns| ns.parse().ok()) {
-            ran.insert((number, name), ns);
+            let runs = count("voluntary_switches") + count("involuntary_switches");
+            ran.insert((number, name), (ns, runs));
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-fn read(system: &mut BTreeMap<String, u64>, ran: &mut BTreeMap<(u32, String), u64>) {
+fn read(system: &mut BTreeMap<String, u64>, ran: &mut BTreeMap<(u32, String), (u64, u64)>) {
     if let Ok(text) = std::fs::read_to_string("/proc/stat") {
         for line in text.lines() {
             let mut words = line.split_whitespace();
@@ -94,15 +97,16 @@ fn read(system: &mut BTreeMap<String, u64>, ran: &mut BTreeMap<(u32, String), u6
     for number in processes("/proc") {
         let name = std::fs::read_to_string(format!("/proc/{number}/comm"))
             .map_or_else(|_| "?".into(), |name| name.trim().to_string());
-        let mut ns = 0u64;
+        let (mut ns, mut runs) = (0u64, 0u64);
         for thread in processes(&format!("/proc/{number}/task")) {
             let file = format!("/proc/{number}/task/{thread}/schedstat");
-            let first = std::fs::read_to_string(file)
-                .ok()
-                .and_then(|text| text.split_whitespace().next()?.parse::<u64>().ok());
-            ns += first.unwrap_or(0);
+            let text = std::fs::read_to_string(file).unwrap_or_default();
+            let mut words = text.split_whitespace().map(|word| word.parse::<u64>().unwrap_or(0));
+            // Time on a CPU, time waiting for one, times given one.
+            ns += words.next().unwrap_or(0);
+            runs += words.nth(1).unwrap_or(0);
         }
-        ran.insert((number, name), ns);
+        ran.insert((number, name), (ns, runs));
     }
 }
 
@@ -128,17 +132,22 @@ impl Tally {
                 ));
             }
         }
-        let mut programs: Vec<(u64, &(u32, String))> = then
+        let mut programs: Vec<(u64, u64, &(u32, String))> = then
             .ran
             .iter()
-            .map(|(who, ns)| (ns.saturating_sub(self.ran.get(who).copied().unwrap_or(0)), who))
-            .filter(|(ns, _)| *ns > 0)
+            .map(|(who, (ns, runs))| {
+                let (ns_then, runs_then) = self.ran.get(who).copied().unwrap_or((0, 0));
+                (ns.saturating_sub(ns_then), runs.saturating_sub(runs_then), who)
+            })
+            .filter(|(ns, _, _)| *ns > 0)
             .collect();
         programs.sort_by(|one, other| other.0.cmp(&one.0));
-        for (ns, (number, name)) in programs.into_iter().take(16) {
+        for (ns, runs, (number, name)) in programs.into_iter().take(20) {
             lines.push(format!(
-                "window-test: tally {step}: program {name}[{number}] {ns} ns ({:.1} us a turn)",
-                turn(ns) / 1000.0
+                "window-test: tally {step}: program {name}[{number}] {ns} ns ({:.1} us a turn), \
+                 {runs} runs ({:.2} a turn)",
+                turn(ns) / 1000.0,
+                turn(runs)
             ));
         }
         lines
