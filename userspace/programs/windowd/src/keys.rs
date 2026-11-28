@@ -19,9 +19,10 @@
 //! and let go alone shows the list.
 
 use input::abi::{
-    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12, KEY_LEFT,
-    KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHT, KEY_RIGHTALT,
-    KEY_RIGHTCTRL, KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB, KEY_UP,
+    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_D, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12,
+    KEY_LEFT, KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHT,
+    KEY_RIGHTALT, KEY_RIGHTCTRL, KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB,
+    KEY_UP,
 };
 use smithay::input::keyboard::{LedState, ModifiersState};
 
@@ -83,6 +84,19 @@ pub enum Ask {
         /// Whether to the screen before.
         back: bool,
     },
+    /// The screen the pointer is on is to have a new desktop, after
+    /// the one that shows.
+    DeskNew,
+    /// The desktop that shows there is to close.
+    DeskClose,
+    /// The desktop after it is to show, or the one before for `back`;
+    /// that window goes along for `along`.
+    DeskStep {
+        /// Whether the desktop before.
+        back: bool,
+        /// Whether the window the person works in goes along.
+        along: bool,
+    },
 }
 
 /// What pressing the key of Linux code `code` asks of the window
@@ -91,6 +105,7 @@ pub fn ask(held: &ModifiersState, code: u16) -> Option<Ask> {
     let alt_alone = held.alt && !held.ctrl && !held.logo;
     let super_alone = held.logo && !held.ctrl && !held.alt && !held.shift;
     let super_shift = held.logo && held.shift && !held.ctrl && !held.alt;
+    let super_ctrl = held.logo && held.ctrl && !held.alt;
     match code {
         KEY_TAB if alt_alone && held.shift => Some(Ask::Previous),
         KEY_TAB if alt_alone => Some(Ask::Next),
@@ -98,6 +113,10 @@ pub fn ask(held: &ModifiersState, code: u16) -> Option<Ask> {
         KEY_SPACE if alt_alone && !held.shift => Some(Ask::Menu),
         KEY_UP if super_alone => Some(Ask::Up),
         KEY_DOWN if super_alone => Some(Ask::Down),
+        KEY_D if super_ctrl && !held.shift => Some(Ask::DeskNew),
+        KEY_F4 if super_ctrl && !held.shift => Some(Ask::DeskClose),
+        KEY_LEFT if super_ctrl => Some(Ask::DeskStep { back: true, along: held.shift }),
+        KEY_RIGHT if super_ctrl => Some(Ask::DeskStep { back: false, along: held.shift }),
         KEY_LEFT if super_shift => Some(Ask::ToScreen { back: true }),
         KEY_RIGHT if super_shift => Some(Ask::ToScreen { back: false }),
         _ => None,

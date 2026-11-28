@@ -23,8 +23,10 @@
 //! Nothing here reaches the seat: who has the keyboard is the
 //! [`Shell`](crate::shell::Shell)'s to say.
 
+pub mod desks;
 pub mod resize;
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 use smithay::backend::allocator::Fourcc;
@@ -42,6 +44,7 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData};
 use window_frame::{Bar, Button, Canvas, Edge, Layout, Look, Margins, Part, Rect, Shape, Theme};
 
+use desks::Row;
 use resize::Resize;
 
 use crate::screens::layout;
@@ -124,6 +127,23 @@ struct Home {
     /// The corner of the frame's box then, or where a maximized window
     /// was to go when restored.
     at: Option<Point<i32, Logical>>,
+    /// Which of the screen's desktops the window was on.
+    desk: usize,
+}
+
+/// What changes of a screen's desktops (ADR 0726).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Desk {
+    /// A desktop is made after the one that shows, and shows.
+    New,
+    /// The one that shows closes: its windows are on the one before
+    /// it, or on the one after for the first, which shows.
+    Close,
+    /// The one after shows, or the one before.
+    Step {
+        /// Whether the one before.
+        back: bool,
+    },
 }
 
 /// A screen: its name and its area of the desktop.
@@ -175,6 +195,10 @@ pub struct Framed {
     layout: Layout,
     /// Whether the window is off the screens, in the list alone.
     minimized: bool,
+    /// The name of the screen it is on, and which of that screen's
+    /// desktops.
+    screen: String,
+    desk: usize,
     /// The window's title, as its program last gave it.
     title: String,
     /// Where a maximized window goes when it is restored.
@@ -375,6 +399,10 @@ pub struct Windows {
     shown: i32,
     /// Counts the times a window was given the keyboard.
     uses: u64,
+    /// Each screen's desktops, by the screen's name. A screen with no
+    /// entry has the one desktop, and one that went keeps its entry
+    /// for when it is there again.
+    rows: BTreeMap<String, Row>,
 }
 
 impl Default for Windows {
@@ -385,6 +413,7 @@ impl Default for Windows {
             framed: Vec::new(),
             shown: 0,
             uses: 0,
+            rows: BTreeMap::new(),
         }
     }
 }
@@ -420,6 +449,99 @@ impl Windows {
         let mut all: Vec<&Framed> = self.framed.iter().collect();
         all.sort_by_key(|framed| core::cmp::Reverse(framed.used));
         all
+    }
+
+    /// The windows of the desktops that show, minimized ones too, the
+    /// one that last had the keyboard first: what the list of windows
+    /// holds.
+    pub fn listed(&self) -> Vec<&Framed> {
+        let mut listed = self.by_use();
+        listed.retain(|framed| self.on_shown_desk(framed));
+        listed
+    }
+
+    /// The desktops of the screen named `screen`.
+    fn row(&self, screen: &str) -> Row {
+        self.rows.get(screen).copied().unwrap_or_default()
+    }
+
+    /// Whether the desktop `framed` is on is the one its screen shows.
+    fn on_shown_desk(&self, framed: &Framed) -> bool {
+        self.row(&framed.screen).shown() == framed.desk
+    }
+
+    /// The name of the screen the place `at` is on, or of the first.
+    fn screen_name_at(&self, at: Point<f64, Logical>) -> Option<String> {
+        let under = self.space.output_under(at).next();
+        under.or_else(|| self.space.outputs().next()).map(Output::name)
+    }
+
+    /// The window at `index` is on the desktop that shows of the
+    /// screen most of it is on, if that is another screen than it was
+    /// on.
+    fn join(&mut self, index: usize) {
+        let screens = self.screens();
+        let Some((name, _)) = most_of(&screens, Windows::on(&self.framed[index])) else { return };
+        if self.framed[index].screen != *name {
+            let desk = self.row(name).shown();
+            let framed = &mut self.framed[index];
+            (framed.screen, framed.desk) = (name.clone(), desk);
+        }
+    }
+
+    /// Changes the desktops of the screen the place `at` is on as
+    /// `change` says. The window `along`, if it is on that screen, is
+    /// then on the desktop that shows. Returns whether another desktop
+    /// shows: none does at the row's end, for the only desktop that
+    /// would close, or in a row that is full.
+    pub fn desk(&mut self, at: Point<f64, Logical>, change: Desk, along: Option<&Window>) -> bool {
+        let Some(screen) = self.screen_name_at(at) else { return false };
+        let mut row = self.row(&screen);
+        let moved: fn(usize, usize) -> usize = match change {
+            Desk::New => desks::after_add,
+            Desk::Close => desks::after_close,
+            Desk::Step { .. } => |desk, _| desk,
+        };
+        let changed = match change {
+            Desk::New => row.add(),
+            Desk::Close => row.close(),
+            Desk::Step { back } => row.step(back),
+        };
+        let Some(changed) = changed else { return false };
+        for framed in self.framed.iter_mut().filter(|framed| framed.screen == screen) {
+            framed.desk = moved(framed.desk, changed);
+            if along == Some(&framed.window) {
+                framed.desk = row.shown();
+            }
+        }
+        self.rows.insert(screen.clone(), row);
+        // The windows that show now are over one another as they were
+        // last used.
+        let mut order: Vec<usize> =
+            (0..self.framed.len()).filter(|index| self.framed[*index].screen == screen).collect();
+        order.sort_by_key(|index| self.framed[*index].used);
+        for index in order {
+            self.put(index);
+            let window = self.framed[index].window.clone();
+            if self.space.element_location(&window).is_some() {
+                self.space.raise_element(&window, false);
+            }
+        }
+        true
+    }
+
+    /// Whether `window` shows: it is not minimized, and on a desktop
+    /// that shows.
+    pub fn showing(&self, window: &Window) -> bool {
+        self.framed(window).is_some_and(|framed| !framed.minimized && self.on_shown_desk(framed))
+    }
+
+    /// The window last used of those that show on the screen the place
+    /// `at` is on.
+    pub fn last_used_at(&self, at: Point<f64, Logical>) -> Option<Window> {
+        let screen = self.screen_name_at(at)?;
+        let shows = |framed: &&Framed| framed.screen == screen && self.showing(&framed.window);
+        self.by_use().into_iter().find(shows).map(|framed| framed.window.clone())
     }
 
     /// The window in front.
@@ -499,8 +621,12 @@ impl Windows {
             if let Some((home, area)) = back {
                 let at = home.at.map(|at| layout::across(home.area, area, at));
                 let from = most_of(before, Windows::on(framed)).map_or(area, |(_, was)| *was);
+                let desk = self.row(&home.screen).nearest(home.desk);
                 self.carry(index, from, area);
                 self.place(index, at);
+                // On its screen again, it is on the desktop it was on.
+                self.join(index);
+                self.framed[index].desk = desk;
                 self.put(index);
                 self.framed[index].home = None;
                 continue;
@@ -511,7 +637,7 @@ impl Windows {
                 None => {
                     let Some(nearest) = layout::nearest(*was, &areas) else { continue };
                     let at = if framed.maximized() { framed.restore.at } else { Some(framed.at) };
-                    let home = Home { screen: name.clone(), area: *was, at };
+                    let home = Home { screen: name.clone(), area: *was, at, desk: framed.desk };
                     self.carry(index, *was, areas[nearest]);
                     self.framed[index].home.get_or_insert(home);
                 }
@@ -605,11 +731,13 @@ impl Windows {
     /// Puts the surface of the window at `index` where its frame has
     /// it, without changing the order of the windows.
     fn put(&mut self, index: usize) {
+        self.join(index);
         let framed = &self.framed[index];
-        if framed.minimized {
+        let window = framed.window.clone();
+        if framed.minimized || !self.on_shown_desk(framed) {
+            self.space.unmap_elem(&window);
             return;
         }
-        let window = framed.window.clone();
         let at = framed.at + Point::from((framed.layout.surface.x, framed.layout.surface.y));
         if self.space.element_location(&window) == Some(at) {
             return;
@@ -662,11 +790,15 @@ impl Windows {
             Shape::Normal => self.first_place(screen, (layout.frame.w, layout.frame.h).into()),
         };
         let title = title_of(&window);
+        let on = self.screen_name_at(pointer).unwrap_or_default();
+        let desk = self.row(&on).shown();
         self.framed.push(Framed {
             window: window.clone(),
             at,
             layout,
             minimized: false,
+            screen: on,
+            desk,
             title,
             restore: Restore::default(),
             fills: screen,

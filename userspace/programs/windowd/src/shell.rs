@@ -88,8 +88,8 @@ use crate::manager::Asked;
 use crate::settings::TitleBars;
 use crate::stamps::Stamps;
 use crate::titlebar::{self, TitleBar};
-use crate::windows::Windows;
 use crate::windows::resize::answered;
+use crate::windows::{Desk, Windows};
 
 /// What the programs' requests changed since the desktop last looked.
 #[derive(Clone, Copy, Debug, Default)]
@@ -323,6 +323,21 @@ impl Shell {
             self.focus(front.as_ref());
         }
         self.changed.windows = true;
+    }
+
+    /// Changes the desktops of the screen the pointer is on as
+    /// `change` says, with the window the person works in for `along`
+    /// (ADR 0726). The window last used on the desktop that shows then
+    /// has the keyboard. If that desktop has no window, the window that
+    /// had the keyboard keeps it if it still shows, on another screen.
+    pub fn desk(&mut self, change: Desk, along: bool) {
+        let at = self.pointer_at();
+        let along = self.active.clone().filter(|_| along);
+        if self.windows.desk(at, change, along.as_ref()) {
+            let last = self.windows.last_used_at(at);
+            let still = self.active.clone().filter(|window| self.windows.showing(window));
+            self.focus(last.or(still).as_ref());
+        }
     }
 
     /// Takes `window` off the screens. If it had the keyboard, the

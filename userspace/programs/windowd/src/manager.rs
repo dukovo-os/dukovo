@@ -31,7 +31,7 @@ use crate::pointer::Picture;
 use crate::settings::Settings;
 use crate::shell::{Shell, app_of};
 use crate::titlebar::TitleBar;
-use crate::windows::{Framed, Under};
+use crate::windows::{Desk, Framed, Under};
 
 /// How far the pointer moves with a button held on a title bar before
 /// the window follows it, and how far apart the two presses of a double
@@ -436,6 +436,9 @@ impl Manager {
             }
             (Ask::List, Hold::List { .. }) => self.let_go(shell),
             (Ask::List, Hold::None) => self.list(shell, at, None),
+            (Ask::DeskNew, Hold::None) => shell.desk(Desk::New, false),
+            (Ask::DeskClose, Hold::None) => shell.desk(Desk::Close, false),
+            (Ask::DeskStep { back, along }, Hold::None) => shell.desk(Desk::Step { back }, along),
             (Ask::Close | Ask::Menu | Ask::Up | Ask::Down | Ask::ToScreen { .. }, Hold::None) => {
                 let Some(window) = shell.active().cloned() else { return };
                 let Some(framed) = shell.windows.framed(&window) else { return };
@@ -521,7 +524,7 @@ impl Manager {
     /// used before the present one chosen, or for `back` the one used
     /// longest ago.
     fn list(&mut self, shell: &mut Shell, at: Point<f64, Logical>, back: Option<bool>) {
-        let all = shell.windows.by_use();
+        let all = shell.windows.listed();
         if all.is_empty() {
             return;
         }
