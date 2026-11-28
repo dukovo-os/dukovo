@@ -57,6 +57,8 @@ enum Done {
 /// Handles a system call from user mode.
 pub fn handle(regs: &mut SyscallRegs) {
     Arch::enable_interrupts();
+    super::callprobe::mark(super::callprobe::SYS);
+    super::callprobe::mark(super::callprobe::CAL);
     // Borrowed, not counted: the call runs as this thread throughout.
     let running = sched::running();
     let Some((me, user)) = running.as_deref().and_then(|me| Some((me, me.user()?))) else {
@@ -80,6 +82,7 @@ pub fn handle(regs: &mut SyscallRegs) {
         super::note_domain_stop(me, user);
         exit_current(user.clone(), EXIT_STOPPED, Ending::Stop);
     }
+    super::callprobe::handled();
 }
 
 /// Runs the system call in `regs` and puts what it returns there; returns
@@ -242,6 +245,7 @@ fn cap_call(
     // without counting a reference, if the process has no other thread:
     // ADR 0414).
     let found = objects::find_holding(cspace, slot, methods::takes_object, &user.process, place)?;
+    super::callprobe::mark(super::callprobe::FOUND);
     let cap = &found.cap;
     match cap.check(ObjectKind::Endpoint, Rights::SEND) {
         Ok(()) => {
@@ -267,7 +271,9 @@ fn cap_call(
         return Err(Kernel::InvalidArgument.status(1));
     }
     let answer = methods::call(me, user, slot, found, info, words);
-    answered(args, answer)
+    let done = answered(args, answer);
+    super::callprobe::mark(super::callprobe::ANSWERED);
+    done
 }
 
 /// The system calls' numbers run from 0 to this, less one.
@@ -326,6 +332,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
             let mut place = objects::Lent::default();
             let done = cap_call(me, user, a.cap, info, args, &mut place);
             place.end();
+            super::callprobe::mark(super::callprobe::ENDED);
             done
         }
         sys::SEND => {

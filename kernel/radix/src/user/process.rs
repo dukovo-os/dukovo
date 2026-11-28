@@ -1155,6 +1155,7 @@ pub fn method(
     label: u32,
     args: &[u64; 8],
 ) -> Result<Answer> {
+    super::callprobe::mark(super::callprobe::PROCESS);
     let reads = label == process::INFO || label == process::IDENTITY;
     let needs = if reads { Rights::READ } else { Rights::CONTROL };
     found.cap.check(ObjectKind::Process, needs).map_err(cap_error)?;

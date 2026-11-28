@@ -45,6 +45,7 @@
 //! a thread's IPC state; a ring's queues. None is held across a block.
 
 mod account;
+mod callprobe;
 mod clock;
 pub mod crash;
 pub mod device;
