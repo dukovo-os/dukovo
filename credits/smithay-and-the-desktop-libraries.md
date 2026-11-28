@@ -1,0 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+-->
+
+Section: In every image
+| [Smithay](https://github.com/Smithay/smithay) 0.7.0 by Victor Berger, Victoria Brekenfeld and the Smithay contributors, with [wayland-rs](https://github.com/Smithay/wayland-rs) (wayland-server, wayland-backend, wayland-protocols) and [calloop](https://github.com/Smithay/calloop) by Elinor Berger and their contributors, and the [pixman](https://github.com/cmeissl/pixman-rs) and [xkbcommon](https://github.com/rust-x-bindings/xkbcommon-rs) crates | The Wayland protocols, the windows' state and the damage-tracked drawing of windowd, the window server, with the changes for Radix in `ports/rust-crates/patches` ([ADR 0712](docs/adr/0712-the-window-server-is-smithay-drawing-with-pixman-into-the-display-layer-s-pictures.md), [ADR 0717](docs/adr/0717-windowd-is-one-thread-that-waits-on-each-program-s-connection-itself.md)); wayland-client draws the window of `window-test` | MIT |
+| [pixman](https://www.pixman.org/) 0.46.4 by Søren Sandmann and the pixman contributors | Draws every pixel of the desktop's frames, on the processor ([ADR 0712](docs/adr/0712-the-window-server-is-smithay-drawing-with-pixman-into-the-display-layer-s-pictures.md)) | MIT |
+| [libxkbcommon](https://xkbcommon.org/) 1.13.1 by Daniel Stone, Ran Benita and its contributors, with the layouts of [xkeyboard-config](https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config) 2.48 in `/system/resources/xkb` | The keyboard layout the desktop's programs are given, and the keys windowd keeps for itself ([ADR 0712](docs/adr/0712-the-window-server-is-smithay-drawing-with-pixman-into-the-display-layer-s-pictures.md)) | MIT, MIT-open-group, X11, HPND, HPND-sell-variant and the notices of Digital Equipment Corporation and Ivan Zinoviev |

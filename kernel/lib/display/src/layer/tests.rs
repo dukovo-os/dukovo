@@ -847,6 +847,54 @@ fn holders_that_end_while_the_attention_holder_is_raised() {
 }
 
 #[test]
+fn a_new_attention_holder_stands_under_the_holders_its_predecessor_lent_to() {
+    let mut rig = Rig::firmware();
+    let console = rig.console();
+    let desktop = rig.holder(2);
+    rig.layer.lend(console, desktop).unwrap();
+    let picture = u64::from(rig.frame(desktop, 2));
+    assert_eq!(rig.change(desktop, NOW, 0, &[(MAIN, PLANE_PICTURE, picture)]), DONE);
+    // Only the attention holder stands under, and only while it is not
+    // stacked itself.
+    assert_eq!(rig.layer.stand_under(desktop), Err(Kernel::NotPermitted.status(0)));
+    assert_eq!(rig.layer.stand_under(console), Err(busy()));
+
+    // The console ends under the desktop. The one started in its place
+    // is not given the front by the log, and stands under the desktop:
+    // nothing is drawn and nobody is told.
+    rig.layer.end(console);
+    let again = rig.layer.holder_of(3, true).unwrap();
+    let mine = u64::from(rig.frame(again, 3));
+    let entries = [(MAIN, PLANE_PICTURE, mine)];
+    assert_eq!(rig.change(again, NOW, 0, &entries), status(busy()));
+    rig.forget(&[desktop]);
+    assert_eq!(rig.layer.stand_under(again), Ok(()));
+    assert_eq!(rig.layer.front(), Some(desktop));
+    assert!(rig.kinds(again).is_empty() && rig.kinds(desktop).is_empty());
+    assert!(rig.firmware.asked().is_empty());
+
+    // The secure key raises it over the desktop as it did the first.
+    assert_eq!(rig.layer.secure_key(), Some(again));
+    assert_eq!(rig.told(again), [(EVENT_FRONT, 0), (EVENT_ATTENTION, 1)]);
+    assert_eq!(rig.layer.attention_end(again), Ok(()));
+    assert_eq!(rig.layer.front(), Some(desktop));
+    rig.forget(&[again, desktop]);
+
+    // The desktop gives the front back, and it comes to the new console,
+    // which has asked for nothing: the picture stays until it does.
+    assert_eq!(rig.layer.give_back(desktop), Ok(()));
+    assert_eq!((rig.layer.front(), rig.kinds(again)), (Some(again), vec![EVENT_FRONT]));
+    assert!(rig.firmware.asked().is_empty());
+    assert_eq!(rig.change(again, NOW, 0, &entries), DONE);
+    assert_eq!(rig.firmware.shown().main, Some(3));
+
+    // With no holder stacked there is nothing to stand under: the front
+    // is the log's to give.
+    assert_eq!(rig.layer.give_back(again), Ok(()));
+    assert_eq!(rig.layer.stand_under(again), Err(busy()));
+}
+
+#[test]
 fn a_holder_that_never_drew_is_raised_over_the_log_and_gives_it_back() {
     let mut rig = Rig::firmware();
     let prompt = rig.layer.holder_of(1, true).unwrap();

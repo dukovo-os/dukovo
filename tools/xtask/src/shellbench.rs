@@ -205,8 +205,8 @@ pub fn command(ctx: &Ctx, summary: Option<&str>) -> Result<()> {
         crate::bail!("bench --shell compares with bash, which is not installed")
     };
     eprintln!("    Building nukesh for this machine");
-    let mut build = crate::userspace::host_cargo(ctx, "build");
-    build.args(["--release", "-p", "nukesh"]);
+    let mut build = crate::userspace::host_cargo_of(ctx, "build", &["nukesh"]);
+    build.arg("--release");
     crate::process::run(ctx, &mut build)?;
     let nukesh = ctx.target.join("programs-host/release/nukesh");
     let dir = ctx.out.join("bench");

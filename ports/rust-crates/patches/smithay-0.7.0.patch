@@ -1,0 +1,129 @@
+SPDX-FileCopyrightText: Victor Berger, Drakulix (Victoria Brekenfeld) and the Smithay contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+Smithay on Radix (ADR 0712). The file a keyboard's layout is given to a
+program in is one of the kernel's files of memory (/devices/shm),
+opened again for reading alone before its name is taken away: Radix has
+no memfd, no seals and no shm_open. A picture's memory needs no
+DMA_BUF_SYNC, which Radix has not: it is a file of memory, whose pages
+are the same for everyone who mapped them. The address of a SIGBUS,
+which says which program cut the pool of its pixels short, is read
+through the libc crate's si_addr(), as its siginfo_t gives it on Radix.
+
+diff --git a/smithay-0.7.0/src/backend/allocator/dmabuf.rs b/smithay-0.7.0/src/backend/allocator/dmabuf.rs
+index 5343cc7..be9a8b6 100644
+--- a/smithay-0.7.0/src/backend/allocator/dmabuf.rs
++++ b/smithay-0.7.0/src/backend/allocator/dmabuf.rs
+@@ -12,6 +12,7 @@
+ 
+ use calloop::generic::Generic;
+ use calloop::{EventSource, Interest, Mode, PostAction};
++#[cfg(not(target_os = "radix"))]
+ use rustix::ioctl::Setter;
+ 
+ use super::{Allocator, Buffer, Format, Fourcc, Modifier};
+@@ -335,6 +336,11 @@ impl Dmabuf {
+             .planes
+             .get(idx)
+             .ok_or(DmabufSyncFailed::PlaneIndexOutOfBound)?;
++        // On Radix a plane is a file of memory, whose pages are the same
++        // for everyone who has mapped them: there is nothing to synchronize.
++        #[cfg(target_os = "radix")]
++        let _ = (plane, flags);
++        #[cfg(not(target_os = "radix"))]
+         unsafe { rustix::ioctl::ioctl(&plane.fd, Setter::<DMA_BUF_SYNC, _>::new(dma_buf_sync { flags })) }
+             .map_err(std::io::Error::from)?;
+         Ok(())
+@@ -407,12 +413,14 @@ bitflags::bitflags! {
+     }
+ }
+ 
++#[cfg(not(target_os = "radix"))]
+ #[repr(C)]
+ #[allow(non_camel_case_types)]
+ struct dma_buf_sync {
+     flags: DmabufSyncFlags,
+ }
+ 
++#[cfg(not(target_os = "radix"))]
+ const DMA_BUF_SYNC: rustix::ioctl::Opcode = rustix::ioctl::opcode::write::<dma_buf_sync>(b'b', 0);
+ 
+ /// A mapping into a [`Dmabuf`]
+diff --git a/smithay-0.7.0/src/utils/sealed_file.rs b/smithay-0.7.0/src/utils/sealed_file.rs
+index 23ba7c0..bc98fc9 100644
+--- a/smithay-0.7.0/src/utils/sealed_file.rs
++++ b/smithay-0.7.0/src/utils/sealed_file.rs
+@@ -51,7 +51,53 @@ impl SealedFile {
+     }
+ 
+     /// Create a `[SealedFile]` with the given binary data.
+-    #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "android")))]
++    // Radix has no memfd and no seals. The file is one of the kernel's
++    // files of memory, made under a name nothing else has and opened again
++    // for reading alone before the name is taken away.
++    #[cfg(target_os = "radix")]
++    pub fn with_data(name: &CStr, data: &[u8]) -> Result<Self, std::io::Error> {
++        use rand::{distr::Alphanumeric, Rng};
++        use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
++
++        let mut rng = rand::rng();
++        let mut n = 0;
++        let (path, mut file) = loop {
++            let mut file_name = name.to_bytes().to_owned();
++            file_name.push(b'-');
++            file_name.extend((0..7).map(|_| rng.sample(Alphanumeric)));
++            let path = std::path::Path::new("/devices/shm").join(std::ffi::OsStr::from_bytes(&file_name));
++            let file = File::options()
++                .read(true)
++                .write(true)
++                .create_new(true)
++                .mode(0o600)
++                .open(&path);
++            match file {
++                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && n <= 3 => n += 1,
++                file => break (path, file?),
++            }
++        };
++
++        let file_rdonly = File::open(&path);
++        let _ = std::fs::remove_file(&path);
++        let file_rdonly = file_rdonly?;
++
++        file.write_all(data)?;
++        file.flush()?;
++
++        Ok(Self {
++            file: file_rdonly,
++            size: data.len(),
++        })
++    }
++
++    /// Create a `[SealedFile]` with the given binary data.
++    #[cfg(not(any(
++        target_os = "linux",
++        target_os = "freebsd",
++        target_os = "android",
++        target_os = "radix"
++    )))]
+     pub fn with_data(name: &CStr, data: &[u8]) -> Result<Self, std::io::Error> {
+         use rand::{distr::Alphanumeric, Rng};
+         use rustix::{
+diff --git a/smithay-0.7.0/src/wayland/shm/pool.rs b/smithay-0.7.0/src/wayland/shm/pool.rs
+index 4f6cad7..b7c8f28 100644
+--- a/smithay-0.7.0/src/wayland/shm/pool.rs
++++ b/smithay-0.7.0/src/wayland/shm/pool.rs
+@@ -364,7 +364,12 @@ unsafe fn siginfo_si_addr(info: *mut libc::siginfo_t) -> *mut libc::c_void {
+     unsafe { (*(info as *const siginfo_t)).si_addr }
+ }
+ 
+-#[cfg(not(any(target_os = "linux", target_os = "android")))]
++#[cfg(target_os = "radix")]
++unsafe fn siginfo_si_addr(info: *mut libc::siginfo_t) -> *mut libc::c_void {
++    unsafe { (*info).si_addr() }
++}
++
++#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "radix")))]
+ unsafe fn siginfo_si_addr(info: *mut libc::siginfo_t) -> *mut libc::c_void {
+     unsafe { (*info).si_addr as _ }
+ }

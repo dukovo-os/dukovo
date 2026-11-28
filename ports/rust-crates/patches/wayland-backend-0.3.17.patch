@@ -1,0 +1,118 @@
+SPDX-FileCopyrightText: Elinor Berger and the wayland-rs contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+wayland-backend's server on Radix, which has neither epoll nor kqueue:
+a client is registered with nothing, and the server waits on each
+client's own descriptor with poll(2) and dispatches it by its id, as
+windowd does (ADR 0717). The descriptor the backend gives out for all of
+its clients is one that is never ready, and dispatching all the clients
+reads each of them.
+
+diff --git a/wayland-backend-0.3.17/src/rs/server_impl/common_poll.rs b/wayland-backend-0.3.17/src/rs/server_impl/common_poll.rs
+index 83b279a..c83b002 100644
+--- a/wayland-backend-0.3.17/src/rs/server_impl/common_poll.rs
++++ b/wayland-backend-0.3.17/src/rs/server_impl/common_poll.rs
+@@ -48,6 +48,17 @@ impl<D> InnerBackend<D> {
+         ))]
+         let poll_fd = kqueue().map_err(Into::into).map_err(InitError::Io)?;
+ 
++        // Radix has neither epoll nor kqueue: a server there waits on each
++        // client's own descriptor with poll(2) and dispatches the client
++        // by its id. The descriptor it is given for all of them is one
++        // end of a pair of sockets that nothing is written to, kept open
++        // with the other end, so it is never ready.
++        #[cfg(target_os = "radix")]
++        let poll_fd = {
++            let (quiet, peer) = std::os::unix::net::UnixStream::pair().map_err(InitError::Io)?;
++            (OwnedFd::from(quiet), OwnedFd::from(peer))
++        };
++
+         Ok(Self { state: Arc::new(Mutex::new(State::new(poll_fd))) })
+     }
+ 
+@@ -141,6 +152,23 @@ impl<D> InnerBackend<D> {
+         Ok(dispatched)
+     }
+ 
++    // No descriptor says which clients wrote: each is read, and one that
++    // wrote nothing says so.
++    #[cfg(target_os = "radix")]
++    pub fn dispatch_all_clients(&self, data: &mut D) -> std::io::Result<usize> {
++        let ids: Vec<ClientId> = self.state.lock().unwrap().clients.all_clients_id().collect();
++        let mut dispatched = 0;
++        for id in ids {
++            if let Ok(count) = self.dispatch_events_for(data, id.id) {
++                dispatched += count;
++            }
++        }
++        let cleanup = self.state.lock().unwrap().cleanup();
++        cleanup(&self.handle(), data);
++
++        Ok(dispatched)
++    }
++
+     pub(crate) fn dispatch_events_for(
+         &self,
+         data: &mut D,
+diff --git a/wayland-backend-0.3.17/src/rs/server_impl/handle.rs b/wayland-backend-0.3.17/src/rs/server_impl/handle.rs
+index cdbeaf7..5cf1f2f 100644
+--- a/wayland-backend-0.3.17/src/rs/server_impl/handle.rs
++++ b/wayland-backend-0.3.17/src/rs/server_impl/handle.rs
+@@ -26,10 +26,28 @@ pub struct State<D: 'static> {
+     pub(crate) registry: Registry<D>,
+     pub(crate) pending_destructors: Vec<PendingDestructor<D>>,
+     pub(crate) poll_fd: OwnedFd,
++    // The other end of `poll_fd`, which keeps it from ever being ready.
++    #[cfg(target_os = "radix")]
++    _poll_peer: OwnedFd,
+     pub(crate) default_max_buffer_size: usize,
+ }
+ 
+ impl<D> State<D> {
++    #[cfg(target_os = "radix")]
++    pub(crate) fn new((poll_fd, _poll_peer): (OwnedFd, OwnedFd)) -> Self {
++        let debug =
++            matches!(std::env::var_os("WAYLAND_DEBUG"), Some(str) if str == "1" || str == "server");
++        Self {
++            clients: ClientStore::new(debug),
++            registry: Registry::new(),
++            pending_destructors: Vec::new(),
++            poll_fd,
++            _poll_peer,
++            default_max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
++        }
++    }
++
++    #[cfg(not(target_os = "radix"))]
+     pub(crate) fn new(poll_fd: OwnedFd) -> Self {
+         let debug =
+             matches!(std::env::var_os("WAYLAND_DEBUG"), Some(str) if str == "1" || str == "server");
+@@ -393,6 +411,14 @@ impl<D> ErasedState for State<D> {
+             unsafe { kevent(&self.poll_fd, &[evt], events, None).map(|_| ()) }
+         };
+ 
++        // Nothing to register with: the server waits on the client's own
++        // descriptor.
++        #[cfg(target_os = "radix")]
++        let ret: rustix::io::Result<()> = {
++            let _ = client;
++            Ok(())
++        };
++
+         match ret {
+             Ok(()) => Ok(id),
+             Err(e) => {
+diff --git a/wayland-backend-0.3.17/src/rs/server_impl/mod.rs b/wayland-backend-0.3.17/src/rs/server_impl/mod.rs
+index ac25efc..d73f7dc 100644
+--- a/wayland-backend-0.3.17/src/rs/server_impl/mod.rs
++++ b/wayland-backend-0.3.17/src/rs/server_impl/mod.rs
+@@ -82,6 +82,8 @@ pub struct InnerClientId {
+     serial: u32,
+ }
+ 
++// The numbers name a client to epoll and kqueue, which Radix has not.
++#[cfg_attr(target_os = "radix", allow(dead_code))]
+ impl InnerClientId {
+     fn as_u64(&self) -> u64 {
+         ((self.id as u64) << 32) + self.serial as u64

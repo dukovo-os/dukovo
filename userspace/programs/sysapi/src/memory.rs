@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -283,6 +283,25 @@ impl MemoryFile {
             NonNull::new(at.cast()).ok_or_else(|| io::Error::from_raw_os_error(libc::ENOMEM))?;
         self.mapped = true;
         Ok(SharedMapping { at, len })
+    }
+
+    /// Gives the file's descriptor to a library that maps its pages
+    /// itself, as a renderer does the picture it draws in. The library
+    /// then answers for what [`SharedMapping`] does here: that nothing
+    /// else of the program writes the pages.
+    ///
+    /// # Errors
+    ///
+    /// `ErrorKind::InvalidInput` once it is mapped, so that its pages
+    /// have one way to them.
+    pub fn into_fd(self) -> io::Result<OwnedFd> {
+        if self.mapped {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a mapped memory file gives its descriptor to nothing else",
+            ));
+        }
+        Ok(OwnedFd::from(self.file))
     }
 }
 

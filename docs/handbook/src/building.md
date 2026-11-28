@@ -65,9 +65,9 @@ The packages `ob` needs on each distribution are:
 
 | Distribution | Install command |
 | --- | --- |
-| Debian, Ubuntu, Linux Mint | `sudo apt install build-essential rustup qemu-system-x86 ovmf flex gawk xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils udftools udfclient genisoimage scdoc mandoc clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake pkgconf autoconf bison git`, then `cargo install mdbook --version 0.4.52 --locked` |
-| Fedora | `sudo dnf install gcc rustup qemu-system-x86 edk2-ovmf flex gawk xorriso mtools dosfstools exfatprogs gdisk sleuthkit btrfs-progs e2fsprogs ntfsprogs dislocker udftools genisoimage scdoc mandoc mdbook clang compiler-rt lld llvm meson ninja-build cmake pkgconf-pkg-config autoconf bison git patch` |
-| Arch Linux | `sudo pacman -S --needed base-devel rustup qemu-system-x86 edk2-ovmf flex gawk libisoburn mtools dosfstools exfatprogs gptfdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g udftools scdoc mandoc mdbook clang compiler-rt lld llvm meson ninja cmake pkgconf autoconf bison git` |
+| Debian, Ubuntu, Linux Mint | `sudo apt install build-essential rustup qemu-system-x86 ovmf flex gawk xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils udftools udfclient genisoimage scdoc mandoc clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake pkgconf autoconf bison libpixman-1-dev libxkbcommon-dev xkb-data git`, then `cargo install mdbook --version 0.4.52 --locked` |
+| Fedora | `sudo dnf install gcc rustup qemu-system-x86 edk2-ovmf flex gawk xorriso mtools dosfstools exfatprogs gdisk sleuthkit btrfs-progs e2fsprogs ntfsprogs dislocker udftools genisoimage scdoc mandoc mdbook clang compiler-rt lld llvm meson ninja-build cmake pkgconf-pkg-config autoconf bison pixman-devel libxkbcommon-devel xkeyboard-config git patch` |
+| Arch Linux | `sudo pacman -S --needed base-devel rustup qemu-system-x86 edk2-ovmf flex gawk libisoburn mtools dosfstools exfatprogs gptfdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g udftools scdoc mandoc mdbook clang compiler-rt lld llvm meson ninja cmake pkgconf autoconf bison pixman libxkbcommon xkeyboard-config git` |
 
 dislocker and libbde, which only the BitLocker tests use, are in the AUR
 on Arch Linux, and libbde is not packaged for Fedora: build it from
@@ -92,6 +92,11 @@ Dukovo's mkfs-btrfs does (ADR 0304).
 udftools, UDFclient and genisoimage make and fill the UDF volumes Radix's
 UDF tests read. Fedora and Arch Linux have no UDFclient package: build it
 from <https://www.13thmonkey.org/udfclient/>, or test in the container.
+
+pixman, libxkbcommon and xkeyboard-config are what windowd's unit tests
+link and read on the host. Only `./ob test unit` needs them, so
+`./ob doctor` shows them as a note when they are absent, and the image
+builds and boots without them.
 
 The Go toolchain, which builds programs in Go for Radix, is built from
 source by `./ob ports` (the `go` port), and only a release of Go builds Go.

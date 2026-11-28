@@ -147,6 +147,38 @@ fn distro_from_os_release(text: &str) -> Option<Distro> {
     })
 }
 
+/// The version pkg-config gives for the library or the data `module`,
+/// if this machine has its development files.
+fn library_version(module: &str) -> Option<String> {
+    let output = Command::new("pkg-config").args(["--modversion", module]).output().ok()?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !version.is_empty()).then_some(version)
+}
+
+/// What windowd's unit tests link and read on this machine, as
+/// pkg-config names each, with its Debian package: the library windowd
+/// draws with, the one it reads keyboard layouts with, and the layouts.
+const WINDOW_TEST_LIBRARIES: &[(&str, &str)] = &[
+    ("pixman-1", "libpixman-1-dev"),
+    ("xkbcommon", "libxkbcommon-dev"),
+    ("xkeyboard-config", "xkb-data"),
+];
+
+/// Those of [`WINDOW_TEST_LIBRARIES`] this machine lacks. Only `ob test
+/// unit` needs them, so a host that builds and boots the image may go
+/// without.
+pub fn window_test_libraries_absent() -> Vec<&'static str> {
+    let absent =
+        WINDOW_TEST_LIBRARIES.iter().filter(|(module, _)| library_version(module).is_none());
+    absent.map(|(module, _)| *module).collect()
+}
+
+/// How to install [`WINDOW_TEST_LIBRARIES`].
+pub fn window_test_libraries_install() -> String {
+    let packages: Vec<&str> = WINDOW_TEST_LIBRARIES.iter().map(|(_, package)| *package).collect();
+    format!("packages {}", packages.join(", "))
+}
+
 fn program_version(program: &str, flag: &str) -> Option<String> {
     let path = process::find_program(program)?;
     let version = Command::new(&path)
@@ -741,6 +773,17 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
              (packages dash, bash and util-linux)",
             "Shell corpus",
             absent.join(", ")
+        );
+    }
+    let absent = window_test_libraries_absent();
+    if absent.is_empty() {
+        println!("  ok       {:<15} pixman, libxkbcommon and xkeyboard-config", "Window tests");
+    } else {
+        println!(
+            "  note     {:<15} {} not installed; only `./ob test unit` needs them ({})",
+            "Window tests",
+            absent.join(", "),
+            window_test_libraries_install()
         );
     }
     match program_version(crate::riscv::QEMU, "--version") {

@@ -20,6 +20,13 @@
 //! over it then gives back to the one under it: a lender that is gone
 //! takes nothing with it.
 //!
+//! The service that lends the screens may start again while a borrower
+//! has them (ADR 0716). The new one, which is the holder of the
+//! attention file, takes the place its predecessor left
+//! ([`Stack::stand_under`]): the bottom of the stack, under every holder
+//! that is stacked. The front does not pass; it comes to the new holder
+//! when those over it give it back or end.
+//!
 //! One thing is over the stack: the secure key (ADR 0708). When it is
 //! pressed the kernel raises the holder of the attention file
 //! ([`Stack::raise`]), which is then in front whatever is stacked, and
@@ -46,6 +53,8 @@ pub enum Refused {
     Stacked,
     /// [`DEPTH_MAX`] holders are stacked.
     Full,
+    /// No holder is stacked for the caller to stand under.
+    Empty,
 }
 
 /// The front going from one to another. `None` is the kernel's log.
@@ -187,6 +196,31 @@ impl Stack {
         }
         self.depth -= 1;
         Ok(Passed { from: Some(holder), to: self.front() })
+    }
+
+    /// `holder`, which is not stacked, takes the bottom of the stack,
+    /// under every holder that is stacked. The front does not pass.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::Stacked`] if `holder` is in the stack already, and for
+    /// 0, which is no holder; [`Refused::Empty`] while no holder is
+    /// stacked, when the front is the log's to give; and
+    /// [`Refused::Full`] if the stack is as deep as it goes.
+    pub fn stand_under(&mut self, holder: u32) -> Result<(), Refused> {
+        if holder == 0 || self.contains(holder) {
+            return Err(Refused::Stacked);
+        }
+        if self.depth == 0 {
+            return Err(Refused::Empty);
+        }
+        if self.depth >= DEPTH_MAX {
+            return Err(Refused::Full);
+        }
+        self.holders.copy_within(0..self.depth, 1);
+        self.holders[0] = holder;
+        self.depth += 1;
+        Ok(())
     }
 
     /// `holder` ends. If it was in front, the front passes as
@@ -401,6 +435,53 @@ mod tests {
     }
 
     #[test]
+    fn a_holder_stands_under_the_stack_and_the_front_comes_down_to_it() {
+        let mut stack = Stack::new();
+        // With nobody stacked the front is the log's to give.
+        assert_eq!(stack.stand_under(CONSOLE), Err(Refused::Empty));
+        assert_eq!(stack.stand_under(0), Err(Refused::Stacked));
+        // The console that lent to the desktop ended; a new one takes
+        // its place, and nothing that shows moves.
+        stack.leave_log(1).unwrap();
+        stack.lend(1, DESKTOP).unwrap();
+        stack.lend(DESKTOP, GAME).unwrap();
+        assert_eq!(stack.end(1), None);
+        assert_eq!(stack.stand_under(CONSOLE), Ok(()));
+        assert_eq!((stack.stacked(), stack.front()), (&[CONSOLE, DESKTOP, GAME][..], Some(GAME)));
+        assert_eq!(stack.stand_under(CONSOLE), Err(Refused::Stacked));
+        assert_eq!(stack.stand_under(DESKTOP), Err(Refused::Stacked));
+        assert_eq!(stack.give_back(GAME), passed(Some(GAME), Some(DESKTOP)));
+        assert_eq!(stack.end(DESKTOP), Some(Passed { from: Some(DESKTOP), to: Some(CONSOLE) }));
+        assert!(stack.is_sound());
+    }
+
+    #[test]
+    fn a_raised_holder_stands_under_the_stack_and_stays_in_front() {
+        let mut stack = Stack::new();
+        stack.leave_log(DESKTOP).unwrap();
+        stack.raise(CONSOLE).unwrap();
+        assert_eq!(stack.stand_under(CONSOLE), Ok(()));
+        assert_eq!((stack.front(), stack.top()), (Some(CONSOLE), Some(DESKTOP)));
+        assert_eq!(
+            stack.lower(CONSOLE),
+            Ok(Some(Passed { from: Some(CONSOLE), to: Some(DESKTOP) }))
+        );
+        assert_eq!(stack.stacked(), [CONSOLE, DESKTOP]);
+    }
+
+    #[test]
+    fn no_holder_stands_under_a_full_stack() {
+        let mut stack = Stack::new();
+        stack.leave_log(1).unwrap();
+        for holder in 2..=DEPTH_MAX as u32 {
+            stack.lend(holder - 1, holder).unwrap();
+        }
+        assert_eq!(stack.stand_under(99), Err(Refused::Full));
+        assert_eq!(stack.stacked().len(), DEPTH_MAX);
+        assert!(stack.is_sound());
+    }
+
+    #[test]
     fn a_holder_that_was_never_stacked_ends_without_a_trace() {
         let mut stack = Stack::new();
         assert_eq!(stack.end(CONSOLE), None);
@@ -434,12 +515,17 @@ mod proofs {
         let mut stack = any_stack();
         let front = stack.front();
         let (a, b): (u32, u32) = (kani::any(), kani::any());
-        let passed = match kani::any::<u8>() % 6 {
+        let passed = match kani::any::<u8>() % 7 {
             0 => stack.leave_log(a).ok(),
             1 => stack.lend(a, b).ok(),
             2 => stack.give_back(a).ok(),
             3 => stack.raise(a).ok().flatten(),
             4 => stack.lower(a).ok().flatten(),
+            5 => {
+                // Whether it stands under or is refused, no front passes.
+                let _ = stack.stand_under(a);
+                None
+            }
             _ => stack.end(a),
         };
         assert!(stack.is_sound());

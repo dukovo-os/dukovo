@@ -3843,6 +3843,16 @@ fn boot_tests_of(
 }
 
 fn unit_tests(ctx: &Ctx) -> Result<()> {
+    // Found here, not when windowd's tests fail to link after the
+    // minutes the suites before them take.
+    let absent = doctor::window_test_libraries_absent();
+    if !absent.is_empty() {
+        let lacks = format!("windowd's unit tests need {}", absent.join(", "));
+        return Err(
+            Error::new(lacks).hint(format!("install {}", doctor::window_test_libraries_install()))
+        );
+    }
+
     step("Running the script tests of the web console's pages");
     userspace::test_admin_scripts(ctx)?;
 

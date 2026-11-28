@@ -205,3 +205,97 @@ fn screens_that_change_behind_a_last_picture_are_arranged_when_the_wait_is_over(
     screen.draw(&term, None);
     assert_shows(&card, 0, &screen, 0, &term);
 }
+
+#[test]
+fn a_borrower_that_gave_the_screens_back_is_lent_them_again() {
+    let (wire, card, mut screen, mut term) = drawn();
+    let borrower = screen.lend().unwrap();
+    borrower_draws(&borrower, &card);
+    // The desktop shows a console: it gives the screens back, and
+    // consoled keeps its description.
+    Holder::new(borrower.clone()).give_back().unwrap();
+    assert!(!screen.events());
+    screen.draw(&term, None);
+    assert_shows(&card, 0, &screen, 0, &term);
+
+    // The person chooses the desktop's console: it is in front again,
+    // by no change of consoled's, and consoled draws nothing behind it.
+    let before = asked(&wire);
+    screen.lend_to(&borrower).unwrap();
+    let front = wire.0.borrow().layer.front();
+    assert_eq!(front, Some(borrower.holder()));
+    assert!(screen.away());
+    term.feed(b", unseen");
+    screen.draw(&term, None);
+    assert_eq!(asked(&wire), before);
+    let again = screen.lend_to(&borrower);
+    assert_eq!(again.err().and_then(|err| err.raw_os_error()), Some(libc::EBUSY));
+
+    // And back once more.
+    Holder::new(borrower).give_back().unwrap();
+    assert!(!screen.events() && !screen.away());
+    screen.draw(&term, None);
+    assert_shows(&card, 0, &screen, 0, &term);
+}
+
+/// consoled ends under the borrower it lent to, as one that crashed
+/// does, and is started again.
+fn started_again(wire: &Wire, screen: Screen<Wire>) -> Screen<Wire> {
+    drop(screen);
+    wire.clone().close();
+    Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap()
+}
+
+#[test]
+fn a_consoled_started_again_under_a_borrower_has_the_screens_when_it_gives_them_back() {
+    let (wire, card, screen, _) = drawn();
+    let (borrower, screen) = screen_lent(screen, &card);
+    let mut screen = started_again(&wire, screen);
+    let front = wire.0.borrow().layer.front();
+    assert_eq!(front, Some(borrower.holder()));
+
+    // The borrower keeps the screens, and consoled asks nothing more of
+    // the layer behind it, nor lends to another.
+    assert!(screen.away());
+    let before = asked(&wire);
+    let mut term = terminal(&screen);
+    term.feed(b"started again");
+    assert!(!screen.events() && !screen.tick(Instant::now()));
+    screen.draw(&term, None);
+    assert_eq!(asked(&wire), before);
+    assert!(shows_theirs(&card));
+    assert_eq!(screen.lend().err().and_then(|err| err.raw_os_error()), Some(libc::EBUSY));
+
+    // Given back, the screens are arranged for the consoles, which show.
+    Holder::new(borrower).give_back().unwrap();
+    screen.events();
+    assert!(!screen.away() && screen.deadline().is_none());
+    term.resize(screen.cols(), screen.rows());
+    screen.draw(&term, None);
+    assert_shows(&card, 0, &screen, 0, &term);
+}
+
+/// Lends `screen` to a borrower that draws, and returns both.
+fn screen_lent(mut screen: Screen<Wire>, card: &FakeCard) -> (Wire, Screen<Wire>) {
+    let borrower = screen.lend().unwrap();
+    borrower_draws(&borrower, card);
+    (borrower, screen)
+}
+
+#[test]
+fn a_consoled_started_again_under_a_borrower_that_ends_waits_behind_its_picture() {
+    let (wire, card, screen, _) = drawn();
+    let (borrower, screen) = screen_lent(screen, &card);
+    let mut screen = started_again(&wire, screen);
+    let mut term = terminal(&screen);
+    borrower.close();
+    let now = Instant::now();
+    assert!(!screen.events() && !screen.tick(now));
+    assert!(screen.away() && shows_theirs(&card));
+    assert_eq!(screen.deadline(), Some(now + BORROWER_WAIT));
+    screen.tick(now + BORROWER_WAIT);
+    assert!(!screen.away());
+    term.resize(screen.cols(), screen.rows());
+    screen.draw(&term, None);
+    assert_shows(&card, 0, &screen, 0, &term);
+}

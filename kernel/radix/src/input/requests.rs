@@ -27,6 +27,9 @@ const ANSWER_MAX: usize = KEY_CODES as usize / 8;
 
 const _: () = assert!(ANSWER_MAX >= INPUT_TEXT_MAX as usize && ANSWER_MAX >= InputAxis::SIZE);
 
+/// Every lock light there is.
+const LIGHTS: u32 = abi::LED_SCROLL_LOCK | abi::LED_NUM_LOCK | abi::LED_CAPS_LOCK;
+
 /// A request of an input file, as the file interface hands it over.
 pub struct Call<'a> {
     pub request: u32,
@@ -63,6 +66,7 @@ pub fn control(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
             Ok(0)
         }
         abi::INPUT_TIE => tie(file, call),
+        abi::INPUT_LIGHTS => lights(file, call),
         abi::INPUT_LIST => list(file, call),
         abi::INPUT_INFO..=abi::INPUT_SERIAL => about(file, call),
         _ => Err(Kernel::NotTerminal.status(0)),
@@ -83,6 +87,25 @@ fn tie(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
         let now = sched::now_ns();
         with_reader(file, |hub, key| hub.tie(key, holder, now))?.map_err(refused)
     })??;
+    Ok(0)
+}
+
+/// INPUT_LIGHTS: a reader that is heard, of a device that has lock
+/// lights, sets the lights of every keyboard, as SET_LEDS does.
+#[inline(never)]
+fn lights(file: &FileObject, call: &Call<'_>) -> Result<u64, Status> {
+    let lights = u32::try_from(call.argument).ok().filter(|lights| lights & !LIGHTS == 0);
+    let lights = lights.ok_or_else(invalid)?;
+    let heard = with_reader(file, |hub, key| {
+        let (device, heard) = hub.asked(key)?;
+        Ok((!device.about.lights.is_empty()).then_some(heard))
+    })?
+    .map_err(refused)?
+    .ok_or_else(invalid)?;
+    if !heard {
+        return Err(Kernel::Busy.status(0));
+    }
+    keyboard::set_lights(lights);
     Ok(0)
 }
 

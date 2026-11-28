@@ -1,0 +1,45 @@
+SPDX-FileCopyrightText: Elinor Berger and the calloop contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+calloop's event loop has no descriptor of its own on Radix, where the
+polling crate waits with poll(2): the two traits that give it out are
+left out there. Smithay builds calloop in, and windowd, which waits in
+a loop of its own (ADR 0712), runs none of it.
+
+diff --git a/calloop-0.14.5/src/loop_logic.rs b/calloop-0.14.5/src/loop_logic.rs
+index 51b8c7c..dcd28a0 100644
+--- a/calloop-0.14.5/src/loop_logic.rs
++++ b/calloop-0.14.5/src/loop_logic.rs
+@@ -9,8 +9,10 @@ use std::{io, slice};
+ #[cfg(feature = "block_on")]
+ use std::future::Future;
+ 
+-#[cfg(unix)]
++#[cfg(all(unix, not(target_os = "radix")))]
+ use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
++#[cfg(target_os = "radix")]
++use std::os::unix::io::AsFd;
+ #[cfg(windows)]
+ use std::os::windows::io::{AsHandle, AsRawHandle, AsSocket as AsFd, BorrowedHandle, RawHandle};
+ 
+@@ -742,7 +744,8 @@ impl<'l, Data> EventLoop<'l, Data> {
+     }
+ }
+ 
+-#[cfg(unix)]
++// Radix's poller is poll(2), which has no descriptor of its own.
++#[cfg(all(unix, not(target_os = "radix")))]
+ impl<Data> AsRawFd for EventLoop<'_, Data> {
+     /// Get the underlying raw-fd of the poller.
+     ///
+@@ -756,7 +759,8 @@ impl<Data> AsRawFd for EventLoop<'_, Data> {
+     }
+ }
+ 
+-#[cfg(unix)]
++// Radix's poller is poll(2), which has no descriptor of its own.
++#[cfg(all(unix, not(target_os = "radix")))]
+ impl<Data> AsFd for EventLoop<'_, Data> {
+     /// Get the underlying fd of the poller.
+     ///

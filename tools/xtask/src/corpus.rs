@@ -213,7 +213,7 @@ pub fn test(ctx: &Ctx, selected: &[String]) -> Result<()> {
     }
 
     step("Building Nukesh for the host");
-    process::run(ctx, &mut userspace::host_cargo(ctx, "build"))?;
+    process::run(ctx, &mut userspace::host_cargo_of(ctx, "build", &["nukesh"]))?;
     let nukesh = ctx.target.join("programs-host/debug/nukesh");
 
     let dir = ctx.target.join("corpus");

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# pixman (ADR 0712): the pixel library windowd draws the desktop with,
+# on the processor, through Smithay's pixman renderer. It fills, copies
+# and blends rectangles of pixels with the processor's vector
+# instructions: SSE2, which every x86-64 processor has, and SSSE3 where
+# the processor says it has it. Only the static library and its header,
+# in the sysroot.
+name = "pixman"
+version = "0.46.4"
+summary = "the pixel manipulation library windowd draws with"
+license = "MIT"
+homepage = "https://www.pixman.org"
+depends = ["mlibc"]
+
+[source]
+url = "https://www.cairographics.org/releases/pixman-0.46.4.tar.gz"
+sha256 = "d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c"
+mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/p/pixman/pixman_0.46.4.orig.tar.gz"]
+
+[upstream]
+git = "https://gitlab.freedesktop.org/pixman/pixman.git"
+tag = "pixman-0.46.4"

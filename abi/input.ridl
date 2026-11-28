@@ -57,7 +57,8 @@
 //! go. When the holder is in front again it reads SYN_RESUMED and asks
 //! INPUT_STATE. A description tied to no holder reads everything, as a
 //! reader of _/devices/kbd_ or _/devices/mouse_ that is tied to none
-//! does; the files are root's.
+//! does; the files are root's. The lock lights follow the screen too: a
+//! description that is heard sets them with INPUT_LIGHTS.
 //!
 //! Ctrl+Alt+Delete is the secure key (ADR 0708). The kernel sees it on
 //! any keyboard before any reader does. If a program holds
@@ -289,6 +290,14 @@ const INPUT_PLACE: u32 = 0x494e0007;
 /// Fills the buffer with the device's serial number, as INPUT_NAME does
 /// with the name. It is empty for a device that has none.
 const INPUT_SERIAL: u32 = 0x494e0008;
+/// On the file of a keyboard that has lock lights (INPUT_BITS's answer
+/// for EV_LED): lights those `argument` names, which holds the bits
+/// SET_LEDS's does, on every keyboard as SET_LEDS does (ADR 0715). It
+/// is for the program whose holder has the screens, so it fails with
+/// busy for a paused description; it fails with invalid_argument for a
+/// device that has no lights, or bits that are no light. (Since release
+/// 1.1, ADR 0715.)
+const INPUT_LIGHTS: u32 = 0x494e0009;
 /// The most bytes INPUT_NAME, INPUT_PLACE and INPUT_SERIAL answer with.
 const INPUT_TEXT_MAX: u32 = 64;
 /// On _/devices/input/control_: fills the buffer with the number (a u32)

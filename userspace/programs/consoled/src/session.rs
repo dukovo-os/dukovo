@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use sysapi::fd::{self, Standard};
 use sysapi::process::{self, Fork};
 use sysapi::terminal::{self, Pty, WindowSize};
-use sysapi::{signal, system};
+use sysapi::{Pid, signal, system};
 
 use crate::term::Terminal;
 use crate::welcome;
@@ -173,10 +173,17 @@ impl Console {
         self.terminal.as_deref()
     }
 
-    /// Whether someone is signed in: a session has the terminal as its
-    /// controlling terminal. Sign-in itself does not take it (ADR 0250).
+    /// The session that has the terminal as its controlling terminal:
+    /// that of whoever is signed in. Sign-in itself does not take it
+    /// (ADR 0250).
+    pub fn session(&self) -> Option<Pid> {
+        let session = terminal::session(self.master_fd()?).ok()?;
+        (session > 0).then_some(session)
+    }
+
+    /// Whether someone is signed in.
     pub fn signed_in(&self) -> bool {
-        self.master_fd().is_some_and(|fd| terminal::session(fd).is_ok_and(|session| session > 0))
+        self.session().is_some()
     }
 
     /// Whether the sign-in screen may be drawn again for a change of the

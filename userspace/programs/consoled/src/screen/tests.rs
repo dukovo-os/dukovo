@@ -16,7 +16,7 @@ use display::abi::{
     ATTENTION_END, BLOB_MODE, Blob, CARD_FIRMWARE, CARD_HOT_PLUG, CARD_SETS_MODES, CARD_VIRTIO,
     CHANGE, DROP, FORMAT_ARGB8888, FORMAT_XRGB8888, GET, KIND_CARD, KIND_PIPE, KIND_PLANE,
     KIND_SCREEN, LEND, LIST, MAKE_BLOB, MAKE_PICTURE, Mode, PART_INFO, PART_MODES, PICTURE_KEPT,
-    PUT, RETURN, Thing,
+    PUT, RETURN, STAND_UNDER, Thing,
 };
 use radix_abi::Status;
 use radix_abi::errors::{File as FileError, Kernel};
@@ -353,6 +353,7 @@ impl FakeKernel {
             }
             RETURN => self.layer.give_back(me).map(|()| 0),
             ATTENTION_END => self.layer.attention_end(me).map(|()| 0),
+            STAND_UNDER => self.layer.stand_under(me).map(|()| 0),
             _ => Err(Kernel::NotTerminal.status(0)),
         }
     }
@@ -862,15 +863,19 @@ fn screens_that_change_while_consoled_starts_are_asked_about_again() {
 }
 
 #[test]
-fn another_holder_in_front_keeps_the_screens() {
+fn another_holder_in_front_keeps_the_screens_and_the_consoles_stand_under_it() {
     let (wire, _card) = firmware(640, 400);
     // Another holder's change, of nothing, took the front from the log.
     let mut nothing = display::wire::ChangeBytes::new(0, 0);
     let took = wire.0.borrow_mut().request(OTHER, CHANGE, 0, nothing.bytes_mut());
     assert!(took.is_ok());
     let changes = wire.0.borrow().changes;
-    let refused = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).err().unwrap();
-    assert_eq!(refused.raw_os_error(), Some(libc::EBUSY));
-    // It asked once, and not again.
+    let mut screen = Screen::on(wire.clone(), radix_fbcon::MIN_GRID).unwrap();
+    // It asked once, and not again, and draws nothing behind the other.
+    assert!(screen.away());
+    assert_eq!(screen.describe(), ["a program has the screens: the consoles show when it is done"]);
+    assert!(!screen.events() && !screen.tick(Instant::now()));
     assert_eq!(wire.0.borrow().changes, changes + 1);
+    let front = wire.0.borrow().layer.front();
+    assert_ne!(front, Some(wire.holder()));
 }

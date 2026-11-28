@@ -76,6 +76,12 @@
 //! Ctrl+Alt+Delete, brings its holder to the front, whoever is in front
 //! (ADR 0708, radix-input(2)). The holder reads EVENT_ATTENTION and has
 //! the front until it asks ATTENTION_END.
+//!
+//! The service that holds _attention_ lends the screens, and may start
+//! again while a borrower has them. The new holder of _attention_ then
+//! asks STAND_UNDER (ADR 0716): it is under every holder that is
+//! stacked, as the one it started in place of was, and the front comes
+//! to it when they give it back or end.
 
 module display;
 
@@ -148,6 +154,14 @@ const RETURN: u32 = 0x4453000c;
 /// readers of the input files that the key paused are heard again
 /// (radix-input(2)). Fails with busy for a holder the key did not raise.
 const ATTENTION_END: u32 = 0x4453000d;
+/// The holder of _attention_ takes the place under every holder that is
+/// stacked (ADR 0716). Nothing that shows changes, and the caller reads
+/// EVENT_FRONT when the holders over it have given the front back or
+/// ended. Fails with not_permitted for another holder, with busy for a
+/// holder that is stacked already and while no holder is stacked (the
+/// front is then the caller's to take with a CHANGE), and with too_many
+/// if the stack is as deep as it goes. (Since release 1.1, ADR 0716.)
+const STAND_UNDER: u32 = 0x4453000e;
 
 /// GET's part: what the thing is.
 const PART_INFO: u32 = 0;

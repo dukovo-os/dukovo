@@ -12,10 +12,11 @@ use std::io;
 use radix_abi::input::{
     ABS_X, ABS_Y, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_TOOL_PEN, BTN_TOUCH, BUS_I8042, BUS_USB,
     BUS_VIRTUAL, BUTTON_LEFT, BUTTON_MIDDLE, DEVICE_ADDED, DEVICE_REMOVED, EV_ABS, EV_KEY, EV_LED,
-    EV_REL, EV_SW, EV_SYN, Event, INPUT_AXIS, INPUT_BITS, INPUT_INFO, INPUT_LIST, INPUT_NAME,
-    INPUT_PLACE, INPUT_SERIAL, INPUT_STATE, INPUT_TIE, InputAxis, InputChange, InputEvent,
-    InputInfo, KEY_A, KEY_KP1, KEY_MUTE, KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP, MOTION_ABSOLUTE,
-    Motion, POSITION_MAX, PRESSED, REL_WHEEL_HI_RES, REL_X, REL_Y, RELEASED, SW_LID, SYN_REPORT,
+    EV_REL, EV_SW, EV_SYN, Event, INPUT_AXIS, INPUT_BITS, INPUT_INFO, INPUT_LIGHTS, INPUT_LIST,
+    INPUT_NAME, INPUT_PLACE, INPUT_SERIAL, INPUT_STATE, INPUT_TIE, InputAxis, InputChange,
+    InputEvent, InputInfo, KEY_A, KEY_KP1, KEY_MUTE, KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP,
+    LED_CAPS_LOCK, LED_CAPSL, LED_NUM_LOCK, LED_NUML, MOTION_ABSOLUTE, Motion, POSITION_MAX,
+    PRESSED, REL_WHEEL_HI_RES, REL_X, REL_Y, RELEASED, SW_LID, SYN_REPORT,
 };
 use radix_input::device::{About, Axis, Device as Kept, Few, Keys, padded};
 use radix_input::event::{Record as Written, Said, mark};
@@ -130,11 +131,18 @@ struct File {
     heard: bool,
     /// The slot the description was tied to.
     tied: Cell<Option<u64>>,
+    /// The lock lights it last lit.
+    lit: Cell<Option<u64>>,
 }
 
 impl File {
     fn of(number: u32, about: &About) -> File {
-        File { device: Kept::new(number, about), heard: true, tied: Cell::new(None) }
+        File {
+            device: Kept::new(number, about),
+            heard: true,
+            tied: Cell::new(None),
+            lit: Cell::new(None),
+        }
     }
 }
 
@@ -174,6 +182,12 @@ impl Control for File {
                 let text = radix_input::device::text(field).as_bytes();
                 answer[..text.len()].copy_from_slice(text);
                 text.len()
+            }
+            INPUT_LIGHTS if about.lights.is_empty() => return Err(errno(EINVAL)),
+            INPUT_LIGHTS if !self.heard => return Err(errno(EBUSY)),
+            INPUT_LIGHTS => {
+                self.lit.set(Some(argument));
+                0
             }
             INPUT_TIE if self.tied.get().is_some() => return Err(errno(EBUSY)),
             INPUT_TIE => {
@@ -246,6 +260,24 @@ fn a_tablet_answers_its_axes_and_a_description_is_tied_once() {
     assert_eq!(device.file().tied.get(), Some(7));
     assert_eq!(device.tie(8).err().and_then(|err| err.raw_os_error()), Some(EBUSY));
     assert_eq!(device.into_file().tied.get(), Some(7));
+}
+
+#[test]
+fn a_keyboard_that_is_heard_lights_its_lock_lights() {
+    let mut about = About::new(BUS_USB, "USB Keyboard", "usb-1-1");
+    about.lights = Few::of(&[LED_NUML, LED_CAPSL]);
+    let mut file = File::of(3, &about);
+    let lights = LED_CAPS_LOCK | LED_NUM_LOCK;
+    Device::new(&file).light(lights).unwrap();
+    assert_eq!(file.lit.get(), Some(u64::from(lights)));
+    // Paused, its holder in the back, it lights nothing.
+    file.heard = false;
+    let refused = Device::new(&file).light(0);
+    assert_eq!(refused.err().and_then(|err| err.raw_os_error()), Some(EBUSY));
+    assert_eq!(file.lit.get(), Some(u64::from(lights)));
+    // And a mouse has no lights.
+    let refused = Device::new(File::of(1, &mouse())).light(lights);
+    assert_eq!(refused.err().and_then(|err| err.raw_os_error()), Some(EINVAL));
 }
 
 /// A stand-in for _/devices/input/control_ with `numbers` devices.

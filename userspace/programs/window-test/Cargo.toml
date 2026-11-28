@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "window-test"
+description = "Tests the window server (windowd(1)) in the desktop boot tests and in windowd's own tests: a Wayland program that shows a window with a picture the host knows pixel for pixel, and says which keys and pointer events reached it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Where consoled lends the screens, which `in-desktop` waits for.
+display = { path = "../display" }
+# The test patterns and the lines that say what each screen shows, which
+# the boot tests on the host read (tools/xtask/src/test/screens.rs).
+display-pattern = { path = "../display-pattern" }
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# A window's pixels, in a memory file the window server maps (ADR 0730).
+sysapi = { path = "../sysapi" }
+# The Wayland protocols, as a program speaks them.
+wayland-client = "0.31.14"
+wayland-protocols = { version = "0.32.13", features = ["client"] }
+
+[lints]
+workspace = true
