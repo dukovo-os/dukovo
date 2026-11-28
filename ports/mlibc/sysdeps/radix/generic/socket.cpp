@@ -312,6 +312,8 @@ int make_pair(uint32_t flags, bool datagram, int *fds) {
 		second_end.keep();
 		fds[0] = static_cast<int>(first - radix::FD_BASE);
 		fds[1] = static_cast<int>(second - radix::FD_BASE);
+		radix::note_socket_kind(fds[0], radix::SocketKind::other);
+		radix::note_socket_kind(fds[1], radix::SocketKind::other);
 		return 0;
 	}
 }
@@ -523,12 +525,25 @@ void give_control(struct msghdr *hdr, const Received &files) {
 // Whether socket `slot` is a network socket, and its type in `type`
 // (SOCK_STREAM, or SOCK_DGRAM for a datagram or a ping socket) if it is:
 // a Unix socket gives its kind with RADIX_SOCKET_OPTION_UNIX_KIND instead.
+// The kernel is asked once for a descriptor, and only if the C library
+// did not note what it is when it made it (ADR 0801).
 bool is_inet(uint32_t slot, int *type) {
-	struct radix_file_socket_option_results r;
-	if(radix_file_socket_option(slot, RADIX_SOCKET_OPTION_KIND, false, 0, &r))
+	int fd = static_cast<int>(slot - radix::FD_BASE);
+	radix::SocketKind kind = radix::socket_kind(fd);
+	if(kind == radix::SocketKind::unknown) {
+		struct radix_file_socket_option_results r;
+		if(radix_file_socket_option(slot, RADIX_SOCKET_OPTION_KIND, false, 0, &r))
+			kind = radix::SocketKind::other;
+		else if(r.value == RADIX_SOCKET_TYPE_STREAM)
+			kind = radix::SocketKind::inet_stream;
+		else
+			kind = radix::SocketKind::inet_datagram;
+		radix::note_socket_kind(fd, kind);
+	}
+	if(kind == radix::SocketKind::other)
 		return false;
 	if(type)
-		*type = r.value == RADIX_SOCKET_TYPE_STREAM ? SOCK_STREAM : SOCK_DGRAM;
+		*type = kind == radix::SocketKind::inet_stream ? SOCK_STREAM : SOCK_DGRAM;
 	return true;
 }
 
@@ -1463,8 +1478,12 @@ int Sysdeps<Socket>::operator()(int family, int type_and_flags, int protocol, in
 				return status;
 			});
 			// Refused by this capability: the next one may allow it.
-			if(!refused)
-				return e;
+			if(refused)
+				continue;
+			if(!e)
+				radix::note_socket_kind(*fd, kind == RADIX_SOCKET_TYPE_STREAM
+						? radix::SocketKind::inet_stream : radix::SocketKind::inet_datagram);
+			return e;
 		}
 		return EACCES;
 	}
@@ -1480,11 +1499,14 @@ int Sysdeps<Socket>::operator()(int family, int type_and_flags, int protocol, in
 	if(protocol != 0 && protocol != PF_UNIX)
 		return EPROTONOSUPPORT;
 	uint32_t flags = description_flags(type_and_flags);
-	return radix::place(0, fd, [&](uint32_t slot) {
+	int e = radix::place(0, fd, [&](uint32_t slot) {
 		if(type == SOCK_DGRAM)
 			return radix_process_datagram_socket(radix::SLOT_PROCESS, slot, flags);
 		return radix_process_socket(radix::SLOT_PROCESS, slot, flags);
 	});
+	if(!e)
+		radix::note_socket_kind(*fd, radix::SocketKind::other);
+	return e;
 }
 
 int Sysdeps<Socketpair>::operator()(int domain, int type_and_flags, int proto, int *fds) {
@@ -1630,6 +1652,8 @@ int Sysdeps<Accept>::operator()(int fd, int *newfd, struct sockaddr *addr, sockl
 			return socket_errno(status);
 		claim.keep();
 		*newfd = static_cast<int>(to - radix::FD_BASE);
+		// A connection is a socket of the listening one's family and type.
+		radix::note_socket_kind(*newfd, radix::socket_kind(fd));
 		break;
 	}
 	if(addr && length) {

@@ -143,8 +143,9 @@ pub struct PosixState {
     /// Its file mode creation mask (`umask`).
     pub file_mask: u32,
     /// Its working directory as the C library last noted it (`exec`,
-    /// `set_directory`): an absolute path, for `/processes`. Shared, so that
-    /// `fork` copies it under the lock without taking memory.
+    /// `set_directory`, radix-directory(2)'s `enter`): an absolute path,
+    /// for `/processes`. Shared, so that `fork` copies it under the lock
+    /// without taking memory.
     pub directory: Option<Directory>,
     /// The program it last ran, as the file `exec` ran (a script, not its
     /// interpreter): what the firewall's rules for programs name (ADR
@@ -177,6 +178,17 @@ pub type Directory = alloc::sync::Arc<Vec<u8, Kmalloc>, Kmalloc>;
 /// it (`exec`, and radix-process(2)'s `set_directory`).
 pub fn set_directory(process: &ProcessObject, path: &[u8]) -> bool {
     exec::copied(path).is_ok_and(|copy| keep_directory(process, copy))
+}
+
+/// Notes `/` and `real`, a directory's path beneath the root as
+/// radix-directory(2)'s `enter` found it (`.` for the root itself), as
+/// `process`'s working directory, if there is memory for it.
+pub(crate) fn enter_directory(process: &ProcessObject, real: &[u8]) -> bool {
+    let real = if real == b"." { &[][..] } else { real };
+    let Ok(mut path) = exec::zeroed(real.len() + 1) else { return false };
+    path[0] = b'/';
+    path[1..].copy_from_slice(real);
+    keep_directory(process, path)
 }
 
 /// [`set_directory`] with the path copied already.

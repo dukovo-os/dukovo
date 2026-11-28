@@ -385,7 +385,8 @@ pub struct Found {
     /// The SWAPGS variant of Spectre variant 1 applies.
     pub swapgs: bool,
     /// Branch History Injection applies (enhanced IBRS parts, and any
-    /// under a hypervisor, which may hide it).
+    /// under a hypervisor, which may hide it), unless the processor says
+    /// BHI_NO.
     pub bhi: bool,
     /// Post-barrier return predictions apply to its enhanced IBRS.
     pub pbrsb: bool,
@@ -463,7 +464,7 @@ pub fn find(cpu: &Cpu) -> Found {
     if has_rfds(cpu, traits) {
         found.add(Flaw::RegFileDataSampling);
     }
-    found.bhi = !is(models::NO_BHI) && (cpu.eibrs() || cpu.hypervisor());
+    found.bhi = !is(models::NO_BHI) && !cpu.caps(caps::BHI_NO) && (cpu.eibrs() || cpu.hypervisor());
     if has_its(cpu, traits) {
         found.add(Flaw::IndirectTargetSelection);
         found.its_native_only = is(models::ITS_NATIVE_ONLY);

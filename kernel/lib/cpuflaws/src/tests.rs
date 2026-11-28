@@ -291,6 +291,12 @@ fn enhanced_ibrs_without_bhi_dis_s_clears_the_history_on_system_calls() {
     assert!(plan.controls().bhb_clear);
     assert_eq!(plan.controls().spec_ctrl_kernel, SPEC_CTRL_IBRS);
     assert!(line(&plan, Flaw::SpectreV2).ends_with("; BHI: SW loop"));
+    // One that says BHI_NO needs neither, as on Linux.
+    cpu.arch_capabilities |= caps::BHI_NO;
+    let plan = default_plan(&cpu);
+    assert!(!find(&cpu).bhi);
+    assert!(!plan.controls().bhb_clear);
+    assert!(line(&plan, Flaw::SpectreV2).ends_with("; BHI: Not affected"));
 }
 
 #[test]
@@ -714,6 +720,8 @@ fn a_guest_assumes_the_worst_of_its_host() {
     };
     let found = find(&guest);
     assert!(found.bhi, "a hypervisor may hide enhanced IBRS");
+    let told = Cpu { arch_capabilities: guest.arch_capabilities | caps::BHI_NO, ..guest };
+    assert!(!find(&told).bhi, "a hypervisor that says BHI_NO is believed, as on Linux");
     assert!(found.has(Flaw::IndirectTargetSelection));
     // Without enhanced IBRS it takes retpolines, which leave no indirect
     // branch for the history to steer; a kernel without them clears it.

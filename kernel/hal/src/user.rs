@@ -300,6 +300,28 @@ pub trait UserMode: crate::Threads {
         upgrade: bool,
     ) -> Result<(), MapPageError>;
 
+    /// Which of the `count` pages from `start` hold nothing: neither a
+    /// frame, with access or without, nor a swap slot. Bit `i` stands for
+    /// the page at `start + i * PAGE_SIZE`. The pages, at most 64, lie in
+    /// one page table, which may not be there yet: then all of them hold
+    /// nothing. None does under a large page.
+    fn empty_pages(space: &Self::Space, start: u64, count: u32) -> u64;
+
+    /// Maps the page at `start + i * PAGE_SIZE` to the frame `frames[i]`
+    /// with `access`, for each bit `i` of `pages` whose page still holds
+    /// nothing ([`UserMode::empty_pages`]), with the page table locked
+    /// once: how a fault maps the pages around it that are there already.
+    /// No CPU cached an entry that held nothing, so none is shot down.
+    /// Returns the bits of the pages it mapped: none if the pages' table
+    /// cannot be made.
+    fn fill_pages(
+        space: &Self::Space,
+        start: u64,
+        frames: &[u64],
+        pages: u64,
+        access: UserAccess,
+    ) -> u64;
+
     /// Visits every page from `start` to `end` that holds a frame, in
     /// order, and does what `decide` says, given its address, frame and
     /// access; `released` gets the frame of every page cleared once no
