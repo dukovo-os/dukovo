@@ -16,7 +16,9 @@
 //! is cut to the rectangle around its parts ([`Cut`]), and drawn in the
 //! parts alone.
 
+use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
@@ -30,6 +32,8 @@ use smithay::desktop::PopupManager;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
+use window_frame::Colour;
+
 use crate::panel::Panel;
 use crate::windows::{Framed, Windows};
 
@@ -42,6 +46,8 @@ render_elements! {
     Popup=WaylandSurfaceRenderElement<PixmanRenderer>,
     /// A surface of a window, where the window's frame lets it show.
     Window=Cut,
+    /// The ground under a window's content.
+    Ground=SolidColorRenderElement,
 }
 
 /// A surface of a window, which shows in some parts of a screen's frame
@@ -213,17 +219,19 @@ impl Scene<'_> {
             pieces.push(Piece::Own(own));
         }
         for framed in self.windows.stacked() {
-            window(renderer, framed, onto, &mut pieces)?;
+            window(renderer, framed, onto, self.windows.theme().content_line, &mut pieces)?;
         }
         Ok(pieces)
     }
 }
 
 /// Adds to `pieces` what `framed` is drawn from on the screen `onto`.
+/// `line` is the colour of the frame's line around a window's content.
 fn window(
     renderer: &mut PixmanRenderer,
     framed: &Framed,
     onto: Onto,
+    line: Colour,
     pieces: &mut Vec<Piece>,
 ) -> Result<(), PixmanError> {
     let Some(surface) = framed.window.wl_surface() else { return Ok(()) };
@@ -264,5 +272,22 @@ fn window(
     );
     let cut = whole.into_iter().filter_map(|surface| Cut::of(surface, parts));
     pieces.extend(cut.map(Piece::Window));
+    if onto.zoom.fract() != 0.0 {
+        let (id, ground) = framed.ground();
+        let Colour { red, green, blue, .. } = line;
+        let colour = Color32F::new(
+            f32::from(red) / 255.0,
+            f32::from(green) / 255.0,
+            f32::from(blue) / 255.0,
+            1.0,
+        );
+        pieces.push(Piece::Ground(SolidColorRenderElement::new(
+            id.clone(),
+            onto.rect(ground),
+            CommitCounter::default(),
+            colour,
+            Kind::Unspecified,
+        )));
+    }
     Ok(())
 }

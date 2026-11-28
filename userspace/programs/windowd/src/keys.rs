@@ -19,9 +19,9 @@
 //! and let go alone shows the list.
 
 use input::abi::{
-    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12, KEY_LEFTALT,
-    KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHTALT, KEY_RIGHTCTRL,
-    KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB, KEY_UP,
+    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12, KEY_LEFT,
+    KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHT, KEY_RIGHTALT,
+    KEY_RIGHTCTRL, KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB, KEY_UP,
 };
 use smithay::input::keyboard::{LedState, ModifiersState};
 
@@ -77,6 +77,12 @@ pub enum Ask {
     /// That window is to be restored if it is maximized, and minimized
     /// if it is not.
     Down,
+    /// That window is to go to the next screen from left to right, or
+    /// to the one before for `back`.
+    ToScreen {
+        /// Whether to the screen before.
+        back: bool,
+    },
 }
 
 /// What pressing the key of Linux code `code` asks of the window
@@ -84,6 +90,7 @@ pub enum Ask {
 pub fn ask(held: &ModifiersState, code: u16) -> Option<Ask> {
     let alt_alone = held.alt && !held.ctrl && !held.logo;
     let super_alone = held.logo && !held.ctrl && !held.alt && !held.shift;
+    let super_shift = held.logo && held.shift && !held.ctrl && !held.alt;
     match code {
         KEY_TAB if alt_alone && held.shift => Some(Ask::Previous),
         KEY_TAB if alt_alone => Some(Ask::Next),
@@ -91,6 +98,8 @@ pub fn ask(held: &ModifiersState, code: u16) -> Option<Ask> {
         KEY_SPACE if alt_alone && !held.shift => Some(Ask::Menu),
         KEY_UP if super_alone => Some(Ask::Up),
         KEY_DOWN if super_alone => Some(Ask::Down),
+        KEY_LEFT if super_shift => Some(Ask::ToScreen { back: true }),
+        KEY_RIGHT if super_shift => Some(Ask::ToScreen { back: false }),
         _ => None,
     }
 }
@@ -168,6 +177,10 @@ mod tests {
         assert_eq!(ask(&held(true, false, false), KEY_SPACE), Some(Ask::Menu));
         assert_eq!(ask(&held(false, true, false), KEY_UP), Some(Ask::Up));
         assert_eq!(ask(&held(false, true, false), KEY_DOWN), Some(Ask::Down));
+        let to_screen = |back| Some(Ask::ToScreen { back });
+        assert_eq!(ask(&held(false, true, true), KEY_LEFT), to_screen(true));
+        assert_eq!(ask(&held(false, true, true), KEY_RIGHT), to_screen(false));
+        assert_eq!(ask(&held(false, true, false), KEY_LEFT), None);
         // Not with another modifier, and not the key alone.
         assert_eq!(ask(&held(false, false, false), KEY_TAB), None);
         assert_eq!(ask(&held(true, true, false), KEY_TAB), None);

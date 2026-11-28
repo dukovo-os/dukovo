@@ -30,9 +30,13 @@ use wayland_client::protocol::{
     wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
+};
 use wayland_protocols::wp::input_timestamps::zv1::client::{
     zwp_input_timestamps_manager_v1, zwp_input_timestamps_v1,
 };
+use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
@@ -176,6 +180,14 @@ struct Told {
     title_bars: Option<u32>,
     decorations: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
     times: Option<zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1>,
+    viewporter: Option<wp_viewporter::WpViewporter>,
+    fractions: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    /// The whole zoom each surface was last told to draw at
+    /// (`wl_surface.preferred_buffer_scale`).
+    zooms: Vec<(wl_surface::WlSurface, i32)>,
+    /// The zoom the window was last told to draw at, in 120ths
+    /// (`wp_fractional_scale_v1.preferred_scale`).
+    fraction: Option<u32>,
     /// The objects that tell the times of the keys and of the pointer,
     /// once the program asked for them.
     told_times: Vec<zwp_input_timestamps_v1::ZwpInputTimestampsV1>,
@@ -225,6 +237,22 @@ struct Window {
     /// A second buffer of that size, which the window is drawn into
     /// while the first shows ([`Client::repaint`]).
     spare: Option<(wl_buffer::WlBuffer, File)>,
+    /// The object the window is told its zoom in 120ths through.
+    _fraction: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    /// The object the program says with which part of its buffer
+    /// shows, at which size.
+    view: Option<wp_viewport::WpViewport>,
+}
+
+/// How a buffer's pixels are a window's points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// As many pixels across and down a point as this
+    /// (`wl_surface.set_buffer_scale`).
+    Zoomed(i32),
+    /// The whole buffer shows this many points wide and tall
+    /// (`wp_viewport.set_destination`).
+    Viewed(i32, i32),
 }
 
 /// A popup of the window, with the buffer it shows and its pixels'
@@ -369,6 +397,8 @@ impl Client {
         let surface = compositor.create_surface(&handle, ());
         let role = shell.get_xdg_surface(&surface, &handle, Role::Window);
         let toplevel = role.get_toplevel(&handle, ());
+        let fraction = self.told.fractions.as_ref();
+        let fraction = fraction.map(|all| all.get_fractional_scale(&surface, &handle, ()));
         toplevel.set_title("window-test".into());
         toplevel.set_app_id("org.dukovo.window-test".into());
         if how.maximized {
@@ -383,6 +413,8 @@ impl Client {
             shown: None,
             size: (0, 0),
             spare: None,
+            _fraction: fraction,
+            view: None,
         };
         self.window = Some(window);
         if how.shares_bar {
@@ -426,8 +458,45 @@ impl Client {
         self.show_pixels((width, height), &vec![shade; width as usize * 4 * height as usize])
     }
 
-    /// Shows the window with `pixels`, `width` by `height` of them.
-    fn show_pixels(&mut self, (width, height): (u32, u32), pixels: &[u8]) -> Outcome {
+    /// As [`Client::show`], with a buffer of `width` by `height`
+    /// pixels that are the window's points as `drawn` says: for a
+    /// screen that is zoomed, or a picture shown at another size than
+    /// its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::show`], and when the window server does not offer
+    /// what `drawn` needs.
+    pub fn show_as(&mut self, (width, height): (u32, u32), seed: u32, drawn: Drawn) -> Outcome {
+        self.show_pixels_as((width, height), &Client::pattern((width, height), seed), Some(drawn))
+    }
+
+    /// The zoom the window was last told to draw at: the whole number
+    /// (`wl_surface.preferred_buffer_scale`) and the 120ths
+    /// (`wp_fractional_scale_v1`), each if it was told.
+    pub fn zoom(&self) -> (Option<i32>, Option<u32>) {
+        let whole = self.window.as_ref().and_then(|window| {
+            let told = self.told.zooms.iter().find(|(surface, _)| *surface == window.surface);
+            told.map(|(_, whole)| *whole)
+        });
+        (whole, self.told.fraction)
+    }
+
+    /// Shows the window with `pixels`, `width` by `height` of them, a
+    /// pixel a point.
+    fn show_pixels(&mut self, size: (u32, u32), pixels: &[u8]) -> Outcome {
+        self.show_pixels_as(size, pixels, None)
+    }
+
+    /// Shows the window with `pixels`, `width` by `height` of them,
+    /// which are its points as `drawn` says, or as they were for
+    /// `None`.
+    fn show_pixels_as(
+        &mut self,
+        (width, height): (u32, u32),
+        pixels: &[u8],
+        drawn: Option<Drawn>,
+    ) -> Outcome {
         if self.window.is_none() {
             self.open(Open::default())?;
         }
@@ -436,6 +505,19 @@ impl Client {
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
             window.role.ack_configure(serial);
+        }
+        match drawn {
+            Some(Drawn::Zoomed(zoom)) => window.surface.set_buffer_scale(zoom),
+            Some(Drawn::Viewed(wide, tall)) => {
+                let Some(viewporter) = &self.told.viewporter else {
+                    return Err("the window server offers no wp_viewporter".into());
+                };
+                let view = window
+                    .view
+                    .get_or_insert_with(|| viewporter.get_viewport(&window.surface, &handle, ()));
+                view.set_destination(wide, tall);
+            }
+            None => {}
         }
         window.surface.attach(Some(&shown.0), 0, 0);
         window.surface.damage_buffer(0, 0, width as i32, height as i32);
@@ -1005,7 +1087,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
         match event {
             wl_registry::Event::Global { name, interface, version } => match interface.as_str() {
                 "wl_compositor" => {
-                    told.compositor = Some(registry.bind(name, version.min(4), handle, ()));
+                    told.compositor = Some(registry.bind(name, version.min(6), handle, ()));
                 }
                 "wl_shm" => told.shm = Some(registry.bind(name, 1, handle, ())),
                 "xdg_wm_base" => told.shell = Some(registry.bind(name, version.min(2), handle, ())),
@@ -1016,6 +1098,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                 "dukovo_title_bar_manager_v1" => told.title_bars = Some(name),
                 "zwp_input_timestamps_manager_v1" => {
                     told.times = Some(registry.bind(name, 1, handle, ()));
+                }
+                "wp_viewporter" => told.viewporter = Some(registry.bind(name, 1, handle, ())),
+                "wp_fractional_scale_manager_v1" => {
+                    told.fractions = Some(registry.bind(name, 1, handle, ()));
                 }
                 "wl_output" => {
                     let _: wl_output::WlOutput = registry.bind(name, version.min(4), handle, name);
@@ -1281,4 +1367,36 @@ delegate_noop!(Told: zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV
 delegate_noop!(Told: ignore wl_shm::WlShm);
 delegate_noop!(Told: wl_shm_pool::WlShmPool);
 delegate_noop!(Told: ignore wl_buffer::WlBuffer);
-delegate_noop!(Told: ignore wl_surface::WlSurface);
+delegate_noop!(Told: wp_viewporter::WpViewporter);
+delegate_noop!(Told: wp_viewport::WpViewport);
+delegate_noop!(Told: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+
+impl Dispatch<wl_surface::WlSurface, ()> for Told {
+    fn event(
+        told: &mut Told,
+        surface: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        let wl_surface::Event::PreferredBufferScale { factor } = event else { return };
+        told.zooms.retain(|(other, _)| other != surface);
+        told.zooms.push((surface.clone(), factor));
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _fraction: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            told.fraction = Some(scale);
+        }
+    }
+}

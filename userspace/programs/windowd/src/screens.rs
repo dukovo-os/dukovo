@@ -325,6 +325,7 @@ where
         set: &ScreensSet,
     ) -> Result<Vec<String>, Failed> {
         let mut said = Vec::new();
+        let screens_before = shell.windows.screens();
         let mut found = Found::read(&self.holder)?;
         let named = self.choose(&mut found, set, &mut said)?;
         self.found = found;
@@ -362,6 +363,8 @@ where
             shell.windows.space.unmap_output(&gone.output);
             display.remove_global::<Shell>(gone.global.clone());
         }
+        shell.windows.screens_changed(&screens_before);
+        shell.windows.tell_all();
         self.pointed = None;
         let scene = Scene { windows: &shell.windows, panel: None };
         self.first_frames(renderer, &scene)?;

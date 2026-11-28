@@ -6,8 +6,9 @@
 //! and where each is on the desktop.
 
 use display_pattern::pattern;
+use input::abi::{BTN_LEFT, KEY_LEFT, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_RIGHT};
 use window_frame::{Bar, Layout, Shape, Theme};
-use window_test::Screen;
+use window_test::{Drawn, Screen};
 
 use super::laid::settings;
 use super::{Program, World};
@@ -27,14 +28,22 @@ fn pixel(world: &mut World, screen: usize, (x, y): (i32, i32)) -> [u8; 3] {
     [pixels[at + 2], pixels[at + 1], pixels[at]]
 }
 
-/// Where the own pixels of a window of `size` first show on a screen
-/// whose area of the desktop is `area` wide and tall, from the area's
-/// corner: the window is in its middle.
-fn middle_in(area: (i32, i32), (width, height): (u32, u32)) -> (i32, i32) {
+/// Where the corner of the frame of a window of `size` first is on a
+/// screen whose area of the desktop is `area` wide and tall, from the
+/// area's corner, and where the window's own pixels are from there:
+/// the window is in the screen's middle.
+fn placed(area: (i32, i32), (width, height): (u32, u32)) -> ((i32, i32), (i32, i32)) {
     let size = (width as i32, height as i32);
     let layout = Layout::of(&Theme::basic(), size, Shape::Normal, Bar::Full, None);
-    let (left, top) = ((area.0 - layout.frame.w) / 2, (area.1 - layout.frame.h) / 2);
-    (left + layout.surface.x, top + layout.surface.y)
+    let corner = ((area.0 - layout.frame.w) / 2, (area.1 - layout.frame.h) / 2);
+    (corner, (layout.surface.x, layout.surface.y))
+}
+
+/// Where the own pixels of a window of `size` first show on such a
+/// screen.
+fn middle_in(area: (i32, i32), size: (u32, u32)) -> (i32, i32) {
+    let (corner, within) = placed(area, size);
+    (corner.0 + within.0, corner.1 + within.1)
 }
 
 /// What `program` is told of the screens, once it has heard the news
@@ -54,6 +63,16 @@ fn point_in(world: &mut World, area: (i32, i32), (x, y): (i32, i32)) {
     let now = world.now();
     let share = |at: i32, side: i32| (f64::from(at) + 0.5) / f64::from(side - 1);
     world.desktop.pointed(now, Some(share(x, area.0)), Some(share(y, area.1)));
+}
+
+/// Moves the pointer from the first screen to the second, which is to
+/// its right.
+fn to_second(world: &mut World) {
+    for _ in 0..4 {
+        let now = world.now();
+        world.desktop.moved(now, 400, 0);
+        world.settle();
+    }
 }
 
 #[test]
@@ -234,11 +253,217 @@ fn settings_that_are_as_built_again_show_the_screens_as_built() {
     let program = world.program();
     world.show(&program, (160, 100), 5);
     set(&mut world, r#"{"screens": {"virtio0/0": {"scale": 2, "turn": 180}}}"#);
-    let (left, top) = middle_in((1024, 768), (160, 100));
+    // The window is as far across and down the screen as it was: at
+    // half as many points.
+    let (corner, within) = placed((1024, 768), (160, 100));
+    let (left, top) = (corner.0 / 2 + within.0, corner.1 / 2 + within.1);
     // Turned by a half, a point's four pixels end at the far corner.
     assert_eq!(pixel(&mut world, 0, (1023 - left * 2, 767 - top * 2)), pattern::colour(5, 0, 0));
     set(&mut world, "{}");
+    let (left, top) = (corner.0 / 2 * 2 + within.0, corner.1 / 2 * 2 + within.1);
     assert_eq!(pixel(&mut world, 0, (left, top)), pattern::colour(5, 0, 0));
     let screen = &told(&mut world, &program)[0];
     assert_eq!((screen.scale, screen.turned), (1, 0));
+}
+
+#[test]
+fn a_window_on_a_screen_that_goes_is_carried_to_the_one_left_and_back_when_it_returns() {
+    let mut world = World::new(&[Some((1024, 768)), Some((800, 600))], false);
+    let program = world.program();
+    // The pointer is on the second screen, and the window shows there.
+    to_second(&mut world);
+    world.show(&program, (160, 100), 5);
+    let (left, top) = middle_in((800, 600), (160, 100));
+    assert_eq!(pixel(&mut world, 1, (left, top)), pattern::colour(5, 0, 0));
+    world.kernel.borrow_mut().found(1, None);
+    world.settle();
+    // As far across and down the first screen as it was the second.
+    let (corner, within) = placed((800, 600), (160, 100));
+    let carried = (corner.0 * 1024 / 800 + within.0, corner.1 * 768 / 600 + within.1);
+    assert_eq!(pixel(&mut world, 0, carried), pattern::colour(5, 0, 0));
+    world.kernel.borrow_mut().found(1, Some((800, 600)));
+    world.settle();
+    assert_eq!(pixel(&mut world, 1, (left, top)), pattern::colour(5, 0, 0));
+    assert_eq!(pixel(&mut world, 0, carried), BACKGROUND);
+}
+
+#[test]
+fn a_window_the_person_moved_stays_when_its_screen_returns() {
+    let mut world = World::new(&[Some((1024, 768)), Some((800, 600))], false);
+    let program = world.program();
+    to_second(&mut world);
+    world.show(&program, (160, 100), 5);
+    world.kernel.borrow_mut().found(1, None);
+    world.settle();
+    let (corner, within) = placed((800, 600), (160, 100));
+    let carried = (corner.0 * 1024 / 800, corner.1 * 768 / 600);
+    // Dragged by its title bar, ten points right and down.
+    world.point(carried.0 + 40, carried.1 + 10);
+    world.button(BTN_LEFT, true);
+    world.point(carried.0 + 50, carried.1 + 20);
+    world.button(BTN_LEFT, false);
+    world.settle();
+    let moved = (carried.0 + 10 + within.0, carried.1 + 10 + within.1);
+    assert_eq!(pixel(&mut world, 0, moved), pattern::colour(5, 0, 0));
+    world.kernel.borrow_mut().found(1, Some((800, 600)));
+    world.settle();
+    assert_eq!(pixel(&mut world, 0, moved), pattern::colour(5, 0, 0));
+}
+
+#[test]
+fn a_maximized_window_fills_its_screen_at_whatever_size_the_screen_is() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, (160, 100), 5);
+    world.ask(&program, |client| client.maximize(true).unwrap());
+    let bar = Theme::basic().bar;
+    assert_eq!(world.follow(&program, (160, 100), 6), ((1024, 768 - bar as u32), true));
+    assert_eq!(pixel(&mut world, 0, (1023, 767)), pattern::colour(6, 1023, 767 - bar as u32));
+    world.desktop.set(&settings(r#"{"screens": {"virtio0/0": {"scale": 2}}}"#)).unwrap();
+    // 512 by 384 points, less the title bar's rows.
+    assert_eq!(world.follow(&program, (160, 100), 7), ((512, 384 - bar as u32), true));
+    world.settle();
+    assert_eq!(pixel(&mut world, 0, (0, 2 * bar)), pattern::colour(7, 0, 0));
+    assert_eq!(pixel(&mut world, 0, (1023, 767)), pattern::colour(7, 511, 383 - bar as u32));
+}
+
+#[test]
+fn super_with_shift_and_an_arrow_carries_the_window_to_the_next_screen() {
+    let mut world = World::new(&[Some((1024, 768)), Some((800, 600))], false);
+    let program = world.program();
+    world.show(&program, (160, 100), 5);
+    let (corner, within) = placed((1024, 768), (160, 100));
+    let carried = (corner.0 * 800 / 1024 + within.0, corner.1 * 600 / 768 + within.1);
+    let chord = |world: &mut World, arrow: u16| {
+        world.key(KEY_LEFTMETA, true);
+        world.key(KEY_LEFTSHIFT, true);
+        world.tap(arrow);
+        world.key(KEY_LEFTSHIFT, false);
+        world.key(KEY_LEFTMETA, false);
+        world.settle();
+    };
+    chord(&mut world, KEY_RIGHT);
+    assert_eq!(pixel(&mut world, 1, carried), pattern::colour(5, 0, 0));
+    // After the last screen comes the first; a place is carried to
+    // the whole point at or before it each time.
+    chord(&mut world, KEY_RIGHT);
+    assert_eq!(pixel(&mut world, 1, carried), BACKGROUND);
+    chord(&mut world, KEY_LEFT);
+    let back = (corner.0 * 800 / 1024 * 1024 / 800, corner.1 * 600 / 768 * 768 / 600);
+    let carried = (back.0 * 800 / 1024 + within.0, back.1 * 600 / 768 + within.1);
+    assert_eq!(pixel(&mut world, 1, carried), pattern::colour(5, 0, 0));
+    // A maximized window fills the screen it is carried to.
+    world.ask(&program, |client| client.maximize(true).unwrap());
+    let bar = Theme::basic().bar as u32;
+    assert_eq!(world.follow(&program, (160, 100), 6), ((800, 600 - bar), true));
+    assert_eq!(pixel(&mut world, 1, (799, 599)), pattern::colour(6, 799, 599 - bar));
+    chord(&mut world, KEY_LEFT);
+    assert_eq!(world.follow(&program, (160, 100), 7), ((1024, 768 - bar), true));
+    world.settle();
+    assert_eq!(pixel(&mut world, 0, (1023, 767)), pattern::colour(7, 1023, 767 - bar));
+    assert_eq!(pixel(&mut world, 1, (799, 599)), BACKGROUND);
+}
+
+#[test]
+fn a_program_is_told_its_screen_s_zoom_and_draws_a_pixel_for_a_pixel() {
+    let mut world = World::one_screen();
+    set(&mut world, r#"{"screens": {"virtio0/0": {"scale": 2}}}"#);
+    let program = world.program();
+    // 160 by 100 points are 320 by 200 of the screen's pixels.
+    world.ask(&program, |client| client.show_as((320, 200), 5, Drawn::Zoomed(2)).unwrap());
+    world.settle();
+    let zoom = world.ask(&program, |client| {
+        client.caught_up().unwrap();
+        client.zoom()
+    });
+    assert_eq!(zoom, (Some(2), Some(240)));
+    let (left, top) = middle_in((512, 384), (160, 100));
+    for (x, y) in [(0, 0), (1, 0), (0, 1), (201, 77), (319, 199)] {
+        let at = (left * 2 + x as i32, top * 2 + y as i32);
+        assert_eq!(pixel(&mut world, 0, at), pattern::colour(5, x, y), "{at:?}");
+    }
+    // At a zoom between whole numbers it is told both: the whole one
+    // above for a program that draws at those alone.
+    set(&mut world, r#"{"screens": {"virtio0/0": {"scale": 1.5}}}"#);
+    let zoom = world.ask(&program, |client| {
+        client.caught_up().unwrap();
+        client.zoom()
+    });
+    assert_eq!(zoom, (Some(2), Some(180)));
+}
+
+#[test]
+fn a_window_carried_to_another_screen_is_told_that_screen_s_zoom() {
+    let mut world = World::new(&[Some((1024, 768)), Some((800, 600))], false);
+    set(&mut world, r#"{"screens": {"virtio0/1": {"scale": 2}}}"#);
+    let program = world.program();
+    world.show(&program, (160, 100), 5);
+    let zoom = |world: &mut World| {
+        world.ask(&program, |client| {
+            client.caught_up().unwrap();
+            client.zoom()
+        })
+    };
+    // A surface draws a pixel a point until it is told otherwise.
+    assert_eq!(zoom(&mut world), (None, Some(120)));
+    world.key(KEY_LEFTMETA, true);
+    world.key(KEY_LEFTSHIFT, true);
+    world.tap(KEY_RIGHT);
+    world.key(KEY_LEFTSHIFT, false);
+    world.key(KEY_LEFTMETA, false);
+    world.settle();
+    assert_eq!(zoom(&mut world), (Some(2), Some(240)));
+}
+
+#[test]
+fn a_picture_shows_at_the_size_its_program_says_whatever_its_own() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    // 80 by 50 pixels shown 160 by 100 points: each pixel four.
+    world.ask(&program, |client| client.show_as((80, 50), 5, Drawn::Viewed(160, 100)).unwrap());
+    world.settle();
+    let (left, top) = middle_in((1024, 768), (160, 100));
+    for (x, y) in [(0, 0), (37, 21), (79, 49)] {
+        let colour = pattern::colour(5, x, y);
+        let (x, y) = (left + x as i32 * 2, top + y as i32 * 2);
+        for at in [(x, y), (x + 1, y + 1)] {
+            assert_eq!(pixel(&mut world, 0, at), colour, "{at:?}");
+        }
+    }
+    // The frame is around the size that shows.
+    assert_eq!(pixel(&mut world, 0, (left + 160 + 6, top + 50)), BACKGROUND);
+    assert_ne!(pixel(&mut world, 0, (left + 160 + 2, top + 50)), BACKGROUND);
+}
+
+#[test]
+fn at_a_zoom_between_whole_numbers_no_line_of_the_desktop_shows_inside_a_frame() {
+    let mut world = World::one_screen();
+    set(&mut world, r#"{"screens": {"virtio0/0": {"scale": 1.25}}}"#);
+    let program = world.program();
+    world.ask(&program, |client| client.show_plain((160, 100), 200).unwrap());
+    world.settle();
+    // 1024 by 768 pixels are 820 by 615 points.
+    let (corner, within) = placed((820, 615), (160, 100));
+    let layout = Layout::of(&Theme::basic(), (160, 100), Shape::Normal, Bar::Full, None);
+    // Dragged a point at a time, the frame's edges fall on every part
+    // of a pixel there is.
+    point_in(&mut world, (820, 615), (corner.0 + 40, corner.1 + 10));
+    world.button(BTN_LEFT, true);
+    for step in 1..=8 {
+        point_in(&mut world, (820, 615), (corner.0 + 40 + step, corner.1 + 10 + step));
+        world.settle();
+        let (left, top) = (corner.0 + step, corner.1 + step);
+        let pixels = |points: i32| (f64::from(points) * 1.25).round() as i32;
+        // A row and a column through the middle of the content, from
+        // well inside the frame's one edge to well inside the other.
+        let row = pixels(top + within.1 + 50);
+        for x in pixels(left) + 2..pixels(left + layout.frame.w) - 2 {
+            assert_ne!(pixel(&mut world, 0, (x, row)), BACKGROUND, "step {step}, column {x}");
+        }
+        let column = pixels(left + within.0 + 80);
+        for y in pixels(top) + 2..pixels(top + layout.frame.h) - 2 {
+            assert_ne!(pixel(&mut world, 0, (column, y)), BACKGROUND, "step {step}, row {y}");
+        }
+    }
+    world.button(BTN_LEFT, false);
 }

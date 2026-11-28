@@ -436,7 +436,7 @@ impl Manager {
             }
             (Ask::List, Hold::List { .. }) => self.let_go(shell),
             (Ask::List, Hold::None) => self.list(shell, at, None),
-            (Ask::Close | Ask::Menu | Ask::Up | Ask::Down, Hold::None) => {
+            (Ask::Close | Ask::Menu | Ask::Up | Ask::Down | Ask::ToScreen { .. }, Hold::None) => {
                 let Some(window) = shell.active().cloned() else { return };
                 let Some(framed) = shell.windows.framed(&window) else { return };
                 match ask {
@@ -446,6 +446,10 @@ impl Manager {
                         self.menu(shell, window, under_bar);
                     }
                     Ask::Up => shell.windows.maximize(&window),
+                    Ask::ToScreen { back } => {
+                        shell.windows.next_screen(&window, back);
+                        shell.changed.windows = true;
+                    }
                     Ask::Down if framed.maximized() => shell.windows.restore(&window),
                     _ => shell.minimize(&window),
                 }

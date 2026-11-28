@@ -66,6 +66,7 @@ use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
     is_sync_subsurface, with_states,
 };
+use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
@@ -74,9 +75,10 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::viewporter::ViewporterState;
 use smithay::{
-    delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_fractional_scale, delegate_output, delegate_seat, delegate_shm,
+    delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
 };
 use sysapi::time::monotonic_ns;
 use window_frame::{Bar, Edge};
@@ -111,6 +113,8 @@ pub struct Shell {
     /// Kept for as long as programs may ask who draws a window's
     /// decorations.
     _decorations: XdgDecorationState,
+    _views: ViewporterState,
+    _fractions: FractionalScaleManagerState,
     /// Kept for as long as programs may ask for a part of a title bar.
     _title_bars: GlobalId,
     /// Where events of windowd's own protocols are sent from.
@@ -155,12 +159,14 @@ impl Shell {
         seat.add_pointer();
         let does = [WmCapabilities::WindowMenu, WmCapabilities::Maximize, WmCapabilities::Minimize];
         Shell {
-            compositor: CompositorState::new::<Shell>(display),
+            compositor: CompositorState::new_v6::<Shell>(display),
             xdg: XdgShellState::new_with_capabilities::<Shell>(display, does),
             shm: ShmState::new::<Shell>(display, Vec::new()),
             seats,
             _outputs: OutputManagerState::new_with_xdg_output::<Shell>(display),
             _decorations: XdgDecorationState::new::<Shell>(display),
+            _views: ViewporterState::new::<Shell>(display),
+            _fractions: FractionalScaleManagerState::new::<Shell>(display),
             _title_bars: titlebar::offer(display),
             stamps: Stamps::offer(display),
             display: display.clone(),
@@ -333,6 +339,9 @@ impl Shell {
         let Some(at) = self.waiting.iter().position(waits) else { return };
         let Some(toplevel) = self.waiting[at].toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
+            // The program draws its first frame for the screen the
+            // window shows on.
+            self.windows.tell_at(surface, self.pointer_at());
             let bar = TitleBar::of(&self.waiting[at]).told();
             let room = self.windows.room(self.pointer_at(), bar);
             toplevel.with_pending_state(|state| state.bounds = Some(room));
@@ -488,6 +497,7 @@ impl CompositorHandler for Shell {
         if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
             && !popup.is_initial_configure_sent()
         {
+            self.windows.tell_at(surface, self.pointer_at());
             // A popup that was destroyed meanwhile has nobody to
             // configure.
             let _ = popup.send_configure();
@@ -693,6 +703,9 @@ impl SeatHandler for Shell {
         // Asked for again whenever the pointer comes to another
         // program's surface, mostly for what it shows already.
         self.changed.pointer |= image != self.pointer;
+        if let CursorImageStatus::Surface(surface) = &image {
+            self.windows.tell_at(surface, self.pointer_at());
+        }
         self.pointer = image;
     }
 
@@ -735,3 +748,16 @@ delegate_xdg_shell!(Shell);
 delegate_seat!(Shell);
 delegate_output!(Shell);
 delegate_xdg_decoration!(Shell);
+delegate_viewporter!(Shell);
+delegate_fractional_scale!(Shell);
+
+impl FractionalScaleHandler for Shell {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        match self.window_of(&surface) {
+            Some(window) => self.windows.tell(&window),
+            // A window to come, a popup or a pointer's picture: where
+            // the pointer is is where it shows.
+            None => self.windows.tell_at(&surface, self.pointer_at()),
+        }
+    }
+}

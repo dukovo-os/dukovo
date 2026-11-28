@@ -28,17 +28,23 @@ pub mod resize;
 use std::convert::Infallible;
 
 use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::desktop::{Space, Window, WindowSurfaceType};
+use smithay::desktop::utils::with_surfaces_surface_tree;
+use smithay::desktop::{PopupManager, Space, Window, WindowSurfaceType};
+use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform};
-use smithay::wayland::compositor::with_states;
+use smithay::wayland::compositor::{SurfaceData, send_surface_state, with_states};
+use smithay::wayland::fractional_scale::with_fractional_scale;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData};
 use window_frame::{Bar, Button, Canvas, Edge, Layout, Look, Margins, Part, Rect, Shape, Theme};
 
 use resize::Resize;
+
+use crate::screens::layout;
 
 use crate::titlebar::TitleBar;
 
@@ -107,6 +113,47 @@ struct Restore {
     frame: Option<Size<i32, Logical>>,
 }
 
+/// Where a window was on a screen that went: it goes back there when
+/// the screen is there again, unless the person has moved it since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Home {
+    /// The screen's name.
+    screen: String,
+    /// The screen's area of the desktop then.
+    area: Rectangle<i32, Logical>,
+    /// The corner of the frame's box then, or where a maximized window
+    /// was to go when restored.
+    at: Option<Point<i32, Logical>>,
+}
+
+/// A screen: its name and its area of the desktop.
+pub type Screen = (String, Rectangle<i32, Logical>);
+
+/// The screen of `screens` most of `area` is on; of those that share
+/// as much, the one furthest left.
+fn most_of(screens: &[Screen], area: Rectangle<i32, Logical>) -> Option<&Screen> {
+    let shared = |screen: &&Screen| {
+        let shared = screen.1.intersection(area).map_or(0, |shared| shared.size.w * shared.size.h);
+        (shared, core::cmp::Reverse(screen.1.loc.x))
+    };
+    screens.iter().max_by_key(shared)
+}
+
+/// Tells the program of `surface` the zoom and the turn of `screen`,
+/// for it to draw the surface and those under it so.
+fn tell(surface: &WlSurface, screen: &Output) {
+    with_surfaces_surface_tree(surface, |surface, states| told(surface, states, screen));
+}
+
+/// Tells one surface so, if it was not told the same before: the whole
+/// zoom and the turn by `wl_surface`, the zoom itself to a program
+/// that asked by `wp_fractional_scale_v1`.
+fn told(surface: &WlSurface, states: &SurfaceData, screen: &Output) {
+    let zoom = screen.current_scale();
+    send_surface_state(surface, states, zoom.integer_scale(), screen.current_transform());
+    with_fractional_scale(states, |asked| asked.set_preferred_scale(zoom.fractional_scale()));
+}
+
 /// What a frame's strips were last drawn to show.
 #[derive(Debug, Clone, PartialEq)]
 struct Shown {
@@ -137,6 +184,10 @@ pub struct Framed {
     fills: Rectangle<i32, Logical>,
     /// The resize that is under way.
     resize: Option<Resize>,
+    /// Where it goes back to when a screen that went is there again.
+    home: Option<Home>,
+    /// What the renderer knows the ground under its content by.
+    ground: Id,
     /// The frame's pixels.
     strips: Vec<Strip>,
     shown: Option<Shown>,
@@ -174,6 +225,17 @@ impl Framed {
     /// The frame's box on the desktop.
     pub fn frame(&self) -> Rectangle<i32, Logical> {
         Rectangle::new(self.at, (self.layout.frame.w, self.layout.frame.h).into())
+    }
+
+    /// The ground under the window's content, a point wider on each
+    /// side, and what the renderer knows it by. On a screen whose zoom
+    /// is between whole numbers, the frame and the content are each
+    /// drawn to the nearest pixel, and may leave a pixel between them:
+    /// the ground shows there, not the desktop.
+    pub fn ground(&self) -> (&Id, Rectangle<i32, Logical>) {
+        let content = self.layout.content;
+        let corner = self.at + Point::from((content.x - 1, content.y - 1));
+        (&self.ground, Rectangle::new(corner, (content.w + 2, content.h + 2).into()))
     }
 
     /// Where the top left corner of the window's own surface is on the
@@ -365,16 +427,159 @@ impl Windows {
         self.space.elements().next_back().cloned()
     }
 
+    /// The screens, in the order they were shown on.
+    pub fn screens(&self) -> Vec<Screen> {
+        let named = |screen: &Output| Some((screen.name(), self.space.output_geometry(screen)?));
+        self.space.outputs().filter_map(named).collect()
+    }
+
     /// The screen most of `area` is on, or the first.
     fn screen_of(&self, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
-        let screens = self.space.outputs().filter_map(|screen| self.space.output_geometry(screen));
-        let shared = |screen: &Rectangle<i32, Logical>| {
-            let shared =
-                screen.intersection(area).map_or(0, |shared| shared.size.w * shared.size.h);
-            // Of screens that share as much, the first.
-            (shared, core::cmp::Reverse(screen.loc.x))
+        most_of(&self.screens(), area).map_or_default(|(_, area)| *area)
+    }
+
+    /// Tells the program of `window` the zoom and the turn of the
+    /// screen most of the window is on, for it to draw the window's
+    /// surfaces and its popups' so.
+    pub fn tell(&self, window: &Window) {
+        let Some(framed) = self.framed(window) else { return };
+        let screens = self.screens();
+        let Some((name, _)) = most_of(&screens, Windows::on(framed)) else { return };
+        let Some(screen) = self.space.outputs().find(|screen| screen.name() == *name) else {
+            return;
         };
-        screens.max_by_key(shared).unwrap_or_default()
+        window.with_surfaces(|surface, states| told(surface, states, screen));
+        let Some(surface) = window.wl_surface() else { return };
+        for (popup, _) in PopupManager::popups_for_surface(&surface) {
+            tell(popup.wl_surface(), screen);
+        }
+    }
+
+    /// Tells every window's program so.
+    pub fn tell_all(&self) {
+        self.framed.iter().for_each(|framed| self.tell(&framed.window));
+    }
+
+    /// Tells the program of `surface`, which shows at `at` or is about
+    /// to, the zoom and the turn of the screen there, or of the first.
+    pub fn tell_at(&self, surface: &WlSurface, at: Point<f64, Logical>) {
+        let under = self.space.output_under(at).next();
+        if let Some(screen) = under.or_else(|| self.space.outputs().next()) {
+            tell(surface, screen);
+        }
+    }
+
+    /// The area a window fills or is on most of: what it is carried
+    /// from when the screens change.
+    fn on(framed: &Framed) -> Rectangle<i32, Logical> {
+        if framed.maximized() { framed.fills } else { framed.frame() }
+    }
+
+    /// The screens were `before` and are others now. A window on a
+    /// screen that has another area is as far across and down it as it
+    /// was, and fills it if it did. A window on a screen that went is
+    /// carried so to the nearest screen there is, and back when its
+    /// screen is there again (ADR 0725).
+    pub fn screens_changed(&mut self, before: &[Screen]) {
+        let now = self.screens();
+        // With no screen, every window waits where it is for one.
+        if now.is_empty() || now == before {
+            return;
+        }
+        let areas: Vec<Rectangle<i32, Logical>> = now.iter().map(|(_, area)| *area).collect();
+        let area_of = |screens: &[Screen], name: &str| {
+            screens.iter().find(|(other, _)| other == name).map(|(_, area)| *area)
+        };
+        for index in 0..self.framed.len() {
+            let framed = &self.framed[index];
+            let back = framed.home.as_ref().and_then(|home| {
+                let gone = area_of(before, &home.screen).is_none();
+                Some((home, area_of(&now, &home.screen).filter(|_| gone)?))
+            });
+            if let Some((home, area)) = back {
+                let at = home.at.map(|at| layout::across(home.area, area, at));
+                let from = most_of(before, Windows::on(framed)).map_or(area, |(_, was)| *was);
+                self.carry(index, from, area);
+                self.place(index, at);
+                self.put(index);
+                self.framed[index].home = None;
+                continue;
+            }
+            let Some((name, was)) = most_of(before, Windows::on(framed)) else { continue };
+            match area_of(&now, name) {
+                Some(area) => self.carry(index, *was, area),
+                None => {
+                    let Some(nearest) = layout::nearest(*was, &areas) else { continue };
+                    let at = if framed.maximized() { framed.restore.at } else { Some(framed.at) };
+                    let home = Home { screen: name.clone(), area: *was, at };
+                    self.carry(index, *was, areas[nearest]);
+                    self.framed[index].home.get_or_insert(home);
+                }
+            }
+        }
+    }
+
+    /// Has the corner of the frame of the window at `index` be at
+    /// `at`, or a maximized window go there when it is restored.
+    fn place(&mut self, index: usize, at: Option<Point<i32, Logical>>) {
+        let framed = &mut self.framed[index];
+        if framed.maximized() {
+            framed.restore.at = at;
+        } else if let Some(at) = at {
+            if let Some(resize) = &mut framed.resize {
+                resize.moved(at - framed.at);
+            }
+            framed.at = at;
+        }
+    }
+
+    /// Carries the window at `index` from the screen whose area is or
+    /// was `from` to the one whose area is `to`: as far across and
+    /// down it, and filling it if it filled the other.
+    fn carry(&mut self, index: usize, from: Rectangle<i32, Logical>, to: Rectangle<i32, Logical>) {
+        if from == to {
+            return;
+        }
+        let theme = self.theme;
+        let framed = &mut self.framed[index];
+        if framed.maximized() {
+            framed.restore.at = framed.restore.at.map(|at| layout::across(from, to, at));
+            let resized = framed.fills.size != to.size;
+            framed.fills = to;
+            if framed.layout.shape == Shape::Maximized {
+                framed.at = to.loc;
+            }
+            if resized && let Some(toplevel) = framed.window.toplevel() {
+                let bar = TitleBar::of(&framed.window).told();
+                let size = inside(&theme, Shape::Maximized, bar, to.size);
+                toplevel.with_pending_state(|state| state.size = Some(size));
+                toplevel.send_pending_configure();
+            }
+        } else {
+            let at = layout::across(from, to, framed.at);
+            let at = self.reachable_on(to, at, self.framed[index].layout.frame.w);
+            self.place(index, Some(at));
+        }
+        self.put(index);
+    }
+
+    /// Carries `window` to the screen after the one it is on, from
+    /// left to right, or to the one before it for `back`.
+    pub fn next_screen(&mut self, window: &Window, back: bool) {
+        let Some(index) = self.framed.iter().position(|framed| framed.window == *window) else {
+            return;
+        };
+        let screens = self.screens();
+        let areas: Vec<Rectangle<i32, Logical>> = screens.iter().map(|(_, area)| *area).collect();
+        let on = most_of(&screens, Windows::on(&self.framed[index])).map(|(_, area)| *area);
+        let from = on.and_then(|on| areas.iter().position(|area| *area == on));
+        let Some((from, to)) =
+            from.and_then(|from| Some((from, layout::beside(&areas, from, back)?)))
+        else {
+            return;
+        };
+        self.framed[index].home = None;
+        self.carry(index, areas[from], areas[to]);
     }
 
     /// The area of the screen the place `at` is on, or of the first.
@@ -413,10 +618,11 @@ impl Windows {
         // brought there again, in their order.
         let over: Vec<Window> =
             self.space.elements().skip_while(|other| **other != window).skip(1).cloned().collect();
-        self.space.map_element(window, at, false);
+        self.space.map_element(window.clone(), at, false);
         for other in &over {
             self.space.raise_element(other, false);
         }
+        self.tell(&window);
     }
 
     /// The layout of a window's frame as the window's program has drawn
@@ -465,11 +671,14 @@ impl Windows {
             restore: Restore::default(),
             fills: screen,
             resize: None,
+            home: None,
+            ground: Id::new(),
             strips: Vec::new(),
             shown: None,
             used: 0,
         });
         let within = Point::from((layout.surface.x, layout.surface.y));
+        self.tell(&window);
         self.space.map_element(window, at + within, false);
     }
 
@@ -493,6 +702,8 @@ impl Windows {
             return false;
         };
         let theme = self.theme;
+        // A surface under the window's that is new is told too.
+        self.tell(window);
         let framed = &mut self.framed[index];
         let Some(toplevel) = framed.window.toplevel().cloned() else { return false };
         let drawn = toplevel.current_state().states.contains(State::Maximized);
@@ -504,7 +715,7 @@ impl Windows {
         }
         let frame = Size::from((framed.layout.frame.w, framed.layout.frame.h));
         match (before.shape, shape) {
-            (Shape::Normal, Shape::Maximized) => framed.at = framed.fills.loc,
+            (_, Shape::Maximized) => framed.at = framed.fills.loc,
             (Shape::Maximized, Shape::Normal) => {
                 let (fills, restore) = (framed.fills, core::mem::take(&mut framed.restore));
                 let at = restore.at.unwrap_or_else(|| self.first_place(fills, frame));
@@ -578,6 +789,8 @@ impl Windows {
             return;
         };
         let framed = &mut self.framed[index];
+        // Where the person puts it is where it stays.
+        framed.home = None;
         if framed.layout.shape == Shape::Maximized {
             framed.restore.at = Some(at);
         } else {
@@ -595,7 +808,18 @@ impl Windows {
     /// that leaves some of its title bar on a screen.
     pub fn reachable(&self, at: Point<i32, Logical>, width: i32) -> Point<i32, Logical> {
         let bar = Rectangle::new(at, (width, self.theme.bar).into());
-        let screen = self.screen_of(bar);
+        self.reachable_on(self.screen_of(bar), at, width)
+    }
+
+    /// The place nearest to `at` for the corner of a frame `width` wide
+    /// that leaves some of its title bar on the screen whose area is
+    /// `screen`.
+    fn reachable_on(
+        &self,
+        screen: Rectangle<i32, Logical>,
+        at: Point<i32, Logical>,
+        width: i32,
+    ) -> Point<i32, Logical> {
         let kept = KEPT.min(width);
         // With no screen, or one narrower than what is kept, the left
         // end of the bar is the part that stays.

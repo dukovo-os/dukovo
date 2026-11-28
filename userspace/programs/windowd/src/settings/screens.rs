@@ -86,11 +86,6 @@ impl Zoom {
     pub fn is_whole(self) -> bool {
         self.0.is_multiple_of(4)
     }
-
-    /// The zoom in 120ths, as `wp_fractional_scale_v1` tells it.
-    pub fn in_120ths(self) -> u32 {
-        self.0 * 30
-    }
 }
 
 /// The mode a screen is set to: its size in pixels and, if the person
@@ -309,10 +304,10 @@ mod tests {
     fn a_zoom_is_from_one_to_four_in_quarters() {
         assert_eq!(Zoom::of(1.0), Some(Zoom::ONE));
         let zoom = Zoom::of(1.25).expect("a quarter over one is a zoom");
-        assert_eq!((zoom.number(), zoom.whole(), zoom.in_120ths()), (1.25, 2, 150));
+        assert_eq!((zoom.number(), zoom.whole()), (1.25, 2));
         assert!(!zoom.is_whole());
         let zoom = Zoom::of(4.0).expect("four is a zoom");
-        assert_eq!((zoom.whole(), zoom.in_120ths(), zoom.is_whole()), (4, 480, true));
+        assert_eq!((zoom.whole(), zoom.is_whole()), (4, true));
         for wrong in [0.0, 0.75, 1.1, 4.25, -2.0, f64::NAN] {
             assert_eq!(Zoom::of(wrong), None, "{wrong}");
         }
