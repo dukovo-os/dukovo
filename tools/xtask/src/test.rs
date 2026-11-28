@@ -7088,6 +7088,12 @@ impl Vm {
         self.expect_first(&[needle]).map(|_| ())
     }
 
+    /// Whether `needle` has appeared after the previous match, without
+    /// waiting for it and without moving on past it.
+    pub fn said(&self, needle: &str) -> bool {
+        self.log().get(self.cursor..).is_some_and(|rest| rest.contains(needle))
+    }
+
     /// Waits until one of `needles` appears after the previous match, and
     /// gives the place in `needles` of the one that comes first in the
     /// log: for a start that may take either of two ways.

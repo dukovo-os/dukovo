@@ -1757,7 +1757,7 @@ _target/userspace/_).
 	*--lab-password* _file_
 		The lab's password, as *image --lab* takes it.
 
-*bench* [*--gate* [*--defer-close*]] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--display*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
+*bench* [*--gate* [*--defer-close*]] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--display*] [*--desktop*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh
 	pages, TLB shootdowns, memory copies, files, POSIX calls, changes of
 	a screen's picture and a mouse's motions cost on Radix, next to
@@ -1899,6 +1899,25 @@ _target/userspace/_).
 		counts and the host's, goes to _out/bench/display.md_ and
 		*--summary*'s file. It takes *--runs*, *--no-linux*,
 		*--linux-kernel* and *--summary*.
+
+	*--desktop*
+		Measure the desktop's everyday work alone (ADR 0724): a second
+		with nothing moving, a frame of a window drawn anew, a key on
+		its way from the driver to a program, and a window moved and
+		resized with the mouse. Dukovo runs *desktop*(1), and Linux runs
+		labwc drawing with pixman, each with the same program in it
+		(*window-test cost*) on a machine with a virtio graphics card,
+		keyboard and mouse. The key's rows are timed by the program; the
+		others are the time the host's processors ran the machine's CPUs
+		for the step, less what they run with nothing moving. The Linux
+		desktop is 83 of Ubuntu's packages, pinned in
+		_tools/xtask/src/linux_desktop.pins_ and fetched once into
+		_.cache/linux-desktop_, which takes *dpkg-deb*; *--no-linux*
+		measures Dukovo alone and fetches nothing. Nothing is gated, and
+		the report goes to _out/bench/desktop.md_ and *--summary*'s file.
+		It takes *--runs*, *--no-linux*, *--linux-kernel* and
+		*--summary*. Without KVM both systems are measured once and the
+		numbers are QEMU's emulation.
 
 	*--shell*
 		Boot nothing: time *nukesh*(1) next to bash on this machine

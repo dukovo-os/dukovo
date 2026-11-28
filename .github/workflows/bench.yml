@@ -77,6 +77,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./ob bench --scaling --gate --summary "$GITHUB_STEP_SUMMARY"
 
+      # What the desktop's everyday work costs, beside labwc on Linux
+      # (ADR 0724): a look in the summary, measured once. Nothing is
+      # gated on it, and the Linux desktop's packages come from Ubuntu's
+      # archive, so a failure here fails no pull request.
+      - name: ./ob bench --desktop
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: ./ob bench --desktop --runs 1 --summary "$GITHUB_STEP_SUMMARY"
+
       # The lab's net boot of real machines, end to end in QEMU (ADR
       # 0429): the disk writer runs on the pinned Linux restored above,
       # and this job has KVM.
@@ -95,6 +104,9 @@ jobs:
             out/bench/boot-bench.log
             out/bench/boot-posix-bench.log
             out/bench/boot-linux.log
+            out/bench/desktop.md
+            out/bench/boot-desktop-bench.log
+            out/bench/boot-linux-desktop.log
             out/bench-scaling/report.md
             out/bench-scaling/boot-scaling-radix.log
             out/bench-scaling/boot-scaling-linux.log

@@ -6,12 +6,13 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # The desktop
 
 The desktop shows the windows of programs on the screens, in place of
-a console's text. Release 1.1 builds it in steps, and this chapter
-describes the first: a program's window shows as the program drew it,
-takes the keyboard and the mouse, and the console is back when the
-program ends. Title bars, and moving and resizing windows, come with
-the next step. The full references are desktop(1), windowd(1),
-consoled(8), inputd(8) and ADRs 0712 to 0717.
+a console's text. Each window has a title bar and a frame, and you
+move, resize, maximize, minimize and close it with the mouse or the
+keys; the console is back when the desktop's program ends. Release 1.1
+builds the desktop in steps: several desktops, snapping a window to a
+half of the screen and laying out the screens come with the next. The
+full references are desktop(1), windowd(1), windowd.json(5),
+consoled(8), inputd(8) and ADRs 0712 to 0723.
 
 ## Starting it
 
@@ -37,18 +38,51 @@ program did, so a script can tell how it went.
 `desktop` alone shows an empty desktop, which stays until you end it
 with its key.
 
+## Windows
+
+Every window has the same frame, which the desktop draws: a title bar
+with the window's title and three buttons at its right end, and a thin
+border.
+
+| To | Do this |
+| --- | --- |
+| Move a window | Drag its title bar. Some of the bar always stays on a screen, so a window cannot be lost off the edge. |
+| Resize it | Drag an edge or a corner. You need not hit the thin border exactly: the edges reach a little way out. |
+| Maximize it, or have it back as it was | Click the middle button, or double click the title bar. Dragging a maximized window by its bar also has it back. |
+| Minimize it | Click the left button of the three. The window is out of sight and still in the list of windows. |
+| Close it | Click the right button, or press Alt+F4. The program is asked to close the window, and may ask you about unsaved work first. |
+| See the window's menu | Click the title bar with the right button, or press Alt+Space. |
+
+The menu's Move and Size hand the window to the arrow keys: each press
+moves the window, or its right and bottom edges, by 16 pixels, and by
+one with Ctrl held. Enter keeps the change, and Esc undoes it.
+
+Some programs have better use for a title bar than a title, as a
+browser has for its tabs, and ask the desktop for the part of the bar
+between the icon and the buttons. The buttons stay the desktop's and
+stay where they are in every window. If you would rather such a
+program had the ordinary bar, choose "Full title bar for this app" in
+its window's menu: it holds for all that program's windows, and is
+remembered.
+
 ## Its keys
 
-Three chords belong to the desktop, and no program in it reads them:
+These keys belong to the desktop, and no program in it reads them:
 
 | Keys | What they do |
 | --- | --- |
-| Ctrl+Alt+F1 to Ctrl+Alt+F12 | Show the console of that number. The desktop stays in the console you started it at: that console's key shows the desktop again, as you left it. Its programs keep running meanwhile, and read nothing you type elsewhere. |
+| Alt+Tab, Alt+Shift+Tab | Show the list of windows, the one you last worked in first, and step forwards or backwards through it while Alt is held. Let go of Alt for the window chosen; a minimized one comes back. |
+| Super | Tapped by itself, shows the list of windows to stay. Choose with the arrow keys and Enter; Esc puts it away. |
+| Alt+F4 | Asks the window you work in to close. |
+| Alt+Space | Shows that window's menu. |
+| Super+Up | Maximizes the window. |
+| Super+Down | Restores a maximized window, and minimizes another. |
+| Ctrl+Alt+F1 to Ctrl+Alt+F12 | Show the console of that number. The desktop stays in the console you started it at: that console's key shows it again, as it was, and its programs go on meanwhile. |
 | Ctrl+Alt+Backspace | Ends the desktop. Its program is asked to end. |
 | Ctrl+Alt+Delete | The secure key, as everywhere: consoled's menu shows over the desktop, and Esc there shows the desktop again. |
 
 At a console, Alt and a function key switch consoles; in the desktop
-Ctrl is held too, so that Alt+F4 and its like stay the programs'.
+Ctrl is held too, so that Alt+F4 closes a window as people expect.
 
 ## The keyboard and the mouse
 
@@ -63,6 +97,26 @@ you plug in while it runs works at once. A mouse moved slowly moves the
 pointer pixel by pixel; moved fast, it carries the pointer up to two
 and a half times as far, so that a wide screen is crossed in one
 stroke.
+
+## Settings
+
+How fast the pointer moves, how quick a double click has to be, how a
+held key repeats and which programs may share their title bars are
+settings, in a file of your own, `~/.config/windowd.json`, laid over
+the system's `/system/settings/windowd.json`. A pointer half as fast as
+built, and keys that repeat more slowly:
+
+```
+{
+  "pointer": { "speed": -1 },
+  "keyboard": { "repeat_delay_ms": 400, "repeat_rate": 20 }
+}
+```
+
+A running desktop reads the files again when you tell it to, with
+`pkill -USR1 desktop`. A mistake in a file never keeps the desktop from
+starting: it says which key is wrong and goes on with the rest.
+windowd.json(5) lists every key.
 
 ## Screens
 

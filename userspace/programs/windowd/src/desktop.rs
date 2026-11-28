@@ -9,6 +9,10 @@
 //! time to draw has come. It waits for nothing itself, so `main` waits
 //! for all of it in one place, and the tests tell it each thing in the
 //! order they choose.
+//!
+//! Each press, motion and key is the window manager's first
+//! ([`crate::manager`]): what it does not keep reaches the program
+//! whose surface is under the pointer, or which has the keyboard.
 
 use std::io;
 use std::os::fd::BorrowedFd;
@@ -19,26 +23,25 @@ use display::Holder;
 use display::abi::DisplayEvent;
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::backend::renderer::Bind;
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::input::keyboard::{FilterResult, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::Display;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use sysapi::time::monotonic_ns;
 
 use crate::clients::Clients;
 use crate::curve::Curve;
-use crate::keys::{self, Chord};
+use crate::keys::{self, Ask, Chord};
 use crate::link::Link;
-use crate::pointer;
+use crate::manager::Manager;
+use crate::pointer::{Arrows, Picture, Shown};
+use crate::scene::Scene;
 use crate::screens::{Failed, Pointing, Screens, Told};
+use crate::settings::Settings;
 use crate::shell::Shell;
-
-/// How long a key is held before the program that has it repeats it,
-/// in milliseconds, and how many times a second it repeats then: as at
-/// the consoles (radix-input(2)).
-const REPEAT: (i32, i32) = (250, 30);
+use crate::windows::Under;
 
 /// How far one notch of a wheel scrolls, as the programs reckon it.
 const NOTCH: f64 = 15.0;
@@ -48,6 +51,18 @@ const NOTCH: f64 = 15.0;
 /// program is gone before the next is drawn; frames that go on failing
 /// fail for a reason that letting a program go does not mend.
 const SPOILED_MOST: u8 = 3;
+
+/// What a key that reaches no program is windowd's for.
+#[derive(Clone, Copy, Debug)]
+enum Kept {
+    /// A chord that `main` sees to.
+    Chord(Chord),
+    /// A key of the window manager's.
+    Ask(Ask),
+    /// A key while the window manager has the keys, with Ctrl and Shift
+    /// held or not.
+    Key { ctrl: bool, shift: bool },
+}
 
 /// A time of the monotonic clock as the protocols carry it: in
 /// milliseconds, the low 32 bits.
@@ -65,10 +80,20 @@ where
     clients: Clients,
     renderer: PixmanRenderer,
     screens: Screens<L>,
-    arrow: MemoryRenderBuffer,
+    manager: Manager,
+    /// What is under the pointer.
+    under: Under,
+    /// windowd's own pictures of the pointer.
+    pictures: Arrows,
+    /// Which of them the pointer shows, or `None` for the picture of
+    /// the program whose surface is under it.
+    own: Option<Picture>,
     /// Counts the pictures the pointer has shown.
     pointer_picture: u64,
     curve: Curve,
+    /// Whether a Super key is down and nothing else was pressed since:
+    /// letting it go shows the list of windows.
+    super_alone: bool,
     /// The keys whose press was a chord of windowd's: their release
     /// reaches no program either.
     kept: Vec<u16>,
@@ -98,7 +123,10 @@ where
         let mut shell = Shell::new(&display.handle());
         let (layout, variant) = keys::xkb_names(layout);
         let named = XkbConfig { layout, variant, ..XkbConfig::default() };
-        let (delay, rate) = REPEAT;
+        // As built, until the person's settings are laid
+        // ([`Desktop::set`]).
+        let as_built = Settings::default();
+        let (delay, rate) = (as_built.repeat_delay_ms as i32, as_built.repeat_rate as i32);
         // A layout the XKB data has not is the default's, which the
         // data always has.
         let added = shell.seat.add_keyboard(named, delay, rate);
@@ -113,9 +141,13 @@ where
             clients: Clients::default(),
             renderer,
             screens,
-            arrow: pointer::arrow(),
+            manager: Manager::default(),
+            under: Under::Nothing,
+            pictures: Arrows::default(),
+            own: Some(Picture::Arrow),
             pointer_picture: 0,
             curve: Curve::default(),
+            super_alone: false,
             kept: Vec::new(),
             held: Vec::new(),
             asked: None,
@@ -123,6 +155,29 @@ where
         };
         desktop.centre();
         Ok(desktop)
+    }
+
+    /// Has the desktop be as `settings`, the person's, say
+    /// (windowd.json(5)): from here on, and for the windows and the
+    /// programs that are there.
+    pub fn set(&mut self, settings: &Settings) {
+        self.curve.set_speed(settings.pointer_speed);
+        self.manager.double_click_ns = u64::from(settings.double_click_ms) * 1_000_000;
+        if let Some(keyboard) = self.shell.seat.get_keyboard() {
+            // The ranges a setting is held to fit both.
+            let (rate, delay) = (settings.repeat_rate as i32, settings.repeat_delay_ms as i32);
+            keyboard.change_repeat_info(rate, delay);
+        }
+        self.shell.title_bars = settings.title_bars.clone();
+        self.shell.settle_bars();
+        self.settle();
+    }
+
+    /// The applications the person chose, from a window's menu, to
+    /// give the full title bar or to let share it, each with whether
+    /// it may share, since this was last asked.
+    pub fn chosen(&mut self) -> Vec<(String, bool)> {
+        core::mem::take(&mut self.shell.chosen)
     }
 
     /// The holder of the screens.
@@ -169,41 +224,85 @@ where
     }
 
     /// Does what follows from whatever the desktop was told: sends the
-    /// programs what is theirs, lets go of those that are gone, and
-    /// notes which screens are due a frame.
+    /// programs what is theirs, lets go of those that are gone, does
+    /// what they asked of the window manager, and notes which screens
+    /// are due a frame.
     fn settle(&mut self) {
         // A program that reads nothing or is gone fails here, and is
         // found gone just below.
         let _ = self.display.flush_clients();
         self.clients.let_go(&mut self.display, &mut self.shell);
         self.shell.refresh();
+        if let Some(pointer) = self.shell.seat.get_pointer() {
+            for asked in core::mem::take(&mut self.shell.asked) {
+                self.manager.asked(&mut self.shell, asked, pointer.current_location());
+            }
+        }
+        self.manager.check(&mut self.shell);
         let changed = core::mem::take(&mut self.shell.changed);
         if changed.windows {
             self.find_under();
         }
+        let stale = self.look() | changed.windows | changed.pointer;
         if changed.pointer {
             self.pointer_picture += 1;
         }
-        if changed.windows || changed.pointer {
+        if stale {
             self.screens.stale();
         }
         // What the steps above sent, as the first flush.
         let _ = self.display.flush_clients();
     }
 
-    /// Tells the surface that is under the pointer now, if it was not
-    /// before: windows came, went or changed under a pointer that did
-    /// not move.
+    /// Has the frames and the pointer show what they should now: the
+    /// button under the pointer, the one held down, and the pointer's
+    /// picture over a frame. Returns whether any changed.
+    fn look(&mut self) -> bool {
+        // While a program has the pointer for a button that is down,
+        // the frames it passes over stay as they are.
+        let programs = !self.held.is_empty() && !self.manager.takes_pointer();
+        let nothing = Under::Nothing;
+        let under = if programs { &nothing } else { &self.under };
+        let (hot, pressed) = self.manager.buttons(under);
+        let active = self.shell.active().cloned();
+        let mut changed = self.shell.windows.redraw(active.as_ref(), hot, pressed);
+        let own = if programs { None } else { self.manager.picture(&self.under) };
+        if own != self.own {
+            self.own = own;
+            self.pointer_picture += 1;
+            changed = true;
+        }
+        changed
+    }
+
+    /// The surface the pointer is over as the programs are told, and
+    /// where its corner is: none while the window manager has the
+    /// pointer, or over a frame.
+    fn focus(&self) -> Option<(WlSurface, Point<f64, Logical>)> {
+        match &self.under {
+            Under::Surface { surface, at, .. } if !self.manager.takes_pointer() => {
+                Some((surface.clone(), *at))
+            }
+            _ => None,
+        }
+    }
+
+    /// Finds what is under the pointer now, and tells the program whose
+    /// surface it is, if it was not before: windows came, went or
+    /// changed under a pointer that did not move.
     fn find_under(&mut self) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
         let at = pointer.current_location();
-        let under = self.shell.under(at);
-        if under.as_ref().map(|(surface, _)| surface) == pointer.current_focus().as_ref() {
+        self.under = self.shell.windows.under(at);
+        let focus = self.focus();
+        if focus.as_ref().map(|(surface, _)| surface) == pointer.current_focus().as_ref() {
             return;
         }
-        let serial = SERIAL_COUNTER.next_serial();
-        let moved = MotionEvent { location: at, serial, time: ms(monotonic_ns()) };
-        pointer.motion(&mut self.shell, under, &moved);
+        let (serial, now) = (SERIAL_COUNTER.next_serial(), monotonic_ns());
+        let moved = MotionEvent { location: at, serial, time: ms(now) };
+        let comes = focus.as_ref().map(|(surface, _)| surface);
+        self.shell.stamps.pointer([comes, None], now);
+        pointer.motion(&mut self.shell, focus, &moved);
         pointer.frame(&mut self.shell);
     }
 
@@ -244,12 +343,12 @@ where
     pub fn key(&mut self, time_ns: u64, code: u16, pressed: bool) {
         let Some(keyboard) = self.shell.seat.get_keyboard() else { return };
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
-        let kept = &mut self.kept;
+        let (kept, takes) = (&mut self.kept, self.manager.takes_keys());
         let serial = SERIAL_COUNTER.next_serial();
         // XKB's codes are Linux's and 8.
         let xkb = (u32::from(code) + 8).into();
-        let chord =
-            keyboard.input(&mut self.shell, xkb, state, serial, ms(time_ns), |_, held, _| {
+        let (what, modifiers_changed) =
+            keyboard.input_intercept(&mut self.shell, xkb, state, |_, held, _| {
                 if !pressed {
                     let was_kept = kept.iter().position(|other| *other == code);
                     return match was_kept.map(|at| kept.swap_remove(at)) {
@@ -257,35 +356,81 @@ where
                         None => FilterResult::Forward,
                     };
                 }
-                match keys::chord(held, code) {
-                    Some(chord) => {
-                        kept.push(code);
-                        FilterResult::Intercept(Some(chord))
-                    }
-                    None => FilterResult::Forward,
-                }
+                let what = if let Some(chord) = keys::chord(held, code) {
+                    Kept::Chord(chord)
+                } else if keys::modifier(code) {
+                    return FilterResult::Forward;
+                } else if takes {
+                    Kept::Key { ctrl: held.ctrl, shift: held.shift }
+                } else if let Some(ask) = keys::ask(held, code) {
+                    Kept::Ask(ask)
+                } else {
+                    return FilterResult::Forward;
+                };
+                kept.push(code);
+                FilterResult::Intercept(Some(what))
             });
-        self.asked = self.asked.or(chord.flatten());
+        let what = match what {
+            FilterResult::Intercept(what) => what,
+            // The key is the program's that has the keyboard.
+            FilterResult::Forward => {
+                self.shell.stamps.keys(keyboard.current_focus().as_ref(), time_ns);
+                let (shell, time) = (&mut self.shell, ms(time_ns));
+                keyboard.input_forward(shell, xkb, state, serial, time, modifiers_changed);
+                None
+            }
+        };
+        let at = self.shell.seat.get_pointer().map(|pointer| pointer.current_location());
+        let at = at.unwrap_or_default();
+        // Super pressed and let go with nothing between shows the list.
+        let tapped = !pressed && keys::is_super(code) && self.super_alone;
+        self.super_alone = pressed && keys::is_super(code) && keyboard.pressed_keys().len() == 1;
+        match what {
+            Some(Kept::Chord(chord)) => self.asked = self.asked.or(Some(chord)),
+            Some(Kept::Ask(ask)) => self.ask(ask, at),
+            Some(Kept::Key { ctrl, shift }) => self.manager.key(&mut self.shell, code, ctrl, shift),
+            None if tapped => self.ask(Ask::List, at),
+            None => {}
+        }
+        if !keyboard.modifier_state().alt {
+            self.manager.alt_let_go(&mut self.shell);
+        }
         self.settle();
+    }
+
+    /// A key of the window manager's asked `ask`, with the pointer at
+    /// `at`. A popup that had the keys is done.
+    fn ask(&mut self, ask: Ask, at: Point<f64, Logical>) {
+        self.shell.end_popups(None);
+        self.manager.ask(&mut self.shell, ask, at);
     }
 
     /// A pointer's button, of Linux code `code`, went down or up. A
     /// press on a window gives the window the keyboard and brings it
-    /// to the front.
+    /// to the front; one on a frame is the window manager's.
     pub fn button(&mut self, time_ns: u64, code: u16, pressed: bool) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
-        if pressed && let Some(window) = self.shell.window_under(pointer.current_location()) {
-            self.shell.focus(Some(&window));
+        let at = pointer.current_location();
+        self.super_alone = false;
+        let under = self.shell.windows.under(at);
+        if pressed {
+            self.manager.press(&mut self.shell, &under, at, code, time_ns);
+        } else {
+            self.manager.release(&mut self.shell, &under, at, code);
         }
         self.held.retain(|held| *held != code);
         if pressed {
             self.held.push(code);
         }
+        // The program under the pointer hears of the button; over a
+        // frame, and while the window manager has the pointer, none is.
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
         let serial = SERIAL_COUNTER.next_serial();
         let event = ButtonEvent { serial, time: ms(time_ns), button: u32::from(code), state };
+        self.shell.stamps.pointer([pointer.current_focus().as_ref(), None], time_ns);
         pointer.button(&mut self.shell, &event);
         pointer.frame(&mut self.shell);
+        self.shell.changed.windows = true;
         self.settle();
     }
 
@@ -315,14 +460,21 @@ where
     }
 
     /// Moves the pointer to the place on a screen nearest to `at`, and
-    /// tells the program whose surface is under it.
+    /// tells the window manager, then the program whose surface is
+    /// under it.
     fn point(&mut self, time_ns: u64, at: Point<f64, Logical>) {
         let Some(pointer) = self.shell.seat.get_pointer() else { return };
         let at = self.screens.within(at);
-        let under = self.shell.under(at);
+        self.manager.motion(&mut self.shell, at);
+        self.under = self.shell.windows.under(at);
+        let focus = self.focus();
         let serial = SERIAL_COUNTER.next_serial();
         let moved = MotionEvent { location: at, serial, time: ms(time_ns) };
-        pointer.motion(&mut self.shell, under, &moved);
+        // A pointer that is held stays with the program that has it;
+        // otherwise the one under it hears of the motion.
+        let (has, comes) = (pointer.current_focus(), focus.as_ref().map(|(surface, _)| surface));
+        self.shell.stamps.pointer([has.as_ref(), comes], time_ns);
+        pointer.motion(&mut self.shell, focus, &moved);
         pointer.frame(&mut self.shell);
         self.screens.point(at);
         self.settle();
@@ -339,6 +491,7 @@ where
                 frame = frame.v120(axis, turned).value(axis, f64::from(turned) * NOTCH / 120.0);
             }
         }
+        self.shell.stamps.pointer([pointer.current_focus().as_ref(), None], time_ns);
         pointer.axis(&mut self.shell, frame);
         pointer.frame(&mut self.shell);
         self.settle();
@@ -349,6 +502,7 @@ where
     pub fn let_go(&mut self, time_ns: u64) {
         let time = ms(time_ns);
         if let Some(keyboard) = self.shell.seat.get_keyboard() {
+            self.shell.stamps.keys(keyboard.current_focus().as_ref(), time_ns);
             for held in keyboard.pressed_keys() {
                 let (serial, up) = (SERIAL_COUNTER.next_serial(), KeyState::Released);
                 let shell = &mut self.shell;
@@ -358,6 +512,7 @@ where
         }
         self.kept.clear();
         if let Some(pointer) = self.shell.seat.get_pointer() {
+            self.shell.stamps.pointer([pointer.current_focus().as_ref(), None], time_ns);
             for button in self.held.drain(..).map(u32::from) {
                 let (serial, state) = (SERIAL_COUNTER.next_serial(), ButtonState::Released);
                 pointer.button(&mut self.shell, &ButtonEvent { serial, time, button, state });
@@ -385,13 +540,18 @@ where
     /// [`SPOILED_MOST`] frames in a row.
     pub fn draw(&mut self, now_ns: u64) -> Result<(), Failed> {
         let Some(pointer) = self.shell.seat.get_pointer() else { return Ok(()) };
+        let shown = match self.own {
+            Some(own) => Shown::Own(own),
+            None => Shown::Programs(&self.shell.pointer),
+        };
         let pointing = Pointing {
             at: pointer.current_location(),
-            shown: &self.shell.pointer,
+            shown,
             picture: self.pointer_picture,
-            arrow: &self.arrow,
+            own: &self.pictures,
         };
-        match self.screens.draw(&mut self.renderer, &self.shell, &pointing, now_ns) {
+        let scene = Scene { windows: &self.shell.windows, panel: self.manager.panel() };
+        match self.screens.draw(&mut self.renderer, &self.shell, &scene, &pointing, now_ns) {
             Err(Failed::Renderer(_)) if self.spoiled < SPOILED_MOST => {
                 self.spoiled += 1;
                 self.settle();

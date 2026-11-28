@@ -6086,6 +6086,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
+name = "window-frame"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "radix-fbcon",
+]
+
+[[package]]
+name = "window-protocols"
+version = "1.0.0-alpha.1"
+dependencies = [
+ "quick-xml",
+ "wayland-backend",
+]
+
+[[package]]
 name = "window-test"
 version = "1.0.0-alpha.1"
 dependencies = [
@@ -6095,6 +6110,8 @@ dependencies = [
  "sysapi",
  "wayland-client",
  "wayland-protocols",
+ "window-frame",
+ "window-protocols",
 ]
 
 [[package]]
@@ -6108,8 +6125,11 @@ dependencies = [
  "libc",
  "radix-abi",
  "radix-display",
+ "serde_json",
  "smithay",
  "sysapi",
+ "window-frame",
+ "window-protocols",
  "window-test",
 ]
 

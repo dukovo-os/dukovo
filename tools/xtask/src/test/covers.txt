@@ -361,12 +361,18 @@ crontab userspace/defaults/spark/services/timerd.toml
 desktop-firmware userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
 desktop-firmware userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
 desktop-firmware kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
-desktop-firmware ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/ tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs
+desktop-firmware ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/ tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
 desktop-window userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
 desktop-window userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
 desktop-window kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
 desktop-window kernel/drivers/virtio/ ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/
-desktop-window tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs
+desktop-window tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
+desktop-windows userspace/programs/windowd/ userspace/programs/window-test/ userspace/programs/display-pattern/ userspace/programs/consoled/
+desktop-windows userspace/programs/inputd/ userspace/programs/display/ userspace/programs/input/ userspace/programs/keymap/
+desktop-windows kernel/lib/display/ kernel/radix/src/display/ kernel/lib/input/ kernel/radix/src/input/ kernel/radix/src/fs/shm/
+desktop-windows kernel/drivers/virtio/ ports/pixman/ ports/libxkbcommon/ ports/xkeyboard-config/ ports/rust-crates/
+desktop-windows tools/xtask/src/test/screens.rs tools/xtask/src/screen.rs userspace/programs/window-frame/ userspace/programs/window-protocols/
+desktop-windows userspace/programs/systools/src/signals.rs
 dhcp kernel/net/ userspace/posix/dhcp.c userspace/programs/systools/src/dhcp.rs
 dhcp userspace/programs/systools/src/dhcp6.rs userspace/programs/systools/src/ip.rs
 dhcp userspace/programs/systools/src/netd.rs userspace/spark/tests/services/dhcp/

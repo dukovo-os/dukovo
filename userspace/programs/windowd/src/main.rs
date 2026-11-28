@@ -19,11 +19,18 @@ mod desktop;
 mod devices;
 mod keys;
 mod link;
+mod manager;
+mod panel;
 mod pointer;
+mod scene;
 mod screens;
 mod session;
+mod settings;
 mod shell;
 mod socket;
+mod stamps;
+mod titlebar;
+mod windows;
 
 #[cfg(test)]
 mod tests;
@@ -41,7 +48,7 @@ use borrowed::Borrowed;
 use desktop::Desktop;
 use devices::Devices;
 use link::Card;
-use session::{CHILD, END, Session};
+use session::{CHILD, END, RELOAD, Session};
 use socket::Listening;
 
 const USAGE: &str = "\
@@ -75,17 +82,19 @@ fn command() -> Result<Vec<OsString>, String> {
     Ok(arguments.collect())
 }
 
-/// Has the signals that end the desktop, and a child's end, wake the
-/// wait. Returns the read end of the pipe they wake it through.
+/// Has the signals that end the desktop, the one that has it read its
+/// settings again, and a child's end, wake the wait. Returns the read end of the pipe they wake it through.
 fn catch_signals() -> io::Result<File> {
     let (woken, wakes) = fd::pipe()?;
     fd::set_nonblocking(&woken, true)?;
     fd::set_nonblocking(&wakes, true)?;
     END.wake_through(wakes.try_clone()?)?;
+    RELOAD.wake_through(wakes.try_clone()?)?;
     CHILD.wake_through(wakes)?;
     for ends in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
         signal::catch(ends, &END, libc::SA_RESTART)?;
     }
+    signal::catch(libc::SIGUSR1, &RELOAD, libc::SA_RESTART)?;
     signal::catch(libc::SIGCHLD, &CHILD, libc::SA_RESTART | libc::SA_NOCLDSTOP)?;
     Ok(File::from(woken))
 }
@@ -116,8 +125,16 @@ fn run() -> Result<ExitCode, String> {
     let card = Card::new(lent).map_err(|err| format!("the display layer: {err}"))?;
     let devices = Devices::ask(card.as_fd()).map_err(|err| format!("inputd: {err}"))?;
     let desktop = Desktop::new(Holder::new(card), &layout).map_err(|err| err.to_string())?;
-    let mut session =
-        Session { desktop, devices, borrowed, listening, command: None, woken, inputd_there: true };
+    let mut session = Session {
+        desktop,
+        devices,
+        borrowed,
+        listening,
+        command: None,
+        woken,
+        inputd_there: true,
+        personal: settings::personal(),
+    };
     let ended = start(&command, &session.listening).and_then(|started| {
         session.command = started;
         session.run()

@@ -11,6 +11,10 @@
 //!
 //! The speed is what one report of the mouse says over the time since
 //! the one before: counts a millisecond.
+//!
+//! The person may have the pointer faster or slower than that
+//! (windowd.json(5)): every motion is then as many times as far, a slow
+//! hand's as well.
 
 /// The speed, in counts a millisecond, up to which a count is a pixel.
 const SLOW: f64 = 0.5;
@@ -37,12 +41,27 @@ fn gain(speed: f64) -> f64 {
 }
 
 /// The curve, and when the mouse last moved.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Curve {
     last_ns: Option<u64>,
+    /// How many times as far as the curve has it the pointer moves:
+    /// the person's setting.
+    times: f64,
+}
+
+impl Default for Curve {
+    fn default() -> Curve {
+        Curve { last_ns: None, times: 1.0 }
+    }
 }
 
 impl Curve {
+    /// Has the pointer move 2 to the power `speed` times as far from
+    /// here on as the curve has it.
+    pub fn set_speed(&mut self, speed: f64) {
+        self.times = speed.exp2();
+    }
+
     /// How far the pointer moves, in pixels right and down, for a
     /// report of (`dx`, `dy`) counts at `time_ns`.
     pub fn moved(&mut self, time_ns: u64, dx: i32, dy: i32) -> (f64, f64) {
@@ -50,7 +69,7 @@ impl Curve {
         self.last_ns = Some(time_ns);
         let ms = since.clamp(SHORTEST_NS, LONGEST_NS) as f64 / 1e6;
         let (dx, dy) = (f64::from(dx), f64::from(dy));
-        let gain = gain(dx.hypot(dy) / ms);
+        let gain = gain(dx.hypot(dy) / ms) * self.times;
         (dx * gain, dy * gain)
     }
 }
@@ -79,6 +98,18 @@ mod tests {
         // Reports read together are reckoned a millisecond apart.
         let (dx, _) = curve.moved(MS, 1, 0);
         assert!(dx > 1.0 && dx < MOST, "{dx}");
+    }
+
+    #[test]
+    fn the_person_s_speed_is_a_power_of_two_times_every_motion() {
+        let mut curve = Curve::default();
+        curve.set_speed(1.0);
+        assert_eq!(curve.moved(0, 1, 0), (2.0, 0.0));
+        assert_eq!(curve.moved(MS, 30, -40), (60.0 * MOST, -80.0 * MOST));
+        curve.set_speed(-1.0);
+        assert_eq!(curve.moved(20 * MS, 4, -2), (2.0, -1.0));
+        curve.set_speed(0.0);
+        assert_eq!(curve.moved(40 * MS, 4, -2), (4.0, -2.0));
     }
 
     #[test]

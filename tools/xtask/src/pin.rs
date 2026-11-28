@@ -89,7 +89,7 @@ fn pin(ctx: &Ctx, machine: &Machine) -> std::result::Result<String, String> {
 }
 
 /// The host thread of each vCPU, in vCPU order, from QMP.
-fn vcpu_threads(socket: &Path) -> std::result::Result<Vec<u64>, String> {
+pub(crate) fn vcpu_threads(socket: &Path) -> std::result::Result<Vec<u64>, String> {
     let reply = Qmp::connect(socket)?.execute_reply(r#"{"execute":"query-cpus-fast"}"#)?;
     parse_vcpu_threads(&reply)
 }

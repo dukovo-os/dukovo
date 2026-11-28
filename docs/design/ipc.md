@@ -570,6 +570,16 @@ now tells the driver when its status changes (ADR 0711). `ob bench
 --display` measures these rows alone, in a few minutes, for work on
 them.
 
+The desktop has rows of its own, measured apart from all of these with
+`ob bench --desktop` and in CI's benchmark job (ADR 0724): a second of
+the desktop at rest, a frame of a window, a key from the driver to a
+program, and a window moved and resized, Dukovo's desktop beside labwc
+on Linux with the same program in each. A frame's work is spread over
+the program, windowd, the kernel and the card's driver, so all but the
+key's rows are measured from the host, as the time its processors ran
+the virtual machine's CPUs for the step. They are reported and gate
+nothing.
+
 The report shows each Radix number, the Linux one from the virtual
 machine, their ratio and the host's Linux. Under KVM a system call does
 not leave the guest, and a wake-up on another CPU is an interrupt the

@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The Linux desktop `ob bench --desktop` measures Dukovo's beside (ADR
+# 0724): labwc 0.7.1 on wlroots 0.17.1, with what they load, from the
+# release pocket of Ubuntu 24.04, whose packages do not change.
+#
+# One package a line: the SHA-256 of its file as the archive's index
+# gives it (dists/noble/<component>/binary-amd64/Packages), the file's
+# place in the archive, and the files and folders taken from it, each
+# by its path in the package. Nothing is installed: a taken file is
+# copied as it is, and a link as the file it leads to.
+#
+# To move to another release, change every line together: a library
+# is named here because another on the list loads it.
+
+9df0579cd298a1f2b7a40efd519c849745aecd193a09733cf4d1032284a62bbf pool/main/f/fontconfig/fontconfig-config_2.15.0-1.1ubuntu2_amd64.deb etc/fonts/fonts.conf
+40049660c194f3b8a2541fc7369efebb10e9f94bdac836a2f38fafedd10fa73a pool/main/f/fonts-dejavu/fonts-dejavu-core_2.37-8_all.deb usr/share/fonts/truetype/dejavu
+2dd3a5eeecc3abc952a949cc1ad3fb2ad8e1cb0e468638158e5d2ecbbf5d2cac pool/universe/l/labwc/labwc_0.7.1-1build1_amd64.deb usr/bin/labwc
+47433bcaf43d1c6ed2e2acbc7dc70f6d6ed149e64f12d25b2ddb714a56c4e8dd pool/main/u/util-linux/libblkid1_2.39.3-9ubuntu6_amd64.deb usr/lib/x86_64-linux-gnu/libblkid.so.1
+74492419b8fda803774b8c9acef6afc5d2f9ff31782635aae212906adae7b277 pool/main/b/brotli/libbrotli1_1.1.0-2build2_amd64.deb usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1 usr/lib/x86_64-linux-gnu/libbrotlidec.so.1
+8e97b7d541416512a81e7845c5f21910344c9c5c610893cf265d3298e0caad6b pool/main/libb/libbsd/libbsd0_0.12.1-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libbsd.so.0
+695132af8a40fe417f7d4e5ea742d64521c04e069442a4719c2bd0f10ab93d94 pool/main/b/bzip2/libbz2-1.0_1.0.8-5.1_amd64.deb usr/lib/x86_64-linux-gnu/libbz2.so.1.0
+af36c7ac770770fe3d3c10e85d6bc538e76e57570ba7db7d397fb9f654783ef3 pool/main/g/glibc/libc6_2.39-0ubuntu8_amd64.deb usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 usr/lib/x86_64-linux-gnu/libc.so.6 usr/lib/x86_64-linux-gnu/libm.so.6
+f5483cbe43455fc9e9cba7f0e166bd0a731c02db2902ba562719848f72e8c403 pool/main/c/cairo/libcairo-gobject2_1.18.0-3build1_amd64.deb usr/lib/x86_64-linux-gnu/libcairo-gobject.so.2
+96950b306889ff6e4248bb937b0a3b56e72dacf643fe732214ce375f0f6bbb36 pool/main/c/cairo/libcairo2_1.18.0-3build1_amd64.deb usr/lib/x86_64-linux-gnu/libcairo.so.2
+a6cce0b5f149707a6359e4f03a05fb7417c5e1d3fde9e12c651e804b4c479bbb pool/main/libc/libcap2/libcap2_2.66-5ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libcap.so.2
+1ae164e40e413eac4fbd38ce1c6ef9591f7a03278ad9076d71fa29258727f447 pool/main/libd/libdatrie/libdatrie1_0.2.13-3build1_amd64.deb usr/lib/x86_64-linux-gnu/libdatrie.so.1
+a3bfce18d53aa9d635d899f1f555e84bbbf2c859d80cef3b4eb1c36b2c772026 pool/universe/libd/libdisplay-info/libdisplay-info1_0.1.1-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libdisplay-info.so.1
+f5fb4e7ce17921cc466fb7911abf91495ffb181b36772f68e2e82cb621703112 pool/main/libd/libdrm/libdrm2_2.4.120-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libdrm.so.2
+e549f7776216f7bd3b1c216729fb40a97a562e2eb7c563cde632b4931f9a4e57 pool/main/libg/libglvnd/libegl1_1.7.0-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libEGL.so.1
+a14b1ea7b3220a063458590734920879cec8431b4fc5160eb0f044dfb8d76515 pool/main/libe/libevdev/libevdev2_1.13.1+dfsg-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libevdev.so.2
+730b29497212289cda8a3139e693a3538af0cb57846c24f807d1bb293a591c5e pool/main/e/expat/libexpat1_2.6.1-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libexpat.so.1
+637e6a7744de08cd331a41f4efd0d24e6ea9064843dea9d1c6ca87bdb5f038a2 pool/main/libf/libffi/libffi8_3.4.6-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libffi.so.8
+a2bc05cfef021fdb84285036f98eda5ebec3c4b7a378f5aa2bdba5c4d3d8d586 pool/main/f/fontconfig/libfontconfig1_2.15.0-1.1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libfontconfig.so.1
+321dda934f62fa8af08529a8c4c34b0ec040f172c0a945dce10b8be6f1014917 pool/main/f/freetype/libfreetype6_2.13.2+dfsg-1build3_amd64.deb usr/lib/x86_64-linux-gnu/libfreetype.so.6
+6cd50259d39ce0dfafee2632c6268538e6a02590e77161a133e9683af346dd1d pool/main/f/fribidi/libfribidi0_1.0.13-3build1_amd64.deb usr/lib/x86_64-linux-gnu/libfribidi.so.0
+bffad21d2383429d6dbec8395ba8d8476a0ed69e7e0b1c3ef2f27da99211b200 pool/main/m/mesa/libgbm1_24.0.5-1ubuntu1_amd64.deb usr/lib/x86_64-linux-gnu/libgbm.so.1
+a39efdcaa2245f026dc3254ce14fcff255fc430a17064632b6ba7c5da974a912 pool/main/g/gcc-14/libgcc-s1_14-20240412-0ubuntu1_amd64.deb usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+ff32bae487706ba6ca646b5b72d89b935e3b8b2811d02e4ad7360cb97d90e2d0 pool/main/libg/libgcrypt20/libgcrypt20_1.10.3-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libgcrypt.so.20
+d9779cdbb11e5fb6056b39868b689bd2e6a152f60d7fa54fcf7113942eedab24 pool/main/g/gdk-pixbuf/libgdk-pixbuf-2.0-0_2.42.10+dfsg-3ubuntu3_amd64.deb usr/lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so.0
+9dec2d79a2eebb80522f7cce77995f7a8ded22f0e3916f13353d066c62f97fac pool/main/libg/libglvnd/libgles2_1.7.0-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libGLESv2.so.2
+629359e915f4466cf9cb0fa6c38270d9af1e03e28fab557ce31977d5ab34f13d pool/main/g/glib2.0/libglib2.0-0t64_2.80.0-6ubuntu1_amd64.deb usr/lib/x86_64-linux-gnu/libgio-2.0.so.0 usr/lib/x86_64-linux-gnu/libglib-2.0.so.0 usr/lib/x86_64-linux-gnu/libgmodule-2.0.so.0 usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0
+33f5e07c74f73c2bfb44086ae0f9e6da52acd6c104d30ffe8fd768d8253d5e82 pool/main/libg/libglvnd/libglvnd0_1.7.0-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libGLdispatch.so.0
+81a30b5888e0af43b72bfdbdb44209b82e521eadf8848ff201542e6d258f6a1f pool/main/libg/libgpg-error/libgpg-error0_1.47-3build2_amd64.deb usr/lib/x86_64-linux-gnu/libgpg-error.so.0
+e2a91c59a2b26649ed0b331bedab0c92e56cc2021cce27df1080089edaad7aba pool/main/g/graphite2/libgraphite2-3_1.3.14-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libgraphite2.so.3
+8bdd42c584a8d18759df2311b126dc679d438e9780038743b792cf5315f248dc pool/main/libg/libgudev/libgudev-1.0-0_238-5ubuntu1_amd64.deb usr/lib/x86_64-linux-gnu/libgudev-1.0.so.0
+d6f7eea2244f98aa0463a056680d4629476bf624767ede301560e24add686b5c pool/main/h/harfbuzz/libharfbuzz0b_8.3.0-2build2_amd64.deb usr/lib/x86_64-linux-gnu/libharfbuzz.so.0
+d29c97a21a3e3254731cfac186e4d4e611e5e67d2c9a0430f6acfbd9acaefa2e pool/main/i/icu/libicu74_74.2-1ubuntu3_amd64.deb usr/lib/x86_64-linux-gnu/libicudata.so.74 usr/lib/x86_64-linux-gnu/libicuuc.so.74
+581c38bd73ae3d8ad461289be2ca2b986eec2d9be6cf3684e884acd5a0a8f71f pool/main/libi/libinput/libinput-bin_1.25.0-1ubuntu2_amd64.deb usr/share/libinput
+97cff5b2732de2e708a5f647199a610ba3a7a671b951650ddc359952c57e6d98 pool/main/libi/libinput/libinput10_1.25.0-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libinput.so.10
+f68b5b23bc8a1688fb787d2aed7e2cdf895a73022f6a5025e183162dac4500b2 pool/main/libj/libjpeg-turbo/libjpeg-turbo8_2.1.5-2ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libjpeg.so.8
+51059aa8829d5cc2065474b30b2c6256f3fd0b2ea284b43028e8b70b047d6676 pool/universe/libl/libliftoff/libliftoff0_0.4.1-1_amd64.deb usr/lib/x86_64-linux-gnu/libliftoff.so.0
+b9b69dedb126755f063396a6d3a3361066f9661f1c21cf5635cdd5ff6605796a pool/main/l/lz4/liblz4-1_1.9.4-1build1_amd64.deb usr/lib/x86_64-linux-gnu/liblz4.so.1
+28851b3997e4ba74bb3197bd58796bd3041c204c21df85fe0ddafdcaced647f0 pool/main/x/xz-utils/liblzma5_5.6.1+really5.4.5-1_amd64.deb usr/lib/x86_64-linux-gnu/liblzma.so.5
+77f8cdbf03a43656bbf6604e18bd16834fc8bf2c949d4fbdf24ac297869b667a pool/main/libm/libmd/libmd0_1.1.0-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libmd.so.0
+ccf07f3dfdda05311e66882d420140e32aeceaaa17725a0956214d81f5944995 pool/main/u/util-linux/libmount1_2.39.3-9ubuntu6_amd64.deb usr/lib/x86_64-linux-gnu/libmount.so.1
+fa86080d67defabc076ead97d86ccff14c906d21fe4cc1625ba73a8cf8022dfa pool/main/m/mtdev/libmtdev1t64_1.1.6-1.1build1_amd64.deb usr/lib/x86_64-linux-gnu/libmtdev.so.1
+09dfa5c881ab273ec6bc1830adcefdc407fcd619316e68fb26ca3a23d0fc9f54 pool/main/p/pango1.0/libpango-1.0-0_1.52.1+ds-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libpango-1.0.so.0
+98cf5fc9076c2911fe20dfc1e41cd8f686a2bb5d539b1105fab18105b0db1376 pool/main/p/pango1.0/libpangocairo-1.0-0_1.52.1+ds-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libpangocairo-1.0.so.0
+cc6bc9d86ef5f329edacaa4895232d8a9b8f95c5cbc77c3c460a3f64cecc213d pool/main/p/pango1.0/libpangoft2-1.0-0_1.52.1+ds-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libpangoft2-1.0.so.0
+bb38c38adb4ef548f2851b5cf7f70bbdbcb27d582c17550aa053edb9e4098d84 pool/main/p/pcre2/libpcre2-8-0_10.42-4ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libpcre2-8.so.0
+d9c2931c4c424615eeab9dd5ae08bfc608b84e803c1d3ccddf319270db213421 pool/main/p/pixman/libpixman-1-0_0.42.2-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libpixman-1.so.0
+128d505038cc19dfc218658562ca5917ec242b79e6e2bbfb65ee27f297a53924 pool/main/libp/libpng1.6/libpng16-16t64_1.6.43-5build1_amd64.deb usr/lib/x86_64-linux-gnu/libpng16.so.16
+47178c8632e70a0fd2c620e87c5d4d873b07f76c16e2e3c642693f8176a0af88 pool/main/libr/librsvg/librsvg2-2_2.58.0+dfsg-1build1_amd64.deb usr/lib/x86_64-linux-gnu/librsvg-2.so.2
+d6b1e6f19609044a6fc5f69a01305f3b869b588927ab3074e8a1dcea8d1c394f pool/universe/s/seatd/libseat1_0.8.0-1_amd64.deb usr/lib/x86_64-linux-gnu/libseat.so.1
+c0fe6dfac61d458f3e65c4a2bf6a920030a97d2429e33d0b405a8c4a63ef2864 pool/main/libs/libselinux/libselinux1_3.5-2ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libselinux.so.1
+4863e880d6ee538e4734c430c5579c1ac933b88a42c25bc9980d0f148c54b21e pool/main/g/gcc-14/libstdc++6_14-20240412-0ubuntu1_amd64.deb usr/lib/x86_64-linux-gnu/libstdc++.so.6
+64ba97fddff491b86597e93b078e2fe3256cb80f9a113ae9d8dd1361f01b84ed pool/main/s/systemd/libsystemd0_255.4-1ubuntu8_amd64.deb usr/lib/x86_64-linux-gnu/libsystemd.so.0
+5ada7045c5f84a4b774e6449151800aa6470e8d01dc9d6124ef4a44ae6af5508 pool/main/libt/libthai/libthai0_0.1.29-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libthai.so.0
+0955df93006711ba7328cc919673902c75a04f57f6ad37010b0ee052996fbb08 pool/main/s/systemd/libudev1_255.4-1ubuntu8_amd64.deb usr/lib/x86_64-linux-gnu/libudev.so.1
+ccf4fe8f4461442f27ea2494c7ae650b60bd396fec2688b0c44a27d66a222f74 pool/main/v/vulkan-loader/libvulkan1_1.3.275.0-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libvulkan.so.1
+87c707e4e7cbef1080b7c6cfb14acb0e5b0a4b07b19ce5545923952fbcf82298 pool/main/libw/libwacom/libwacom9_2.10.0-2_amd64.deb usr/lib/x86_64-linux-gnu/libwacom.so.9
+6af0aed41d75149bea22fa468f01eb058ffe3e35ef07ff2f13fb88a90387881d pool/main/w/wayland/libwayland-client0_1.22.0-2.1build1_amd64.deb usr/lib/x86_64-linux-gnu/libwayland-client.so.0
+edbfa4b6857691ae922cc768a753fab230eee9e956aa2ce4f2eaa8d9ad777dca pool/main/w/wayland/libwayland-server0_1.22.0-2.1build1_amd64.deb usr/lib/x86_64-linux-gnu/libwayland-server.so.0
+656cb5f15c7e182bf300301d8e459e04850e7258c2cfe9009a36e4549c53df75 pool/universe/w/wlroots/libwlroots12t64_0.17.1-2.1build1_amd64.deb usr/lib/x86_64-linux-gnu/libwlroots.so.12
+397f84347476a3c5786b39f3ff6f0f82866eb3d8be6d2ad3efeadf019efe5b80 pool/main/libx/libx11/libx11-6_1.8.7-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libX11.so.6
+e40d29f1d1a62393bacaedebe0da3d9006084152a9f7e5e029293f08ce1c5c80 pool/main/libx/libxau/libxau6_1.0.9-1build6_amd64.deb usr/lib/x86_64-linux-gnu/libXau.so.6
+a6cfd3799a2fab79ecc1539e7ab2092da1f2ae6abe560017686314276e71884e pool/main/libx/libxcb/libxcb-composite0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-composite.so.0
+3d3d0e95e56ae16010a84883196b8153cba62d6831f9aaee2a68c46f20c7c004 pool/main/libx/libxcb/libxcb-dri3-0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-dri3.so.0
+6bbfbc636fc9db7f5787643b701724596c0129f904432ade53dfee85fb1651dc pool/main/x/xcb-util-wm/libxcb-ewmh2_0.4.1-1.1build3_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-ewmh.so.2
+9e0e349f3904cd5bc07fea45498c4d03527a5d1178edd78555e84fdbd3793708 pool/main/x/xcb-util-wm/libxcb-icccm4_0.4.1-1.1build3_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-icccm.so.4
+2e36e6557e87dbfd64df3143cbf81a4f75c3447501a545b4730511d228b0dd17 pool/main/libx/libxcb/libxcb-present0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-present.so.0
+b5cb519823a05a617b543dc9b6a9289b7648b20048244abe021caa706309835a pool/main/libx/libxcb/libxcb-randr0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-randr.so.0
+95d895ceb921e38e4edd85555b407b1a0564d8ad097ec7566e261764ce27787b pool/main/x/xcb-util-renderutil/libxcb-render-util0_0.3.9-1build4_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-render-util.so.0
+7d83a0668b1a693b5ea2e496206e8371fb6beda4c54a2b4b3902005915c272c5 pool/main/libx/libxcb/libxcb-render0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-render.so.0
+da25049a081ffd88b3389758b743eae177e4c46ce77a1d9714783e85b0e97acd pool/main/libx/libxcb/libxcb-res0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-res.so.0
+229d1280d459f1ba44c22939d3f9b61d9d20932d9a646b3fe4ce50be4cdf2325 pool/main/libx/libxcb/libxcb-shm0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-shm.so.0
+0b2ab64af92a71e3d1a35e3c819880ee28d04bfac81360df68ae8d8e9663ebd2 pool/main/libx/libxcb/libxcb-xfixes0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0
+8ed274ebfa657a079895a0b60b399394db29305f4ad3fc29dc10558bed14bd7a pool/main/libx/libxcb/libxcb-xinput0_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb-xinput.so.0
+e1c6611d11ad7398326f1bf028afc34c3b14c51d917a3426b966ed4b9687fa58 pool/main/libx/libxcb/libxcb1_1.15-1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libxcb.so.1
+bcd336fce11ce2a45f34d0f95e6980af22529f22147e8f98c156e5cee8ee42bb pool/main/libx/libxdmcp/libxdmcp6_1.1.3-0ubuntu6_amd64.deb usr/lib/x86_64-linux-gnu/libXdmcp.so.6
+45783969a9ece9d7b7b733b8c60981584c53c6bc5ee3b42d295d2f80d1285679 pool/main/libx/libxext/libxext6_1.3.4-1build2_amd64.deb usr/lib/x86_64-linux-gnu/libXext.so.6
+2b9caeb423efb540296a1cb20b872cc630c23908407ecb5c1c787a617622d664 pool/main/libx/libxkbcommon/libxkbcommon0_1.6.0-1build1_amd64.deb usr/lib/x86_64-linux-gnu/libxkbcommon.so.0
+8c4efd7abe155df3cf0f9b64d659f2d866215785f8e8c44234fbb341d58cc967 pool/main/libx/libxml2/libxml2_2.9.14+dfsg-1.3ubuntu3_amd64.deb usr/lib/x86_64-linux-gnu/libxml2.so.2
+d70bd831aebe8d4834b5dd2ed98df26dd6bd27f1042c47543bd7f66df1ae22ea pool/main/libx/libxrender/libxrender1_0.9.10-1.1build1_amd64.deb usr/lib/x86_64-linux-gnu/libXrender.so.1
+4dcc3ba9606a5837a55248d08162a5b426dd621f75c0eb24d86409e0d0e71d52 pool/main/libz/libzstd/libzstd1_1.5.5+dfsg2-2build1_amd64.deb usr/lib/x86_64-linux-gnu/libzstd.so.1
+5f0a5188398b606d723f1bed48ee38c11eaeb98357ab29a3bf33c451056815d1 pool/main/x/xkeyboard-config/xkb-data_2.41-2ubuntu1_all.deb usr/share/X11/xkb
+0b93d16d7498f092fa3070fbbad28cdbc6b3d640f1a7681b96fc37f20d1219f1 pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2_amd64.deb usr/lib/x86_64-linux-gnu/libz.so.1

@@ -15,6 +15,7 @@
 //! display-test: fill virtio0/0 1024x768 colour 12161e
 //! display-test: patch virtio0/0 200x100 at 300,200 seed 4
 //! display-test: pointer firmware0/0 32x32 at 196,144 seed 5
+//! window-test: frame virtio0/0 320x240 at 352,279 normal active hot none title A window
 //! display-test: dark virtio0/1
 //! display-test: step shown.
 //! display-test: passed
@@ -30,6 +31,13 @@
 //! - `pointer`: the rectangle shows the picture of the seed from that
 //!   picture's top left corner, as a pointer moved there does, and a
 //!   window that shows there.
+//! - `frame`: the rectangle is a window's own pixels, and around it is
+//!   the frame windowd draws (windowd(1)): of a window that is `normal`
+//!   or `maximized`, `active` (the one the person works in) or
+//!   `inactive`, with the button the pointer is on (`minimize`,
+//!   `maximize`, `close` or `none`) and the title, which is the rest of
+//!   the line. What the rectangle itself shows is another line's to
+//!   say.
 //! - `dark`: the screen shows nothing.
 //! - `step`: the program has done what the lines before say and waits
 //!   for a key. The host looks at the screens, does what the step is
@@ -63,6 +71,34 @@ pub struct Rect {
     /// Its height.
     pub height: u32,
 }
+
+/// A button of a window's frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameButton {
+    /// The one that minimizes the window.
+    Minimize,
+    /// The one that maximizes it, or restores it.
+    Maximize,
+    /// The one that closes it.
+    Close,
+}
+
+impl FrameButton {
+    /// Every button, with the word a line has for it.
+    const WORDS: [(FrameButton, &str); 3] = [
+        (FrameButton::Minimize, "minimize"),
+        (FrameButton::Maximize, "maximize"),
+        (FrameButton::Close, "close"),
+    ];
+}
+
+/// How far the host drags the window by its title bar at the step
+/// `shown` of `window-test windows`, to the right and down in pixels:
+/// the program reckons where its window then is from it.
+pub const DRAGGED_BY: (i32, i32) = (96, -64);
+
+/// How far the host then drags the window's bottom right corner.
+pub const RESIZED_BY: (i32, i32) = (48, 32);
 
 /// One line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +146,22 @@ pub enum Said {
         /// The picture.
         seed: u32,
     },
+    /// `rect` of the screen is a window's own pixels, with the
+    /// window's frame around it.
+    Frame {
+        /// The screen.
+        screen: String,
+        /// The window's own pixels.
+        rect: Rect,
+        /// Whether the window is maximized.
+        maximized: bool,
+        /// Whether it is the window the person works in.
+        active: bool,
+        /// The button the pointer is on.
+        hot: Option<FrameButton>,
+        /// The window's title.
+        title: String,
+    },
     /// The screen shows nothing.
     Dark {
         /// The screen.
@@ -156,6 +208,21 @@ impl Said {
             }
             Said::Patch { screen, rect, seed } => placed("patch", screen, rect, seed),
             Said::Pointer { screen, rect, seed } => placed("pointer", screen, rect, seed),
+            Said::Frame { screen, rect, maximized, active, hot, title } => {
+                let Rect { x, y, width, height } = rect;
+                let shape = if *maximized { "maximized" } else { "normal" };
+                let active = if *active { "active" } else { "inactive" };
+                let word = |button: &FrameButton| {
+                    FrameButton::WORDS
+                        .iter()
+                        .find(|(other, _)| other == button)
+                        .map(|(_, word)| *word)
+                };
+                let hot = hot.as_ref().and_then(word).unwrap_or("none");
+                format!(
+                    "frame {screen} {width}x{height} at {x},{y} {shape} {active} hot {hot} title {title}"
+                )
+            }
             Said::Dark { screen } => format!("dark {screen}"),
             Said::Step(name) => format!("step {name}."),
             Said::Passed => "passed".to_owned(),
@@ -204,6 +271,33 @@ impl Said {
                     Said::Pointer { screen, rect, seed }
                 })
             }
+            "frame"
+                if words.len() >= 10
+                    && words[3] == "at"
+                    && words[7] == "hot"
+                    && words[9] == "title" =>
+            {
+                let ((width, height), (x, y)) = (pair(words[2], 'x')?, pair(words[4], ',')?);
+                let either = |word: &str, yes: &str, no: &str| match word {
+                    word if word == yes => Some(true),
+                    word if word == no => Some(false),
+                    _ => None,
+                };
+                let hot = match words[8] {
+                    "none" => None,
+                    word => Some(FrameButton::WORDS.iter().find(|(_, other)| *other == word)?.0),
+                };
+                // The title is the rest of the line, with its spaces.
+                let title = said.split_once(" title ").map_or("", |(_, title)| title);
+                Some(Said::Frame {
+                    screen: screen(1)?,
+                    rect: Rect { x, y, width, height },
+                    maximized: either(words[5], "maximized", "normal")?,
+                    active: either(words[6], "active", "inactive")?,
+                    hot,
+                    title: title.to_owned(),
+                })
+            }
             "dark" if words.len() == 2 => Some(Said::Dark { screen: screen(1)? }),
             "step" if words.len() == 2 => Some(Said::Step(words[1].strip_suffix('.')?.to_string())),
             "passed" if words.len() == 1 => Some(Said::Passed),
@@ -230,6 +324,22 @@ mod tests {
             Said::Patch { screen: screen("virtio0", 0), rect, seed: 4 },
             Said::Pointer { screen: screen("firmware0", 0), rect, seed: 5 },
             Said::Dark { screen: screen("virtio0", 1) },
+            Said::Frame {
+                screen: screen("virtio0", 0),
+                rect,
+                maximized: false,
+                active: true,
+                hot: None,
+                title: "A window  of two words".into(),
+            },
+            Said::Frame {
+                screen: screen("virtio0", 0),
+                rect,
+                maximized: true,
+                active: false,
+                hot: Some(FrameButton::Close),
+                title: String::new(),
+            },
             Said::Step("shown".into()),
             Said::Passed,
             Said::Failed("the card has 3 screens, not 4".into()),
@@ -252,6 +362,18 @@ mod tests {
             "display-test: patch virtio0/0 200x100 at 300,200 seed 4"
         );
         assert_eq!(Said::Step("shown".into()).to_string(), "display-test: step shown.");
+        let frame = Said::Frame {
+            screen: "virtio0/0".into(),
+            rect,
+            maximized: false,
+            active: true,
+            hot: Some(FrameButton::Maximize),
+            title: "A window".into(),
+        };
+        assert_eq!(
+            frame.said_by(WINDOW_START),
+            "window-test: frame virtio0/0 200x100 at 300,200 normal active hot maximize title A window"
+        );
         assert!(Said::Failed("why".into()).to_string().starts_with(&failure(START)));
         assert!(
             Said::Failed("why".into()).said_by(WINDOW_START).starts_with(&failure(WINDOW_START))
@@ -267,6 +389,10 @@ mod tests {
             "display-test: shows virtio0/0 1024 by 768 seed 3",
             "display-test: patch virtio0/0 200x100 to 300,200 seed 4",
             "display-test: step shown",
+            "window-test: frame virtio0/0 200x100 at 300,200 normal active hot none",
+            "window-test: frame virtio0/0 200x100 at 300,200 normal lively hot none title A",
+            "window-test: frame virtio0/0 200x100 at 300,200 normal active hot all title A",
+            "window-test: frame virtio0/0 200x100 at 300,200 normal active hot none named A",
             "display-test: passed by",
             "display-test: ",
         ] {

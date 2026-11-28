@@ -5,7 +5,10 @@
 //! the kernel's own display layer on the other ([`rig`]), and the
 //! desktop told of each thing as `main` tells it.
 
+mod laid;
+mod managed;
 mod rig;
+mod shared;
 
 use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
@@ -15,8 +18,9 @@ use std::time::Duration;
 
 use display_pattern::pattern;
 use input::abi::{BTN_LEFT, KEY_A, KEY_F2, KEY_LEFTALT, KEY_LEFTCTRL};
-use radix_display::Rect;
 use sysapi::poll::{PollFd, poll};
+use window_frame::panel::Entry;
+use window_frame::{Bar, Canvas, Layout, Look, Rect, Shape, Theme};
 use window_test::{Client, Heard};
 
 use crate::desktop::Desktop;
@@ -174,6 +178,152 @@ impl World {
         [pixels[at + 2], pixels[at + 1], pixels[at]]
     }
 
+    /// Fails unless the first screen shows `drawn`, the pixels of
+    /// `rect` as [`window_frame`] draws them, with the place (0, 0) of
+    /// `rect`'s plane at `corner`. A pixel in one of `left_out` is not
+    /// looked at. One that covers a part or nothing shows over the
+    /// desktop's own colour if `on_desktop`, and is not looked at
+    /// otherwise.
+    fn shows_drawn(
+        &mut self,
+        (rect, drawn): (Rect, &[u8]),
+        corner: (i32, i32),
+        left_out: &[Rect],
+        on_desktop: bool,
+    ) {
+        let (width, shows) = self.desktop.shows(0);
+        let (pixels, _) = drawn.as_chunks::<4>();
+        for (index, [blue, green, red, cover]) in pixels.iter().enumerate() {
+            let (x, y) = (rect.x + index as i32 % rect.w, rect.y + index as i32 / rect.w);
+            let whole = *cover == 255;
+            if left_out.iter().any(|left_out| left_out.contains(x, y)) || !(whole || on_desktop) {
+                continue;
+            }
+            let at = (((corner.1 + y) as u32 * width + (corner.0 + x) as u32) * 4) as usize;
+            let shows = [shows[at + 2], shows[at + 1], shows[at]];
+            let expected = window_frame::shown_over([*blue, *green, *red, *cover], BACKGROUND);
+            assert_eq!(shows, expected, "({x}, {y})");
+        }
+    }
+
+    /// Fails unless the first screen shows the frame of `layout`, with
+    /// the corner of its box at `corner`, as [`window_frame`] draws it
+    /// for `look`, with the desktop's own colour behind it. Where the
+    /// window's own pixels show is not looked at.
+    fn shows_frame(&mut self, layout: &Layout, corner: (i32, i32), look: &Look<'_>) {
+        let bounds = layout.bounds();
+        let mut drawn = vec![0; Canvas::bytes_of(&bounds)];
+        window_frame::draw::frame(
+            &Theme::basic(),
+            layout,
+            look,
+            &mut Canvas::over(bounds, &mut drawn),
+        );
+        let own = [layout.content, layout.region.unwrap_or_default()];
+        self.shows_drawn((bounds, &drawn), corner, &own, true);
+    }
+
+    /// Fails unless the first screen shows the pattern of `seed`, as a
+    /// window draws it from the corner of its surface, in every pixel
+    /// `layout` has for the window's own: the content, and the region
+    /// of a shared title bar. The corner of the frame's box is at
+    /// `corner`.
+    fn shows_own(&mut self, layout: &Layout, corner: (i32, i32), seed: u32) {
+        let (width, shows) = self.desktop.shows(0);
+        for part in [Some(layout.content), layout.region].into_iter().flatten() {
+            for (x, y) in
+                (part.y..part.bottom()).flat_map(|y| (part.x..part.right()).map(move |x| (x, y)))
+            {
+                let at = (((corner.1 + y) as u32 * width + (corner.0 + x) as u32) * 4) as usize;
+                let own = ((x - layout.surface.x) as u32, (y - layout.surface.y) as u32);
+                let shows = [shows[at + 2], shows[at + 1], shows[at]];
+                assert_eq!(shows, pattern::colour(seed, own.0, own.1), "({x}, {y})");
+            }
+        }
+    }
+
+    /// Fails unless the first screen shows the panel of `entries`,
+    /// `width` wide with the entry `chosen` chosen, with its corner at
+    /// `corner`.
+    fn shows_panel(
+        &mut self,
+        width: i32,
+        entries: &[Entry<'_>],
+        chosen: Option<usize>,
+        corner: (i32, i32),
+    ) {
+        let theme = Theme::basic();
+        let (width, height) = window_frame::panel::place(&theme, width, entries).size;
+        let all = Rect::new(0, 0, width, height);
+        let mut drawn = vec![0; Canvas::bytes_of(&all)];
+        window_frame::panel::draw(
+            &theme,
+            width,
+            entries,
+            chosen,
+            &mut Canvas::over(all, &mut drawn),
+        );
+        self.shows_drawn((all, &drawn), corner, &[], false);
+    }
+
+    /// Moves the pointer to the middle of the pixel (`x`, `y`) of the
+    /// first screen.
+    fn point(&mut self, x: i32, y: i32) {
+        let now = self.now();
+        let (x, y) = ((f64::from(x) + 0.5) / 1023.0, (f64::from(y) + 0.5) / 767.0);
+        self.desktop.pointed(now, Some(x), Some(y));
+    }
+
+    /// Presses or lets go of the pointer's button of `code`.
+    fn button(&mut self, code: u16, pressed: bool) {
+        let now = self.now();
+        self.desktop.button(now, code, pressed);
+    }
+
+    /// Clicks the left button with the pointer at (`x`, `y`).
+    fn click(&mut self, x: i32, y: i32) {
+        self.point(x, y);
+        self.button(BTN_LEFT, true);
+        self.button(BTN_LEFT, false);
+    }
+
+    /// Presses or lets go of the key of `code`.
+    fn key(&mut self, code: u16, pressed: bool) {
+        let now = self.now();
+        self.desktop.key(now, code, pressed);
+    }
+
+    /// Has `program` wait until the desktop asks for its window to be
+    /// of another size or shape, draw it so with the pattern of `seed`,
+    /// and wait for the frame that shows it. A side the desktop leaves
+    /// to the program is `own`'s. Returns the size drawn, and whether
+    /// the window is maximized.
+    fn follow(&mut self, program: &Program, own: (u32, u32), seed: u32) -> ((u32, u32), bool) {
+        self.ask(program, move |client| {
+            let asked = |heard: &Heard| match heard {
+                Heard::Size { width, height, maximized } => Some((*width, *height, *maximized)),
+                _ => None,
+            };
+            let (width, height, maximized) = client.wait(PATIENCE, asked).unwrap();
+            let side = |asked: i32, own: u32| if asked > 0 { asked as u32 } else { own };
+            let size = (side(width, own.0), side(height, own.1));
+            client.show(size, seed).unwrap();
+            let frame = |heard: &Heard| matches!(heard, Heard::Frame(_)).then_some(());
+            client.wait(PATIENCE, frame).unwrap();
+            (size, maximized)
+        })
+    }
+
+    /// Everything `program` was told and no test has asked about, once
+    /// it has all the desktop sent it. Its window must be one that
+    /// shows.
+    fn told(&mut self, program: &Program) -> Vec<Heard> {
+        self.ask(program, |client| client.ask_frame().unwrap());
+        let mut heard = self.heard(program, |heard| matches!(heard, Heard::Frame(_)));
+        heard.pop();
+        heard
+    }
+
     /// What the card was asked to show since `from` things before.
     fn showed_since(&self, from: usize) -> Vec<Showed> {
         self.card.showed.borrow()[from..].to_vec()
@@ -185,15 +335,38 @@ impl World {
 
     /// Presses and lets go of the key of `code`.
     fn tap(&mut self, code: u16) {
-        let now = self.now();
-        self.desktop.key(now, code, true);
-        self.desktop.key(now, code, false);
+        self.key(code, true);
+        self.key(code, false);
+    }
+
+    /// Presses the key of `code` with the key of `held` down.
+    fn chord(&mut self, held: u16, code: u16) {
+        self.key(held, true);
+        self.tap(code);
+        self.key(held, false);
     }
 }
 
-/// Where a window of `size` first shows on a screen of 1024 by 768.
-fn middle((width, height): (u32, u32)) -> (u32, u32) {
-    ((1024 - width) / 2, (768 - height) / 2)
+/// The frame of a window whose own pixels are `size`, which is neither
+/// maximized nor shares its title bar, and where the corner of its box
+/// is when it first shows on a screen of 1024 by 768: in the middle.
+fn framed((width, height): (u32, u32)) -> (Layout, (i32, i32)) {
+    let size = (width as i32, height as i32);
+    let layout = Layout::of(&Theme::basic(), size, Shape::Normal, Bar::Full, None);
+    (layout, ((1024 - layout.frame.w) / 2, (768 - layout.frame.h) / 2))
+}
+
+/// Where the own pixels of a window of `size` first show on a screen of
+/// 1024 by 768.
+fn middle(size: (u32, u32)) -> (u32, u32) {
+    let (layout, (left, top)) = framed(size);
+    ((left + layout.surface.x) as u32, (top + layout.surface.y) as u32)
+}
+
+/// The look of the test program's window with nothing of it under the
+/// pointer.
+fn look(active: bool) -> Look<'static> {
+    Look { title: "window-test", active, hot: None, pressed: None }
 }
 
 #[test]
@@ -207,8 +380,19 @@ fn a_program_s_window_shows_in_the_middle_of_the_screen_pixel_for_pixel() {
     for (x, y) in [(0, 0), (319, 0), (0, 199), (319, 199), (160, 100)] {
         assert_eq!(world.colour(left + x, top + y), pattern::colour(7, x, y), "({x}, {y})");
     }
-    for (x, y) in [(left - 1, top), (left + 320, top), (left, top - 1), (left, top + 200)] {
-        assert_eq!(world.colour(x, y), BACKGROUND, "({x}, {y})");
+    // Around them is the window's frame, and around that the desktop.
+    let (layout, corner) = framed((320, 200));
+    world.shows_frame(&layout, corner, &look(true));
+    let around = layout.bounds().moved(corner.0, corner.1).grown(1);
+    for (x, y) in [
+        (around.x, around.y),
+        (around.right() - 1, around.y),
+        (around.x, around.bottom() - 1),
+        (around.right() - 1, around.bottom() - 1),
+        (around.x + 160, around.y),
+        (around.x + 160, around.bottom() - 1),
+    ] {
+        assert_eq!(world.colour(x as u32, y as u32), BACKGROUND, "({x}, {y})");
     }
     let told = world.ask(&program, |client| {
         (client.screens(), client.layout_bytes(), client.repeat(), client.has(), client.active())
@@ -269,14 +453,16 @@ fn only_what_changed_is_drawn_and_the_card_is_told_where() {
     world.show(&program, (320, 200), 8);
     world.settle();
     let (left, top) = middle((320, 200));
-    let window = Rect { x: left as i32, y: top as i32, width: 320, height: 200 };
+    let window = radix_display::Rect { x: left as i32, y: top as i32, width: 320, height: 200 };
     let showed = world.showed_since(before);
     let drawn: Vec<&Showed> = showed.iter().filter(|showed| !showed.damage.is_empty()).collect();
     assert_eq!(drawn.len(), 1, "{showed:?}");
     assert_eq!(drawn[0].damage, [window]);
     assert!(!drawn[0].mode && !drawn[0].main);
     assert_eq!(world.colour(left, top), pattern::colour(8, 0, 0));
-    assert_eq!(world.colour(left - 1, top), BACKGROUND);
+    // The frame beside it is as it was.
+    let (layout, corner) = framed((320, 200));
+    world.shows_frame(&layout, corner, &look(true));
 }
 
 #[test]
@@ -301,7 +487,7 @@ fn a_card_that_reads_the_pages_at_any_moment_gets_its_frames_in_two_pictures_in_
     }
     assert_eq!(frames[0].picture, frames[2].picture);
     // The frame after a window's first redraws no more than that window.
-    let window = Rect { x: left as i32, y: top as i32, width: 320, height: 200 };
+    let window = radix_display::Rect { x: left as i32, y: top as i32, width: 320, height: 200 };
     assert_eq!(frames.last().unwrap().damage, [window]);
 }
 
@@ -355,13 +541,66 @@ fn keys_reach_the_window_with_the_keyboard_and_windowd_s_chords_reach_none() {
 }
 
 #[test]
+fn a_program_that_asks_is_told_each_event_s_time_to_the_nanosecond_before_the_event() {
+    let mut world = World::one_screen();
+    let (asked, other) = (world.program(), world.program());
+    world.show(&other, (320, 200), 8);
+    world.show(&asked, (320, 200), 7);
+    for program in [&asked, &other] {
+        world.ask(program, |client| client.ask_times().unwrap());
+    }
+    world.told(&asked);
+    world.told(&other);
+    // The window in front has the keyboard and the pointer over it:
+    // its program is told the time of each key, motion and button, and
+    // then the event. The other program is told nothing.
+    let at = 5_000_000_123_456_789;
+    world.desktop.key(at, KEY_A, true);
+    world.desktop.moved(at + 1, 1, 0);
+    world.desktop.button(at + 2, BTN_LEFT, true);
+    world.desktop.button(at + 3, BTN_LEFT, false);
+    world.desktop.key(at + 4, KEY_A, false);
+    let told = world.told(&asked);
+    let kinds: Vec<&Heard> =
+        told.iter().filter(|heard| !matches!(heard, Heard::Motion(..))).collect();
+    let (down, up) = (true, false);
+    let key = u32::from(KEY_A);
+    let left = u32::from(BTN_LEFT);
+    assert_eq!(
+        kinds,
+        [
+            &Heard::At(at),
+            &Heard::Key { code: key, pressed: down },
+            &Heard::At(at + 1),
+            &Heard::At(at + 2),
+            &Heard::Button { code: left, pressed: down },
+            &Heard::At(at + 3),
+            &Heard::Button { code: left, pressed: up },
+            &Heard::At(at + 4),
+            &Heard::Key { code: key, pressed: up },
+        ]
+    );
+    assert!(matches!(told[3], Heard::Motion(..)), "{told:?}");
+    assert_eq!(world.told(&other), []);
+    // A chord of windowd's own is no program's: no time is told of it.
+    world.desktop.key(at + 5, KEY_LEFTCTRL, true);
+    world.desktop.key(at + 6, KEY_LEFTALT, true);
+    world.desktop.key(at + 7, KEY_F2, true);
+    let told = world.told(&asked);
+    assert!(!told.contains(&Heard::At(at + 7)), "{told:?}");
+    assert_eq!(world.desktop.asked(), Some(Chord::Console(2)));
+}
+
+#[test]
 fn the_pointer_moves_at_once_and_the_window_under_it_is_told() {
     let mut world = World::one_screen();
     let program = world.program();
     // The pointer starts in the middle, where the window shows.
     world.show(&program, (320, 200), 7);
+    let (left, top) = middle((320, 200));
+    let (x, y) = (f64::from(512 - left), f64::from(384 - top));
     let heard = world.heard(&program, |heard| matches!(heard, Heard::Enter(..)));
-    assert_eq!(heard.last(), Some(&Heard::Enter(160.0, 100.0)));
+    assert_eq!(heard.last(), Some(&Heard::Enter(x, y)));
     world.settle();
     let before = world.showed();
     let now = world.now();
@@ -372,7 +611,7 @@ fn the_pointer_moves_at_once_and_the_window_under_it_is_told() {
     assert!(showed[0].moved && showed[0].damage.is_empty());
     assert_eq!(showed[0].pointer_at, Some((516, 382)));
     let heard = world.heard(&program, |heard| matches!(heard, Heard::Motion(..)));
-    assert_eq!(heard.last(), Some(&Heard::Motion(164.0, 98.0)));
+    assert_eq!(heard.last(), Some(&Heard::Motion(x + 4.0, y - 2.0)));
     // Off the window, and against the screen's edge.
     world.desktop.moved(now + 20_000_000, -4000, -4000);
     let heard = world.heard(&program, |heard| *heard == Heard::Leave);

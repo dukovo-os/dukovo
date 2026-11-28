@@ -10,11 +10,19 @@
 //! `intl`. A layout of a person's own (_/system/settings/keymaps_) has
 //! no XKB twin, and the programs get `us`.
 //!
-//! Three chords never reach a program. Ctrl+Alt+F1 to F12 shows the
+//! Some chords never reach a program. Ctrl+Alt+F1 to F12 shows the
 //! console of that number, as it does at a console (consoled(8)).
-//! Ctrl+Alt+Backspace ends the desktop.
+//! Ctrl+Alt+Backspace ends the desktop. The window manager's own are
+//! Alt+Tab and Alt+Shift+Tab for the list of windows, Alt+F4 to close
+//! a window, Alt+Space for its menu, and the Super key with the up or
+//! the down arrow to maximize, restore or minimize it; Super pressed
+//! and let go alone shows the list.
 
-use input::abi::{KEY_BACKSPACE, KEY_F1, KEY_F10, KEY_F11, KEY_F12};
+use input::abi::{
+    KEY_BACKSPACE, KEY_CAPSLOCK, KEY_DOWN, KEY_F1, KEY_F4, KEY_F10, KEY_F11, KEY_F12, KEY_LEFTALT,
+    KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_NUMLOCK, KEY_RIGHTALT, KEY_RIGHTCTRL,
+    KEY_RIGHTMETA, KEY_RIGHTSHIFT, KEY_SCROLLLOCK, KEY_SPACE, KEY_TAB, KEY_UP,
+};
 use smithay::input::keyboard::{LedState, ModifiersState};
 
 /// The XKB layout and variant of the consoles' layout `name`.
@@ -47,6 +55,68 @@ pub fn chord(held: &ModifiersState, code: u16) -> Option<Chord> {
         KEY_BACKSPACE => Some(Chord::End),
         _ => None,
     }
+}
+
+/// What a key asks of the window manager.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// The list of windows, at the window used before this one, and
+    /// from there the next.
+    Next,
+    /// The list of windows, at the one used longest ago, and from there
+    /// the one before.
+    Previous,
+    /// The list of windows, to stay until a window is chosen.
+    List,
+    /// The window the person works in is to close.
+    Close,
+    /// That window's menu.
+    Menu,
+    /// That window is to be maximized.
+    Up,
+    /// That window is to be restored if it is maximized, and minimized
+    /// if it is not.
+    Down,
+}
+
+/// What pressing the key of Linux code `code` asks of the window
+/// manager while the modifiers are `held`, if anything.
+pub fn ask(held: &ModifiersState, code: u16) -> Option<Ask> {
+    let alt_alone = held.alt && !held.ctrl && !held.logo;
+    let super_alone = held.logo && !held.ctrl && !held.alt && !held.shift;
+    match code {
+        KEY_TAB if alt_alone && held.shift => Some(Ask::Previous),
+        KEY_TAB if alt_alone => Some(Ask::Next),
+        KEY_F4 if alt_alone && !held.shift => Some(Ask::Close),
+        KEY_SPACE if alt_alone && !held.shift => Some(Ask::Menu),
+        KEY_UP if super_alone => Some(Ask::Up),
+        KEY_DOWN if super_alone => Some(Ask::Down),
+        _ => None,
+    }
+}
+
+/// Whether the key of Linux code `code` is one that changes what other
+/// keys mean. Such a key always reaches the program that has the
+/// keyboard, so that the program never holds one down that the person
+/// has let go.
+pub fn modifier(code: u16) -> bool {
+    matches!(
+        code,
+        KEY_LEFTSHIFT
+            | KEY_RIGHTSHIFT
+            | KEY_LEFTCTRL
+            | KEY_RIGHTCTRL
+            | KEY_LEFTALT
+            | KEY_RIGHTALT
+            | KEY_CAPSLOCK
+            | KEY_NUMLOCK
+            | KEY_SCROLLLOCK
+    ) || is_super(code)
+}
+
+/// Whether the key of Linux code `code` is a Super key.
+pub fn is_super(code: u16) -> bool {
+    matches!(code, KEY_LEFTMETA | KEY_RIGHTMETA)
 }
 
 /// The lock lights `lights` asks for, as INPUT_LIGHTS takes them
@@ -87,6 +157,34 @@ mod tests {
         assert_eq!(chord(&held(true, false, false), KEY_F1), None);
         assert_eq!(chord(&held(false, true, false), KEY_F1), None);
         assert_eq!(chord(&held(true, true, true), KEY_F1), None);
+    }
+
+    #[test]
+    fn the_window_managers_keys_are_alt_and_super_alone() {
+        let held = |alt, logo, shift| ModifiersState { alt, logo, shift, ..Default::default() };
+        assert_eq!(ask(&held(true, false, false), KEY_TAB), Some(Ask::Next));
+        assert_eq!(ask(&held(true, false, true), KEY_TAB), Some(Ask::Previous));
+        assert_eq!(ask(&held(true, false, false), KEY_F4), Some(Ask::Close));
+        assert_eq!(ask(&held(true, false, false), KEY_SPACE), Some(Ask::Menu));
+        assert_eq!(ask(&held(false, true, false), KEY_UP), Some(Ask::Up));
+        assert_eq!(ask(&held(false, true, false), KEY_DOWN), Some(Ask::Down));
+        // Not with another modifier, and not the key alone.
+        assert_eq!(ask(&held(false, false, false), KEY_TAB), None);
+        assert_eq!(ask(&held(true, true, false), KEY_TAB), None);
+        assert_eq!(ask(&held(true, false, true), KEY_F4), None);
+        assert_eq!(ask(&held(false, true, true), KEY_UP), None);
+        assert_eq!(ask(&held(true, false, false), KEY_UP), None);
+        let ctrl = ModifiersState { ctrl: true, alt: true, ..Default::default() };
+        assert_eq!(ask(&ctrl, KEY_TAB), None);
+    }
+
+    #[test]
+    fn the_keys_that_change_others_are_modifiers() {
+        for code in [KEY_LEFTSHIFT, KEY_RIGHTCTRL, KEY_LEFTALT, KEY_RIGHTMETA, KEY_CAPSLOCK] {
+            assert!(modifier(code), "{code}");
+        }
+        assert!(!modifier(KEY_TAB) && !modifier(input::abi::KEY_A));
+        assert!(is_super(KEY_LEFTMETA) && !is_super(KEY_LEFTALT));
     }
 
     #[test]

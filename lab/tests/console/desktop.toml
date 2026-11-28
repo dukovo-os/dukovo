@@ -5,11 +5,14 @@
 # the console starts `desktop`, which is windowd, with a program, and
 # consoled lends it the screens. The program, window-test, shows a window, waits for the
 # frame that shows it on this machine's card, draws again, and has a
-# second program break the rules, which the desktop outlives. When it
+# second program break the rules, which the desktop outlives. It asks
+# for its window to be maximized, draws it at the size the desktop asks
+# for, which with the window's frame fills the screen (ADR 0721), and
+# has it back as it was. When it
 # ends, the desktop ends as it did and the console shows again, with what
 # the program said. What needs someone to look at the picture and move
 # the mouse is the boot tests': desktop-window and desktop-firmware.
-about = "desktop, started at the console, borrows the screens and shows a program's window on the machine's card, lets go of a second program that cuts its pixels short, and ends as its program did, after which the console shows again (ADR 0712)"
+about = "desktop, started at the console, borrows the screens and shows a program's window on the machine's card, lets go of a second program that cuts its pixels short, maximizes the window to fill the screen with its frame and restores it, and ends as its program did, after which the console shows again (ADRs 0712, 0721)"
 time = "5m"
 
 [[step]]
