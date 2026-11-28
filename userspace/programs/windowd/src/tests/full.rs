@@ -17,7 +17,12 @@ use crate::screens::BACKGROUND;
 /// Has `program` ask for its window to be full screen on the screen
 /// named `on`, or no longer for `full` false, and returns the size the
 /// desktop then asks for, having said which of the two.
-fn asks(world: &mut World, program: &Program, full: bool, on: Option<&'static str>) -> (i32, i32) {
+pub(super) fn asks(
+    world: &mut World,
+    program: &Program,
+    full: bool,
+    on: Option<&'static str>,
+) -> (i32, i32) {
     world.ask(program, move |client| client.full(full, on)).unwrap();
     let heard = world.heard(program, |heard| matches!(heard, Heard::Size { .. }));
     assert!(heard.contains(&Heard::Full(full)), "{heard:?}");
@@ -101,6 +106,9 @@ fn a_window_drawn_smaller_than_its_screen_is_in_the_middle_with_black_around_it(
     for (x, y) in [(0, 0), (111, 84), (112, 83), (912, 683), (1023, 767)] {
         assert_eq!(world.colour(x, y), [0, 0, 0], "({x}, {y})");
     }
+    // It is drawn, not shown from where it is: it is not the screen's
+    // size.
+    assert_eq!(world.desktop.straight(0), (None, 0));
 }
 
 #[test]

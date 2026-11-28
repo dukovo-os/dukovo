@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use display_pattern::pattern;
 use sysapi::memory::MemoryFile;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
-    wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region,
+    wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::fractional_scale::v1::client::{
@@ -217,6 +217,9 @@ struct Told {
     asked: (i32, i32, bool),
     /// The serial of the last press of a button.
     pressed: Option<u32>,
+    /// How many times the window server gave a buffer back
+    /// (`wl_buffer.release`).
+    given_back: u32,
     active: bool,
     /// The serial of the pointer's last coming onto the window.
     entered: Option<u32>,
@@ -283,6 +286,10 @@ pub struct Client {
     popup: Option<Popup>,
     /// The pointer's picture over the window, and its pixels' file.
     pointer_shown: Option<(wl_surface::WlSurface, wl_buffer::WlBuffer, File)>,
+    /// Whether the buffers say how much each pixel covers, and if so,
+    /// whether the window says it hides everything under it all the
+    /// same.
+    covers: Option<bool>,
 }
 
 impl Client {
@@ -327,7 +334,8 @@ impl Client {
             return Err(format!("the window server offers no {name}"));
         }
         let connection = connection.clone();
-        Ok(Client { connection, queue, told, window: None, popup: None, pointer_shown: None })
+        let (window, popup, pointer_shown) = (None, None, None);
+        Ok(Client { connection, queue, told, window, popup, pointer_shown, covers: None })
     }
 
     /// The screens.
@@ -479,6 +487,28 @@ impl Client {
         self.show_pixels_as((width, height), &Client::pattern((width, height), seed), Some(drawn))
     }
 
+    /// From now on the program's buffers say how much each pixel covers
+    /// (`wl_shm`'s `argb8888`), and the window says of its whole
+    /// surface that it hides what is under it, if `hides_all`, or says
+    /// nothing of the kind.
+    pub fn cover(&mut self, hides_all: bool) {
+        self.covers = Some(hides_all);
+    }
+
+    /// Says of the `width` by `height` points of `surface` what
+    /// [`Client::cover`] was told, if it was told anything.
+    fn say_cover(&self, surface: &wl_surface::WlSurface, (width, height): (u32, u32)) {
+        let (Some(hides_all), Some(compositor)) = (self.covers, &self.told.compositor) else {
+            return;
+        };
+        let region = compositor.create_region(&self.queue.handle(), ());
+        if hides_all {
+            region.add(0, 0, width as i32, height as i32);
+        }
+        surface.set_opaque_region(Some(&region));
+        region.destroy();
+    }
+
     /// The zoom the window was last told to draw at: the whole number
     /// (`wl_surface.preferred_buffer_scale`) and the 120ths
     /// (`wp_fractional_scale_v1`), each if it was told.
@@ -510,6 +540,9 @@ impl Client {
         }
         let handle = self.queue.handle();
         let shown = self.buffer((width, height), pixels)?;
+        if let (Some(window), None) = (&self.window, drawn) {
+            self.say_cover(&window.surface, (width, height));
+        }
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
             window.role.ack_configure(serial);
@@ -1014,7 +1047,11 @@ impl Client {
             return Err("the window server offers no wl_shm".into());
         };
         let pool = shm.create_pool(file.as_fd(), pixels.len() as i32, &handle, ());
-        let (stride, format) = (row_bytes as i32, wl_shm::Format::Xrgb8888);
+        let format = match self.covers {
+            Some(_) => wl_shm::Format::Argb8888,
+            None => wl_shm::Format::Xrgb8888,
+        };
+        let stride = row_bytes as i32;
         let buffer =
             pool.create_buffer(0, width as i32, height as i32, stride, format, &handle, ());
         pool.destroy();
@@ -1109,6 +1146,12 @@ impl Client {
     /// server last said.
     pub fn active(&self) -> bool {
         self.told.active
+    }
+
+    /// How many times the window server has given a buffer back to the
+    /// program to draw in again, of those the program still has.
+    pub fn given_back(&self) -> u32 {
+        self.told.given_back
     }
 }
 
@@ -1387,6 +1430,21 @@ impl Dispatch<wl_callback::WlCallback, ()> for Told {
     }
 }
 
+impl Dispatch<wl_buffer::WlBuffer, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let wl_buffer::Event::Release = event {
+            told.given_back += 1;
+        }
+    }
+}
+
 impl Dispatch<zwp_input_timestamps_v1::ZwpInputTimestampsV1, ()> for Told {
     fn event(
         told: &mut Told,
@@ -1404,12 +1462,12 @@ impl Dispatch<zwp_input_timestamps_v1::ZwpInputTimestampsV1, ()> for Told {
 }
 
 delegate_noop!(Told: wl_compositor::WlCompositor);
+delegate_noop!(Told: wl_region::WlRegion);
 delegate_noop!(Told: xdg_positioner::XdgPositioner);
 delegate_noop!(Told: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Told: zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1);
 delegate_noop!(Told: ignore wl_shm::WlShm);
 delegate_noop!(Told: wl_shm_pool::WlShmPool);
-delegate_noop!(Told: ignore wl_buffer::WlBuffer);
 delegate_noop!(Told: wp_viewporter::WpViewporter);
 delegate_noop!(Told: wp_viewport::WpViewport);
 delegate_noop!(Told: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);

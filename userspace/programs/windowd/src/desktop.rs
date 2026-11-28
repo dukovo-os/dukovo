@@ -613,8 +613,17 @@ where
         self.shell.lights.take().map(keys::light_bits)
     }
 
-    /// What the screen at place `at` last showed: its width, and its
-    /// pixels as FORMAT_XRGB8888 rows with nothing between them.
+    /// The picture of a program's buffer the screen at place `at`
+    /// shows, if it shows one, and how many buffers it keeps from
+    /// their programs.
+    #[cfg(test)]
+    pub fn straight(&self, at: usize) -> (Option<u32>, usize) {
+        self.screens.straight(at)
+    }
+
+    /// The frame of windowd's own the screen at place `at` last showed:
+    /// its width, and its pixels as FORMAT_XRGB8888 rows with nothing
+    /// between them.
     #[cfg(test)]
     pub fn shows(&mut self, at: usize) -> (u32, Vec<u8>) {
         use smithay::backend::allocator::Fourcc;

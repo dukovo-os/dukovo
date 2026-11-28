@@ -25,6 +25,7 @@
 //! the screen whole at once. That frame takes the place of one that
 //! still waits (`NEWEST_WINS`).
 
+mod direct;
 pub mod layout;
 pub mod pace;
 
@@ -53,6 +54,7 @@ use crate::pointer::{self, Arrows, SIDE, Shown};
 use crate::scene::Scene;
 use crate::settings::screens::{ScreensSet, Turn, Zoom};
 use crate::shell::Shell;
+use direct::{Direct, Fit};
 use pace::Pace;
 
 /// The colour of the desktop where no window is, a dark blue grey: red,
@@ -179,6 +181,8 @@ struct Screen<L: Link> {
     tracker: OutputDamageTracker,
     pace: Pace,
     pointer: Option<PointerPlane<L>>,
+    /// What it shows straight from a program's memory.
+    direct: Direct,
 }
 
 /// Where the pointer is and what it shows, for the screens' frames.
@@ -371,7 +375,8 @@ where
         // The change above stopped showing them.
         for gone in before {
             let pointer = gone.pointer.iter().flat_map(|pointer| pointer.pictures.numbers());
-            for number in gone.pictures.numbers().chain(pointer).chain([gone.mode_value]) {
+            let own = gone.pictures.numbers().chain(pointer).chain(gone.direct.numbers());
+            for number in own.chain([gone.mode_value]) {
                 self.holder.drop_object(number)?;
             }
         }
@@ -490,6 +495,7 @@ where
             pictures,
             pace: Pace::default(),
             pointer,
+            direct: Direct::default(),
         })
     }
 
@@ -520,6 +526,11 @@ where
             if let Some(pointer) = &mut screen.pointer {
                 pointer.asked = None;
             }
+            if made.is_ok() {
+                // The call waited until every screen showed its frame.
+                screen.direct.composed(&self.holder);
+                screen.direct.all_shown();
+            }
         }
         if in_back(&made) {
             self.front = false;
@@ -535,6 +546,9 @@ where
         match event.kind {
             EVENT_SHOWN | EVENT_BEAT => {
                 let Some(screen) = self.of_pipe(pipe) else { return Told::Nothing };
+                if event.kind == EVENT_SHOWN {
+                    screen.direct.shown(event.cookie);
+                }
                 screen.pace.shown(event.deadline_ns);
                 Told::Shown(screen.output.clone(), event.time_ns)
             }
@@ -673,8 +687,16 @@ where
         }
     }
 
-    /// The size of the screen at place `at`, and the pixels it last
-    /// showed.
+    /// The picture of a program's buffer the screen at place `at`
+    /// shows, if it shows one, and how many buffers it keeps from
+    /// their programs.
+    #[cfg(test)]
+    pub fn straight(&self, at: usize) -> (Option<u32>, usize) {
+        self.shown[at].direct.state()
+    }
+
+    /// The size of the screen at place `at`, and the pixels of
+    /// windowd's own it last showed.
     #[cfg(test)]
     pub fn pixels(&mut self, at: usize) -> ((u32, u32), &mut L::Pixels) {
         let screen = &mut self.shown[at];
@@ -715,10 +737,44 @@ where
     /// frame is drawn whole and at once.
     fn lost(&mut self) {
         self.pictures.forget();
+        self.direct.lost();
         self.pace.reset();
         self.pace.stale();
         if let Some(pointer) = &mut self.pointer {
             pointer.pictures.forget();
+        }
+    }
+
+    /// The one buffer of a program's that is all the screen shows, if
+    /// one is and the card shows it from where the program drew it,
+    /// with the picture that is made of it (ADR 0728).
+    fn straight(
+        &mut self,
+        holder: &Holder<L>,
+        shell: &Shell,
+        scene: &Scene<'_>,
+    ) -> Option<(u32, Fit)> {
+        // No card of release 1.1 turns a picture: windowd does, as it
+        // draws.
+        if self.named.turn != Turn::None {
+            return None;
+        }
+        let area = self.area();
+        let surface = scene.alone(area)?;
+        let mode = (self.on.mode.width, self.on.mode.height);
+        let fit = direct::fit(&surface, mode, area.size, self.direct.seen())?;
+        let file = shell.files.of(&fit.buffer);
+        let picture = self.direct.picture(holder, &self.on, &fit, file)?;
+        Some((picture, fit))
+    }
+
+    /// Adds to `change` that `rects` of the main plane's picture
+    /// changed.
+    fn changed(&self, change: &mut ChangeBytes, rects: Vec<Rectangle<i32, Physical>>) {
+        for rect in few(rects) {
+            let (at, size) = (rect.loc, rect.size);
+            let packed = wire::rect(at.x as i16, at.y as i16, size.w as u16, size.h as u16);
+            change.set(self.on.plane, PLANE_CHANGED, packed);
         }
     }
 
@@ -748,7 +804,10 @@ where
 
     /// Draws the screen a frame, with the pointer's picture if the
     /// pointer is on it, and asks the layer to show it at the next beat
-    /// without waiting. A frame in which nothing changed is not shown;
+    /// without waiting. When all the screen shows is one buffer of a
+    /// program's that the card shows from where it is, nothing is
+    /// drawn: the layer is asked to show that buffer's picture
+    /// ([`direct`]). A frame in which nothing changed is not shown;
     /// the beat alone is asked for if a program on the screen waits to
     /// hear of one. Returns whether the pointer's picture is another.
     fn frame(
@@ -765,18 +824,31 @@ where
         // lost sight of after: this one, drawn whole, takes its place,
         // so that busy says only that the desktop is not in front.
         let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS, cookie);
-        let (picture, changed) = self.draw(renderer, scene)?;
-        let drew = !changed.is_empty();
-        if drew {
-            if self.pictures.made.len() > 1 {
-                change.set(self.on.plane, PLANE_PICTURE, u64::from(picture));
+        let mut straight = self.straight(holder, shell, scene);
+        // Whether the frame is one of windowd's own after a program's.
+        let back = straight.is_none() && self.direct.shows();
+        let mut drew = false;
+        match &mut straight {
+            Some((picture, fit)) => {
+                if self.direct.shows_another(*picture) {
+                    change.set(self.on.plane, PLANE_PICTURE, u64::from(*picture));
+                }
+                self.changed(&mut change, core::mem::take(&mut fit.changed));
             }
-            for rect in few(changed) {
-                let (at, size) = (rect.loc, rect.size);
-                let packed = wire::rect(at.x as i16, at.y as i16, size.w as u16, size.h as u16);
-                change.set(self.on.plane, PLANE_CHANGED, packed);
+            None => {
+                if back {
+                    // What its own pictures hold is long out of date.
+                    self.pictures.forget();
+                }
+                let (picture, changed) = self.draw(renderer, scene)?;
+                drew = !changed.is_empty();
+                if back || (drew && self.pictures.made.len() > 1) {
+                    change.set(self.on.plane, PLANE_PICTURE, u64::from(picture));
+                }
+                self.changed(&mut change, changed);
             }
         }
+        let main = !change.is_empty();
         let pointer = self.point(renderer, pointing, &mut change)?;
         if change.is_empty() {
             if !shell.owes_frame(&self.output) {
@@ -789,6 +861,11 @@ where
         }
         if drew {
             self.pictures.drew();
+        }
+        match straight {
+            Some((picture, fit)) if main => self.direct.asked(cookie, picture, fit),
+            None if back => self.direct.composed(holder),
+            _ => {}
         }
         if let (Some(asked), Some(plane)) = (pointer, &mut self.pointer) {
             plane.asked = asked;

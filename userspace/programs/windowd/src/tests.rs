@@ -6,6 +6,7 @@
 //! desktop told of each thing as `main` tells it.
 
 mod desks;
+mod direct;
 mod full;
 mod laid;
 mod managed;
@@ -174,10 +175,24 @@ impl World {
         })
     }
 
+    /// What the screen at place `screen` shows: its width, and its
+    /// pixels as FORMAT_XRGB8888 rows with nothing between them. They
+    /// are the frame windowd drew last, or a program's own, read from
+    /// the program's file, while the screen shows those.
+    fn shows(&mut self, screen: usize) -> (u32, Vec<u8>) {
+        let (Some(picture), _) = self.desktop.straight(screen) else {
+            return self.desktop.shows(screen);
+        };
+        let brought = self.card.brought.borrow();
+        let shown = brought.iter().rev().find(|brought| brought.picture == picture);
+        let shown = shown.expect("a picture the card was not asked for");
+        (shown.source.size.0, shown.pixels())
+    }
+
     /// The colour the first screen shows at (`x`, `y`): red, green and
     /// blue.
     fn colour(&mut self, x: u32, y: u32) -> [u8; 3] {
-        let (width, pixels) = self.desktop.shows(0);
+        let (width, pixels) = self.shows(0);
         let at = ((y * width + x) * 4) as usize;
         [pixels[at + 2], pixels[at + 1], pixels[at]]
     }
@@ -195,7 +210,7 @@ impl World {
         left_out: &[Rect],
         on_desktop: bool,
     ) {
-        let (width, shows) = self.desktop.shows(0);
+        let (width, shows) = self.shows(0);
         let (pixels, _) = drawn.as_chunks::<4>();
         for (index, [blue, green, red, cover]) in pixels.iter().enumerate() {
             let (x, y) = (rect.x + index as i32 % rect.w, rect.y + index as i32 / rect.w);
@@ -233,7 +248,7 @@ impl World {
     /// of a shared title bar. The corner of the frame's box is at
     /// `corner`.
     fn shows_own(&mut self, layout: &Layout, corner: (i32, i32), seed: u32) {
-        let (width, shows) = self.desktop.shows(0);
+        let (width, shows) = self.shows(0);
         for part in [Some(layout.content), layout.region].into_iter().flatten() {
             for (x, y) in
                 (part.y..part.bottom()).flat_map(|y| (part.x..part.right()).map(move |x| (x, y)))
@@ -781,7 +796,7 @@ fn a_screen_that_comes_is_shown_on_beside_the_first_and_the_window_stays() {
     assert_eq!((second.width, second.height, second.x, second.y), (800, 600, 1024, 0));
     let (left, top) = middle((320, 200));
     assert_eq!(world.colour(left, top), pattern::colour(7, 0, 0));
-    let (width, pixels) = world.desktop.shows(1);
+    let (width, pixels) = world.shows(1);
     assert_eq!(width, 800);
     assert_eq!(pixels[..3], [BACKGROUND[2], BACKGROUND[1], BACKGROUND[0]]);
     // The pointer crosses to it, and shows there.

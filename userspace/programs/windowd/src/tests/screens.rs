@@ -15,7 +15,7 @@ use super::{Program, World};
 use crate::screens::BACKGROUND;
 
 /// Has the desktop be as the settings file of `text` says.
-fn set(world: &mut World, text: &str) {
+pub(super) fn set(world: &mut World, text: &str) {
     world.desktop.set(&settings(text)).unwrap();
     world.settle();
 }
@@ -23,7 +23,7 @@ fn set(world: &mut World, text: &str) {
 /// The colour the screen at place `screen` shows at (`x`, `y`) of its
 /// picture.
 pub(super) fn pixel(world: &mut World, screen: usize, (x, y): (i32, i32)) -> [u8; 3] {
-    let (width, pixels) = world.desktop.shows(screen);
+    let (width, pixels) = world.shows(screen);
     let at = ((y as u32 * width + x as u32) * 4) as usize;
     [pixels[at + 2], pixels[at + 1], pixels[at]]
 }
@@ -178,13 +178,13 @@ fn a_screen_shows_in_the_mode_the_person_names_if_its_monitor_has_it() {
     assert_eq!(world.desktop.said(), Vec::<String>::new());
     let screens = told(&mut world, &program);
     assert_eq!((screens[0].width, screens[0].height), (800, 600));
-    assert_eq!(world.desktop.shows(0).0, 800);
+    assert_eq!(world.shows(0).0, 800);
     set(&mut world, r#"{"screens": {"virtio0/0": {"mode": "1280x1024"}}}"#);
     assert_eq!(
         world.desktop.said(),
         ["the screen virtio0/0 has no mode 1280x1024; it shows in the one its monitor prefers"]
     );
-    assert_eq!(world.desktop.shows(0).0, 1024);
+    assert_eq!(world.shows(0).0, 1024);
 }
 
 #[test]

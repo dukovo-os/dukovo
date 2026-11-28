@@ -31,10 +31,11 @@ use smithay::backend::renderer::element::{
 use smithay::backend::renderer::pixman::{PixmanError, PixmanFrame, PixmanRenderer};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::desktop::{PopupManager, Window};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
-use window_frame::{Colour, Theme};
+use window_frame::{Colour, Shape, Theme};
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
@@ -320,6 +321,38 @@ impl Scene<'_> {
             }
         }
         Ok(pieces)
+    }
+}
+
+impl Scene<'_> {
+    /// The surface that is all the screen whose area of the desktop is
+    /// `screen` shows, if one surface is: the only surface of a window
+    /// that fills the screen with no frame, with no popup, in front of
+    /// every other window that reaches the screen, and with nothing of
+    /// windowd's over it. A frame of that screen is that surface's
+    /// pixels and nothing else, if they are as many as the screen's.
+    pub fn alone(&self, screen: Rectangle<i32, Logical>) -> Option<WlSurface> {
+        if self.over.is_some() || self.preview.is_some() {
+            return None;
+        }
+        for framed in self.windows.stacked() {
+            let surface = framed.window.wl_surface()?;
+            // A popup may reach anywhere, onto a screen its window is
+            // not on too.
+            if PopupManager::popups_for_surface(&surface).next().is_some() {
+                return None;
+            }
+            if !framed.frame().overlaps(screen) {
+                continue;
+            }
+            let fills = framed.layout().shape == Shape::Full
+                && framed.surface_at() == screen.loc
+                && framed.frame() == screen;
+            let mut surfaces = 0;
+            framed.window.with_surfaces(|_, _| surfaces += 1);
+            return (fills && surfaces == 1).then(|| surface.into_owned());
+        }
+        None
     }
 }
 

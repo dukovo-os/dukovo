@@ -77,7 +77,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::{
-    delegate_compositor, delegate_fractional_scale, delegate_output, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_fractional_scale, delegate_output, delegate_seat,
     delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
 };
 use sysapi::time::monotonic_ns;
@@ -86,6 +86,7 @@ use window_frame::{Bar, Edge};
 use crate::clients::Peer;
 use crate::manager::Asked;
 use crate::settings::TitleBars;
+use crate::shm::Files;
 use crate::stamps::Stamps;
 use crate::titlebar::{self, TitleBar};
 use crate::windows::resize::answered;
@@ -143,6 +144,8 @@ pub struct Shell {
     pub chosen: Vec<(String, bool)>,
     /// The programs' objects for the times of input events.
     pub stamps: Stamps,
+    /// The files the programs' pixels are in.
+    pub files: Files,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -174,6 +177,7 @@ impl Shell {
             _fractions: FractionalScaleManagerState::new::<Shell>(display),
             _title_bars: titlebar::offer(display),
             stamps: Stamps::offer(display),
+            files: Files::default(),
             display: display.clone(),
             popups: PopupManager::default(),
             grabbed: None,
@@ -538,7 +542,9 @@ impl CompositorHandler for Shell {
 }
 
 impl BufferHandler for Shell {
-    fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
+    fn buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        self.files.forget(buffer);
+    }
 }
 
 impl ShmHandler for Shell {
@@ -800,7 +806,6 @@ fn answer_decoration(toplevel: &ToplevelSurface) {
 }
 
 delegate_compositor!(Shell);
-delegate_shm!(Shell);
 delegate_xdg_shell!(Shell);
 delegate_seat!(Shell);
 delegate_output!(Shell);

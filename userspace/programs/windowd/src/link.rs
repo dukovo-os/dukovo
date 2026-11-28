@@ -16,12 +16,25 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use display::abi::{Buffer, Picture};
+use display::abi::{Buffer, FORMAT_XRGB8888, Picture};
 use display::{Control, Holder};
 use smithay::backend::allocator::dmabuf::{Dmabuf, DmabufFlags};
 use smithay::backend::allocator::{Fourcc, Modifier};
 use sysapi::kernel;
 use sysapi::memory::MemoryFile;
+
+/// Where in a memory file a program drew pixels that a card can show
+/// from there: every pixel is four bytes, of which the card shows the
+/// red, the green and the blue (`FORMAT_XRGB8888`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Source {
+    /// Where in the file the first row starts.
+    pub offset: u64,
+    /// The width and the height in pixels.
+    pub size: (u32, u32),
+    /// The bytes from one row to the next.
+    pub row_bytes: u32,
+}
 
 /// A holder's file, and the pixels of the pictures made on it.
 pub trait Link: Control + Sized {
@@ -42,6 +55,21 @@ pub trait Link: Control + Sized {
         format: u32,
         size: (u32, u32),
     ) -> io::Result<(u32, Self::Pixels)>;
+
+    /// Makes a picture on `card` of the pixels a program drew at
+    /// `source` of the memory file `file`, which the card reads where
+    /// they are. Returns the picture's number.
+    ///
+    /// # Errors
+    ///
+    /// What the layer's request fails with: EINVAL for a file that is
+    /// not a memory file or ends before the pixels do.
+    fn brought(
+        holder: &Holder<Self>,
+        card: u32,
+        file: BorrowedFd<'_>,
+        source: &Source,
+    ) -> io::Result<u32>;
 }
 
 /// The description of _/devices/display/control_ that consoled lent.
@@ -110,5 +138,24 @@ impl Link for Card {
         pixels.add_plane(file.into_fd()?, 0, 0, row_bytes);
         let pixels = pixels.build().ok_or_else(|| io::Error::other("a picture with no plane"))?;
         Ok((picture, pixels))
+    }
+
+    fn brought(
+        holder: &Holder<Card>,
+        card: u32,
+        file: BorrowedFd<'_>,
+        source: &Source,
+    ) -> io::Result<u32> {
+        let (width, height) = source.size;
+        holder.make_picture(&Picture {
+            file: kernel::slot_of(file),
+            card,
+            format: FORMAT_XRGB8888,
+            width,
+            height,
+            row_bytes: source.row_bytes,
+            offset: source.offset,
+            ..Picture::default()
+        })
     }
 }
