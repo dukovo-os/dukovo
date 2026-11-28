@@ -5,8 +5,9 @@
 (***************************************************************************)
 (* A model of how an idle CPU waits, how other CPUs wake it, and how they  *)
 (* hand it the threads they wake for it (kernel/radix/src/sched/mod.rs:    *)
-(* `idle_loop`, `poll`, `kick`, `hand_over`, `take_handed` and            *)
-(* `reschedule`, and `radix_sched::Resched`, ADR 0555 and ADR 0556).       *)
+(* `idle_loop`, `poll`, `kick`, `hand_over`, `wake_masked`, `take_handed` *)
+(* and `reschedule`, and `radix_sched::Resched`, ADR 0555, ADR 0556 and   *)
+(* ADR 0798).                                                              *)
 (*                                                                         *)
 (* The CPU's request to switch is one word, alone in its cache line: a     *)
 (* `pending` bit, which wakers set, a `watched` bit, which the idle CPU    *)
@@ -16,7 +17,10 @@
 (* and then sets `pending`, or hands it over: puts it in the inbox and     *)
 (* sets `pending` in one step. Either way the step that sets `pending`     *)
 (* also reads `watched`, and if the word was not watched the waker then    *)
-(* sends an interrupt.                                                     *)
+(* sends an interrupt. A waker may first try to hand the thread over in   *)
+(* one exchange that succeeds only if the word is watched with nothing    *)
+(* asked for and nothing in the inbox, and needs no interrupt; if it      *)
+(* fails, the waker goes on to queue or hand over as before.              *)
 (*                                                                         *)
 (* The idle CPU, with interrupts masked, checks `pending` and its queue    *)
 (* and then either polls (as long as its recent idle periods suggest, ADR  *)
@@ -84,7 +88,7 @@ vars == <<mwait, pollFirst, pending, watched, inbox, irq, queue, cur, ran, early
 CpuSteps ==
     {"top", "poll", "unpoll", "prepare", "asleep", "woken", "switch", "busy", "block",
      "blocking"}
-WakerSteps == {"wake", "ring", "signal", "done"}
+WakerSteps == {"wake", "fallback", "ring", "signal", "done"}
 
 TypeOK ==
     /\ mwait \in BOOLEAN
@@ -273,9 +277,24 @@ Cpu ==
 ----------------------------------------------------------------------------
 (* The wakers (wake_masked, enqueue_on with kick, and hand_over).          *)
 
+\* `hand_over_to_idle`: one compare-and-exchange of the word, from watched
+\* with nothing asked for and an empty inbox to that with the thread in the
+\* inbox and `pending` set. Watched, the CPU needs no interrupt; refused,
+\* the waker goes on to queue the thread or hand it over.
+HandOverToIdle(w) ==
+    /\ wpc[w] = "wake"
+    /\ IF watched /\ ~pending /\ inbox = {}
+       THEN /\ inbox' = {w}
+            /\ pending' = TRUE
+            /\ wpc' = [wpc EXCEPT ![w] = "done"]
+       ELSE /\ wpc' = [wpc EXCEPT ![w] = "fallback"]
+            /\ UNCHANGED <<pending, inbox>>
+    /\ UNCHANGED <<mwait, pollFirst, watched, irq, queue, cur, ran, early, owed, ipc,
+                   unwatched>>
+
 \* Queues the thread on the CPU's run queue, under its lock ...
 Enqueue(w) ==
-    /\ wpc[w] = "wake"
+    /\ wpc[w] \in {"wake", "fallback"}
     /\ queue' = queue \cup {w}
     /\ wpc' = [wpc EXCEPT ![w] = "ring"]
     /\ UNCHANGED <<mwait, pollFirst, pending, watched, inbox, irq, cur, ran, early, owed,
@@ -293,7 +312,7 @@ Ring(w) ==
 \* Or `hand_over`: puts the thread in the inbox, sets `pending` and reads
 \* the watched bit, in one step.
 HandOver(w) ==
-    /\ wpc[w] = "wake"
+    /\ wpc[w] \in {"wake", "fallback"}
     /\ inbox' = inbox \cup {w}
     /\ pending' = TRUE
     /\ unwatched' = [unwatched EXCEPT ![w] = ~watched]
@@ -308,7 +327,7 @@ Signal(w) ==
     /\ UNCHANGED <<mwait, pollFirst, pending, watched, inbox, queue, cur, ran, early, owed,
                    ipc, unwatched>>
 
-Waker(w) == Enqueue(w) \/ Ring(w) \/ HandOver(w) \/ Signal(w)
+Waker(w) == HandOverToIdle(w) \/ Enqueue(w) \/ Ring(w) \/ HandOver(w) \/ Signal(w)
 
 ----------------------------------------------------------------------------
 

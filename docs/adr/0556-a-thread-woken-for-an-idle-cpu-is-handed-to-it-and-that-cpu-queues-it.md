@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0556. A thread woken for an idle CPU is handed to it, and that CPU queues it
 
-- Status: Accepted
+- Status: Accepted; a waker may hand over to the idle CPU it would choose in one swap that reads none of that CPU's lines first, with the thread's lock held, since [0798](0798-a-cross-cpu-wake-up-moves-as-few-cache-lines-as-it-can-and-the-fpu-is-restored-only-when-its-registers-lost-the-thread-s-state.md)
 - Date: 2026-11-21
 
 ## Context

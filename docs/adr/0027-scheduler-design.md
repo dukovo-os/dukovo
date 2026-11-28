@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0027. The scheduler is EEVDF with FIFO and round-robin classes, per-CPU queues and no lock across a switch
 
-- Status: Accepted
+- Status: Accepted; extended state saved only for a context that has its own and restored only when the registers lost it since [0798](0798-a-cross-cpu-wake-up-moves-as-few-cache-lines-as-it-can-and-the-fpu-is-restored-only-when-its-registers-lost-the-thread-s-state.md)
 - Date: 2026-10-21
 
 ## Context
