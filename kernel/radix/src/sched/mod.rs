@@ -2044,6 +2044,9 @@ fn on_timer(tick: bool) {
         }
         // Where the kernel picks the CPU's speed, from its load (ADR 0796).
         crate::pstate::tick(cpu, now, idle_time_here(slot, now));
+        // The kernel log's readers hear of what was logged since the
+        // last tick (ADR 0811).
+        crate::fs::kmsg::look();
         if cpu == 0 && now >= NEXT_LOAD_NS.load(Ordering::Relaxed) {
             sample_load(now);
         }
