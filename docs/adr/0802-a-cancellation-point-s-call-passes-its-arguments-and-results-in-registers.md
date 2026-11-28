@@ -102,7 +102,10 @@ entries that only a `poll` of events the kernel does not know needs.
 - Patch 0144 is one more patch to carry when mlibc is updated. It adds a
   configuration value and an `#if` around one function, and leaves
   mlibc's `poll` for every other system layer.
-- On optiplex-1, TODO-NUMBERS.
+- On optiplex-1, the C library's part of a `poll` fell from about 115
+  cycles to 86, and to 79 once `poll` was the Radix layer's own (Linux's
+  is 54); `posix_poll` went from 1054 ns to 1045 to 1047, against
+  Linux's 1042 to 1044. ADR 0804 closed the rest.
 - `posix/cancel` checks both stubs: a cancel that comes while each
   point waits, one due before the call, a point that a handler with
   SA_RESTART makes again, and cleanup handlers; `posix/poll` checks the

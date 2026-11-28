@@ -152,6 +152,11 @@ Wherever `unsafe` is used:
   anything: the processor may run ahead of the check and read past the end
   of the table (Spectre v1, ADR 0790). Indices the kernel computes, loop
   counters and values masked to the table's size need nothing.
+- In the same way, a range of a program's memory that the kernel copies
+  from or to goes through `radix_sync::nospec::range` after the check that
+  it lies in the program's half, and the copy takes the range it gives
+  (ADR 0803). `copy_from_user` and `copy_to_user` do; code that reaches a
+  program's memory some other way must too.
 
   ```rust
   if slot as usize >= slots.len() {

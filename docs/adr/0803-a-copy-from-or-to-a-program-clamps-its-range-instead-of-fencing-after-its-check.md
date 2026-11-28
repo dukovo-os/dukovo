@@ -69,7 +69,12 @@ harmless.
 ## Consequences
 
 - A system call that copies no longer waits at the copy for everything
-  before it to finish. On optiplex-1, TODO-NUMBERS.
+  before it to finish. On optiplex-1 the change measured within the
+  runs' spread (a `poll`'s kernel cycles 3258 before, 3252 to 3276
+  after): there the entry and exit switch page tables and write
+  IA32_SPEC_CTRL, and the fence's wait overlapped with theirs. Where the
+  entry and exit are lighter (enhanced IBRS, no page-table switch) the
+  fence is a larger share of a call; that was not measured.
 - ADR 0790's Spectre v1 point holds with "copies from programs clamp
   their range after their access check" in place of the fence.
 - A new routine that copies from or to a program's memory must pass its
