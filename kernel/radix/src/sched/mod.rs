@@ -144,6 +144,11 @@ struct CpuSched {
     /// last told.
     waiting: AtomicBool,
     online: AtomicBool,
+    /// Whether the CPU is in an idle period: its idle thread found
+    /// nothing to run, and polls or halts. Another CPU's poll reads it
+    /// ([`has_work`]). The idle thread writes it beside its writes of the
+    /// request word, which have the line here already.
+    idling: AtomicBool,
     /// How fast the CPU is beside the others, where its processor's cores
     /// differ ([`balance::rank_cores`]); 0 until then, and where they do
     /// not.
@@ -238,6 +243,7 @@ impl CpuSched {
             rt_prio: AtomicU8::new(0),
             waiting: AtomicBool::new(false),
             online: AtomicBool::new(false),
+            idling: AtomicBool::new(false),
             rank: AtomicU8::new(0),
             kind: AtomicU8::new(0),
             move_to: AtomicUsize::new(0),
@@ -2222,6 +2228,7 @@ fn idle_loop(cpu: usize) -> ! {
             reschedule(Switch::Preempt);
             continue;
         }
+        slot.idling.store(true, Ordering::Relaxed);
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
         let limit_ns = haltpoll.limit_ns();
@@ -2286,6 +2293,10 @@ fn idle_loop(cpu: usize) -> ! {
                 slot.resched.unwatch();
             }
         }
+        // Before the switch withdraws the request that ended the period:
+        // another CPU's poll then sees the request, or this, at every
+        // moment until the thread asked for is counted (`has_work`).
+        slot.idling.store(false, Ordering::Relaxed);
         let idle = Arch::now_ns().saturating_sub(started);
         if limit_ns > 0 {
             let polled = polled_until.map_or(idle, |until| until.saturating_sub(started));
@@ -2344,9 +2355,22 @@ pub fn cpu_to_itself() -> bool {
 
 /// Whether CPU `cpu` has work: a thread to run, or one on its way to it.
 /// Its threads are what wakes a thread of another CPU's.
+///
+/// A thread handed to an idle CPU is in its request word, then in
+/// neither the word nor the count while the CPU queues it, then in the
+/// count. A poll on another CPU looks many times in that gap, and one
+/// look that found no work would end it: two threads that wake each other
+/// across CPUs would halt at every turn. So a CPU has work from when its
+/// idle period ends until the next begins, whatever it has counted. The
+/// idle thread ends the period before it withdraws the request, and the
+/// request is read here before the period, so no look falls between the
+/// two.
 fn has_work(cpu: usize) -> bool {
     let slot = CPUS.get(cpu);
-    slot.running.load(Ordering::Relaxed) > 0 || slot.resched.pending()
+    slot.online.load(Ordering::Relaxed)
+        && (slot.resched.pending()
+            || !slot.idling.load(Ordering::Relaxed)
+            || slot.running.load(Ordering::Relaxed) > 0)
 }
 
 /// Polls on CPU `cpu`, whose state is `slot`, for a switch to be asked

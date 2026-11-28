@@ -39,10 +39,18 @@ An idle CPU polls only while another CPU has work: a thread to run, or
 one on its way to it. Its threads are what wakes a thread here.
 
 - **The poll's loop looks at one other CPU each time round**
-  (`radix_sched::haltpoll::Others`), in turn, reading the count of
-  runnable threads the CPU publishes for placement and its request
-  word. When it has seen every other CPU without work, once round, the
-  poll ends and the CPU halts.
+  (`radix_sched::haltpoll::Others`), in turn, reading its request word,
+  whether it is in an idle period, and the count of runnable threads it
+  publishes for placement. When it has seen every other CPU without
+  work, once round, the poll ends and the CPU halts.
+- **A CPU has work from when its idle period ends until the next
+  begins.** A thread handed to an idle CPU is in its request word, then
+  in neither the word nor the count while the CPU queues it, then in the
+  count. A poll looks many times in that gap, and one look that finds no
+  work ends it. So each CPU keeps a flag for its idle period beside the
+  word: its idle thread clears it before it withdraws the request, and
+  the poll reads the request first, so that every look sees one of the
+  two.
 - **A CPU alone has no one to wake it** and does not poll.
 - **The limit is learnt as before** (ADR 0116). A poll that ends early
   for want of work is a period like any other: a long one halves the
@@ -64,6 +72,12 @@ one on its way to it. Its threads are what wakes a thread here.
 - **Not polling at all in a virtual machine.** The rows of `ob bench`
   that wake a thread across CPUs are as fast as Linux's because of it
   (ADR 0037).
+- **The word and the count alone as the sign of work.** Built first. Two
+  threads that wake each other across CPUs with semaphores halted at
+  every turn, 1.7 halts a round trip, because each CPU's poll saw the
+  other between the word and the count: the rows were 1.31 and 1.49
+  times Linux's on a runner of the project's checks, where they must be
+  at or under its time.
 
 ## Consequences
 
