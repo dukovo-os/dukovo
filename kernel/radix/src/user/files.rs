@@ -42,7 +42,7 @@ use radix_mm::{Flags, HEAP};
 use radix_vfs::attributes;
 use radix_vfs::mount::{Location, Mount, OpenFlags as VfsOpen};
 use radix_vfs::{
-    Access, AccessChange, FsKind, In, Kind, NodeRef, Out, PATH_MAX, Setting, Who, want,
+    Access, AccessChange, FsKind, In, Kind, NodeRef, Out, PATH_MAX, Setting, SliceMut, Who, want,
 };
 
 use super::account::Account;
@@ -877,6 +877,34 @@ pub fn directory_method(
                 vfs()?.real_path(&who, &dir.at, path.as_str()?, &mut out).map_err(fs::status)?;
             let results = directory::RealPathResults { len: len as u64 };
             answer(label, directory::RealPathResults::WORDS, results.encode())
+        }
+        directory::ENTER => {
+            let a = directory::EnterArgs::decode(args)?;
+            let dir = directory_of(found, Rights::READ)?;
+            let mut path = Path::Empty;
+            let path = path.copy(a.path)?;
+            let (address, len) = user_range(a.buffer)?;
+            let who = who(found.cap.rights(), dir)?;
+            // Made in the kernel's memory, so that the working directory
+            // noted is the one the walk found, whatever the caller's
+            // memory holds by then.
+            let room = len.min(PATH_MAX);
+            let mut real = radix_mm::bytes::zeroed(room, HEAP.with(Flags::MAY_SLEEP))
+                .map_err(|_| error(Kernel::NoMemory))?;
+            let found = vfs()?
+                .enter(&who, &dir.at, path.as_str()?, &mut SliceMut(&mut real))
+                .map_err(fs::status)?;
+            if found > room {
+                return Err(fs::status(radix_vfs::Error::NameTooLong));
+            }
+            if !Arch::copy_to_user(address, &real[..found]) {
+                return Err(error(Kernel::BadAddress));
+            }
+            if !super::posix::enter_directory(&user.process, &real[..found]) {
+                return Err(error(Kernel::NoMemory));
+            }
+            let results = directory::EnterResults { len: found as u64 };
+            answer(label, directory::EnterResults::WORDS, results.encode())
         }
         directory::MOUNT => mount_method(user, found, label, args),
         directory::MOUNT_FUSE => mount_fuse_method(user, found, label, args),
