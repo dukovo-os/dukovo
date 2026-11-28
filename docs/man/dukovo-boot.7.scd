@@ -704,6 +704,13 @@ them to *init*, and the kernel does not read them.
 	faster one that goes idle; the boot log says which. For comparing
 	the two, or for a workload that does better spread alike.
 
+*tick*=always
+	Keep the timer's tick on idle CPUs, a hundred times a second, as
+	Linux's *nohz=off* does. By default a CPU that halts with nothing
+	to run pauses its tick until it next has a thread to run, and is
+	woken only by a device, another CPU, or the next sleeper's time.
+	For telling whether a fault comes from the pause.
+
 *epp*=_preference_
 	Ask the CPUs for this energy preference, by Linux's names:
 	*performance*, *balance_performance*, *balance_power* or *power*.

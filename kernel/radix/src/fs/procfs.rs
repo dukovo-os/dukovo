@@ -691,6 +691,7 @@ fn stat(text: &mut Text) -> fmt::Result {
     writeln!(text, "ipis: {}", events.ipis)?;
     writeln!(text, "halts: {}", events.halts)?;
     writeln!(text, "polls: {}", events.polls)?;
+    writeln!(text, "poll_ns: {}", events.poll_ns)?;
     // What leaves a thread's memory out of the CPU's caches and TLB: a
     // switch away from a thread that could have gone on, a move to
     // another CPU, and a page fault, all since boot.

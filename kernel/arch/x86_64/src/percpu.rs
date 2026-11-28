@@ -37,7 +37,7 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ops::Range;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{self, AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use radix_hal::{Fault, MAX_CPUS};
 use radix_sync::{Once, SpinLock, TakeOnce};
@@ -350,6 +350,13 @@ pub struct PerCpu {
     /// Until when the timer also fires every `time::DOORBELL_NS`, since
     /// this CPU answered a TLB shootdown late; 0 when it does not.
     pub doorbell_until_ns: AtomicU64,
+    /// While the CPU is idle with its tick paused (`time::tick_pause`):
+    /// when the tick comes back by itself, `u64::MAX` for not before the
+    /// CPU leaves idle; 0 while the tick is not paused.
+    pub tick_pause_ns: AtomicU64,
+    /// Set while the CPU halts in its idle loop and runs nothing, not
+    /// even an interrupt handler ([`rest`]).
+    pub resting: AtomicBool,
     /// Times the timer was written to arm it.
     pub timer_writes: AtomicU64,
     /// Interprocessor interrupts this CPU sent.
@@ -404,6 +411,8 @@ impl PerCpu {
             deadline_ns: AtomicU64::new(u64::MAX),
             armed_ns: AtomicU64::new(u64::MAX),
             doorbell_until_ns: AtomicU64::new(0),
+            tick_pause_ns: AtomicU64::new(0),
+            resting: AtomicBool::new(false),
             timer_writes: AtomicU64::new(0),
             ipis_sent: AtomicU64::new(0),
             shootdown_wait_ns: AtomicU64::new(0),
@@ -545,11 +554,35 @@ pub fn set_running_word(word: usize) {
     unsafe { asm!("mov gs:[40], {}", in(reg) word, options(nostack, preserves_flags)) };
 }
 
-/// Notes that an interrupt handler starts on this CPU.
+/// Notes that an interrupt handler starts on this CPU, which rests no
+/// longer if it did ([`rest`]).
 #[inline(always)]
 pub fn interrupt_enter() {
     // SAFETY: as in `preempt_disable`, for the `irq_depth` field at 20.
     unsafe { asm!("inc dword ptr gs:[20]", options(nostack)) };
+    // Before the handler reads anything another CPU may have taken away.
+    rest(false);
+}
+
+/// Says that this CPU rests, as its idle loop is about to halt, or that
+/// it rests no longer, as the halt ends. A resting CPU runs nothing and
+/// reads nothing another CPU may free, so whoever waits for every CPU to
+/// let go of something need not wait for it ([`resting`]).
+///
+/// The write is sequentially consistent and a full barrier follows it, as
+/// `radix_hal::CpuLocal::rest` asks. Only this CPU writes the flag, so one
+/// that is as asked already costs a read.
+pub fn rest(resting: bool) {
+    let flag = &current().resting;
+    if flag.load(Ordering::Relaxed) != resting {
+        flag.store(resting, Ordering::SeqCst);
+        atomic::fence(Ordering::SeqCst);
+    }
+}
+
+/// Whether CPU `cpu` rests ([`rest`]).
+pub fn resting(cpu: usize) -> bool {
+    get(cpu).is_some_and(|cpu| cpu.resting.load(Ordering::SeqCst))
 }
 
 /// Notes that an interrupt handler is done, and returns the depth left.

@@ -38,7 +38,16 @@
 //! suggest (`radix_sched::haltpoll`): up to 200 µs in a virtual machine
 //! without MWAIT, where halting and the interrupt that ends it are each an
 //! exit to the hypervisor, and up to 8 µs elsewhere, where leaving MWAIT or
-//! HLT takes a microsecond or two.
+//! HLT takes a microsecond or two. It polls only while another CPU has
+//! work, whose threads are what would wake it (ADR 0813).
+//!
+//! An idle CPU's tick is paused (ADR 0812): it does nothing for a CPU
+//! that runs nothing, and wakes it a hundred times a second. As the CPU
+//! halts, the tick stops at once where its recent halts say this one is
+//! long (`radix_sched::tickless`), else after it has come once more, and
+//! it comes again as the CPU leaves idle. A halted CPU *rests*: grace
+//! periods do not wait for it (`rcu`), and a CPU with a thread waiting
+//! wakes it to pull (`balance::offer`).
 //!
 //! Exited threads are freed by the reaper thread once their CPU has
 //! switched away. The correctness argument, and the TLA+ model of blocking
@@ -67,7 +76,7 @@ use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc};
 use radix_sched::{
     CpuLoad, CpuSet, HaltPoll, LOAD_INTERVAL_NS, LoadAverage, Loads, Place, Resched, Split,
-    Topology, haltpoll, idle,
+    TickPause, Topology, haltpoll, idle,
 };
 use radix_sync::{Mutex, Once, SpinLock, SpinLockGuard};
 
@@ -135,6 +144,11 @@ struct CpuSched {
     /// last told.
     waiting: AtomicBool,
     online: AtomicBool,
+    /// Whether the CPU is in an idle period: its idle thread found
+    /// nothing to run, and polls or halts. Another CPU's poll reads it
+    /// ([`has_work`]). The idle thread writes it beside its writes of the
+    /// request word, which have the line here already.
+    idling: AtomicBool,
     /// How fast the CPU is beside the others, where its processor's cores
     /// differ ([`balance::rank_cores`]); 0 until then, and where they do
     /// not.
@@ -196,9 +210,11 @@ struct CpuSched {
     idle_ns: AtomicU64,
     idle_since: AtomicU64,
     idle_seq: AtomicU64,
-    /// Idle periods that ended while polling, and that halted.
+    /// Idle periods that ended while polling, and that halted, and the
+    /// nanoseconds polled in both.
     polls: AtomicU64,
     halts: AtomicU64,
+    poll_ns: AtomicU64,
     /// Times each idle state was entered, and nanoseconds spent in it
     /// (ADR 0795).
     state_entries: [AtomicU64; idle::MAX_STATES],
@@ -227,6 +243,7 @@ impl CpuSched {
             rt_prio: AtomicU8::new(0),
             waiting: AtomicBool::new(false),
             online: AtomicBool::new(false),
+            idling: AtomicBool::new(false),
             rank: AtomicU8::new(0),
             kind: AtomicU8::new(0),
             move_to: AtomicUsize::new(0),
@@ -245,6 +262,7 @@ impl CpuSched {
             given: SpinLock::new((Split::new(), 0)),
             polls: AtomicU64::new(0),
             halts: AtomicU64::new(0),
+            poll_ns: AtomicU64::new(0),
             state_entries: [const { AtomicU64::new(0) }; idle::MAX_STATES],
             state_ns: [const { AtomicU64::new(0) }; idle::MAX_STATES],
             balance_failures: [const { AtomicU32::new(0) }; 4],
@@ -299,6 +317,8 @@ static TICK_NS: AtomicU64 = AtomicU64::new(10_000_000);
 /// sampled.
 static LOAD: SpinLock<LoadAverage> = SpinLock::new(LoadAverage::new());
 static NEXT_LOAD_NS: AtomicU64 = AtomicU64::new(LOAD_INTERVAL_NS);
+/// Whether idle CPUs pause their ticks ([`pause_idle_ticks`]).
+static TICKS_PAUSE: AtomicBool = AtomicBool::new(false);
 /// Threads waiting for a disk to carry out their request, which the load
 /// averages count as Linux counts them.
 pub static DISK_WAITERS: AtomicU64 = AtomicU64::new(0);
@@ -691,6 +711,13 @@ pub fn set_slice_ns(slice_ns: u64) {
 /// The CPUs that run threads.
 pub fn online() -> CpuSet {
     *ONLINE.lock_irq()
+}
+
+/// Lets idle CPUs pause their ticks from now on (ADR 0812). Boot calls it
+/// once it has seen every CPU's timer tick, which it could not tell of a
+/// CPU that stopped ticking as it went idle.
+pub fn pause_idle_ticks() {
+    TICKS_PAUSE.store(true, Ordering::Relaxed);
 }
 
 /// Whether the scheduler runs.
@@ -2041,6 +2068,7 @@ fn on_timer(tick: bool) {
         balance::tick(cpu, now);
         if !idling {
             balance::move_up(cpu, now);
+            balance::offer(cpu);
         }
         // Where the kernel picks the CPU's speed, from its load (ADR 0796).
         crate::pstate::tick(cpu, now, idle_time_here(slot, now));
@@ -2180,9 +2208,14 @@ fn idle_loop(cpu: usize) -> ! {
     let bounds = if Arch::virtualized() && !mwait { haltpoll::VIRTUAL } else { haltpoll::HARDWARE };
     let mut haltpoll = HaltPoll::within(bounds);
     let mut governor = idle::Governor::new();
+    let mut tick_pause = TickPause::new();
     loop {
         Arch::disable_interrupts();
         rcu::quiescent(cpu);
+        // What the tick does for a CPU that has one: this CPU's may be
+        // paused when it next halts. The kernel log's readers hear of
+        // what was logged (ADR 0811).
+        crate::fs::kmsg::look();
         // Pulling work from other CPUs is for when none is on its way: a
         // thread handed over is not on the run queue yet.
         if !slot.resched.pending() && slot.running.load(Ordering::Relaxed) == 0 {
@@ -2191,20 +2224,34 @@ fn idle_loop(cpu: usize) -> ! {
         // In the same step as the check: a wake-up from another CPU after
         // it is noted.
         if slot.resched.go_idle() || slot.running.load(Ordering::Relaxed) > 0 {
+            leave_idle(cpu, slot);
             reschedule(Switch::Preempt);
             continue;
         }
+        slot.idling.store(true, Ordering::Relaxed);
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
-        if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
+        let limit_ns = haltpoll.limit_ns();
+        // When the poll ended, if a wake-up did not end it.
+        let mut polled_until = None;
+        if poll(cpu, slot, started.saturating_add(limit_ns)) {
             bump(&slot.polls, 1);
         } else {
+            // The tick does nothing for a CPU that runs nothing, and wakes
+            // it: it pauses, at once where the CPU's recent halts say this
+            // one is long, else when it has come once more (ADR 0812).
+            // The boot CPU's comes back to sample the load.
+            if TICKS_PAUSE.load(Ordering::Relaxed) {
+                let until = if cpu == 0 { NEXT_LOAD_NS.load(Ordering::Relaxed) } else { u64::MAX };
+                Arch::tick_pause(until, tick_pause.at_once());
+            }
             // The deepest state that pays before the timer, unless recent
             // periods say something else ends it sooner (ADR 0795).
             let hal_states = Arch::idle_states(cpu);
             let (states, count) = governed(hal_states);
             let states = &states[..count];
             let halted = Arch::now_ns();
+            polled_until = Some(halted);
             let sleep_ns = Arch::next_interrupt_ns().saturating_sub(halted);
             let state = governor.choose(states, |_| true, u64::MAX, sleep_ns);
             // Only a state that watches the word (MWAIT's) ends on the
@@ -2220,18 +2267,41 @@ fn idle_loop(cpu: usize) -> ! {
                 // leave the period open while other threads ran, counting
                 // their time as idle until this CPU next went idle.
                 Arch::preempt_disable();
+                // It rests until an interrupt comes or the halt ends, in
+                // no read section: grace periods that start meanwhile do
+                // not wait for it, and one under way hears from it now
+                // (`rcu`). If that completes it, the CPU rests only once
+                // it has woken who waited, which reads what grace periods
+                // guard; the halt then ends at once if one of them is to
+                // run here.
+                Arch::rest(true);
+                while rcu::pass(cpu) {
+                    Arch::rest(false);
+                    rcu::wake_waiters();
+                    Arch::rest(true);
+                }
                 Arch::idle_until(slot.resched.word(), state);
+                Arch::rest(false);
                 Arch::preempt_enable();
                 let stayed = Arch::now_ns().saturating_sub(halted);
                 bump(&slot.state_entries[state], 1);
                 bump(&slot.state_ns[state], stayed);
                 governor.record(states, stayed, sleep_ns);
+                tick_pause.record(TickPause::is_long(stayed, TICK_NS.load(Ordering::Relaxed)));
             }
             if watches {
                 slot.resched.unwatch();
             }
         }
+        // Before the switch withdraws the request that ended the period:
+        // another CPU's poll then sees the request, or this, at every
+        // moment until the thread asked for is counted (`has_work`).
+        slot.idling.store(false, Ordering::Relaxed);
         let idle = Arch::now_ns().saturating_sub(started);
+        if limit_ns > 0 {
+            let polled = polled_until.map_or(idle, |until| until.saturating_sub(started));
+            bump(&slot.poll_ns, polled);
+        }
         // A reader on another CPU sees the period under way, or ended,
         // never both or neither (`idle_time`).
         // Only this CPU writes them.
@@ -2246,8 +2316,20 @@ fn idle_loop(cpu: usize) -> ! {
         // where the loop's top would go, through checks it would pass and
         // a locked write to the word that the switch's own makes moot.
         if slot.resched.pending() {
+            leave_idle(cpu, slot);
             reschedule(Switch::Preempt);
         }
+    }
+}
+
+/// CPU `cpu`, whose state is `slot`, leaves its idle loop for a switch,
+/// with interrupts masked: a tick it paused comes again. If the tick had
+/// stopped, the CPU's speed is worked out from how busy it is from now
+/// on, not since its last tick.
+fn leave_idle(cpu: usize, slot: &CpuSched) {
+    if Arch::tick_resume() {
+        let now = Arch::now_ns();
+        crate::pstate::restart(cpu, now, idle_time_here(slot, now));
     }
 }
 
@@ -2271,18 +2353,41 @@ pub fn cpu_to_itself() -> bool {
     slot.running.load(Ordering::Relaxed) <= 1 && !slot.resched.pending()
 }
 
-/// Polls for a switch to be asked for until `until`, and returns whether
-/// one was. Wakers see the word watched and skip the interrupt. Interrupts
-/// are on while it polls, so timers and devices are served, but preemption
-/// is off: the idle loop switches, not the interrupt's way out.
-fn poll(slot: &CpuSched, until: u64) -> bool {
+/// Whether CPU `cpu` has work: a thread to run, or one on its way to it.
+/// Its threads are what wakes a thread of another CPU's.
+///
+/// A thread handed to an idle CPU is in its request word, then in
+/// neither the word nor the count while the CPU queues it, then in the
+/// count. A poll on another CPU looks many times in that gap, and one
+/// look that found no work would end it: two threads that wake each other
+/// across CPUs would halt at every turn. So a CPU has work from when its
+/// idle period ends until the next begins, whatever it has counted. The
+/// idle thread ends the period before it withdraws the request, and the
+/// request is read here before the period, so no look falls between the
+/// two.
+fn has_work(cpu: usize) -> bool {
+    let slot = CPUS.get(cpu);
+    slot.online.load(Ordering::Relaxed)
+        && (slot.resched.pending()
+            || !slot.idling.load(Ordering::Relaxed)
+            || slot.running.load(Ordering::Relaxed) > 0)
+}
+
+/// Polls on CPU `cpu`, whose state is `slot`, for a switch to be asked
+/// for, until `until` or until no other CPU has work to wake it from
+/// (ADR 0813), and returns whether one was. Wakers see the word watched
+/// and skip the interrupt. Interrupts are on while it polls, so timers and
+/// devices are served, but preemption is off: the idle loop switches, not
+/// the interrupt's way out.
+fn poll(cpu: usize, slot: &CpuSched, until: u64) -> bool {
     if until <= Arch::now_ns() {
         return false;
     }
     slot.resched.watch();
     Arch::preempt_disable();
     Arch::enable_interrupts();
-    while !slot.resched.pending() && Arch::now_ns() < until {
+    let mut others = haltpoll::Others::of(cpu, Arch::cpu_count().min(MAX_CPUS));
+    while !slot.resched.pending() && others.may_wake(has_work) && Arch::now_ns() < until {
         core::hint::spin_loop();
     }
     Arch::disable_interrupts();
@@ -2426,9 +2531,11 @@ pub struct Counters {
     pub timer_writes: u64,
     /// Interprocessor interrupts sent.
     pub ipis: u64,
-    /// Idle periods that halted, and that a wake-up ended while polling.
+    /// Idle periods that halted, and that a wake-up ended while polling,
+    /// and the nanoseconds idle CPUs polled.
     pub halts: u64,
     pub polls: u64,
+    pub poll_ns: u64,
     /// Nanoseconds TLB shootdowns waited for other CPUs, and the CPUs
     /// they left to the hypervisor instead.
     pub shootdown_wait_ns: u64,
@@ -2447,6 +2554,7 @@ impl Counters {
             ipis: self.ipis.wrapping_sub(earlier.ipis),
             halts: self.halts.wrapping_sub(earlier.halts),
             polls: self.polls.wrapping_sub(earlier.polls),
+            poll_ns: self.poll_ns.wrapping_sub(earlier.poll_ns),
             shootdown_wait_ns: self.shootdown_wait_ns.wrapping_sub(earlier.shootdown_wait_ns),
             shootdowns_left: self.shootdowns_left.wrapping_sub(earlier.shootdowns_left),
         }
@@ -2472,6 +2580,7 @@ pub fn counters() -> Counters {
         total.ipis += Arch::ipis_sent(cpu);
         total.halts += slot.halts.load(Ordering::Relaxed);
         total.polls += slot.polls.load(Ordering::Relaxed);
+        total.poll_ns += slot.poll_ns.load(Ordering::Relaxed);
         let shootdowns = Arch::shootdowns(cpu);
         total.shootdown_wait_ns += shootdowns.wait_ns;
         total.shootdowns_left += shootdowns.left;

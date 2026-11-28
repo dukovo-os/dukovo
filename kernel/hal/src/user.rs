@@ -492,6 +492,21 @@ pub trait UserMode: crate::Threads {
     /// [`UserMode::copy_from_user`]; a page must be writable.
     fn copy_to_user(dst: u64, src: &[u8]) -> bool;
 
+    /// Copies `len` bytes of the running thread's user memory from `src`
+    /// into RAM at `phys`, as [`UserMode::copy_from_user`] into a buffer
+    /// and [`UserMode::write_frames`] from it would, in one copy: a write
+    /// to a file whose pages are frames. `phys..phys + len` must be RAM
+    /// the caller holds. Returns `false` as `copy_from_user` does; the RAM
+    /// then holds what was read before the fault.
+    fn copy_user_to_frames(phys: u64, src: u64, len: usize) -> bool;
+
+    /// Copies `len` bytes of RAM at `phys` into the running thread's user
+    /// memory at `dst`, as [`UserMode::read_frames`] into a buffer and
+    /// [`UserMode::copy_to_user`] from it would, in one copy.
+    /// `phys..phys + len` must be RAM the caller holds. Returns `false` as
+    /// `copy_to_user` does.
+    fn copy_frames_to_user(dst: u64, phys: u64, len: usize) -> bool;
+
     /// `pages` pages of zeroed kernel memory that can be mapped into
     /// address spaces. `None` when memory runs out.
     fn new_shared(pages: usize) -> Option<Self::Shared>;

@@ -236,7 +236,9 @@ _/processes/stat_
 	512-byte sectors; *timer_writes*, *ipis*, *halts* and *polls*, the
 	events that cost an exit to the host under a hypervisor (writes of
 	the timer hardware, interrupts sent to other CPUs, idle periods that
-	halted and idle periods a wake-up ended while the CPU polled);
+	halted and idle periods a wake-up ended while the CPU polled), and
+	*poll_ns*, the nanoseconds idle CPUs polled before they halted or
+	were woken;
 	*preemptions*, *migrations* and *faults*, what leaves a thread's
 	memory out of a CPU's caches and TLB (switches away from a thread
 	that could have gone on, moves of a thread to another CPU than the

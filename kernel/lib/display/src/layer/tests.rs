@@ -561,6 +561,55 @@ fn a_change_shows_at_its_pipes_next_beat() {
     assert_eq!(rig.events(holder), [shown]);
 }
 
+/// The keys of the holders given an event since this was last asked.
+fn posted(rig: &mut Rig) -> Vec<usize> {
+    let mut keys = Vec::new();
+    rig.layer.take_posted(|key| keys.push(key));
+    keys
+}
+
+#[test]
+fn only_the_holders_given_an_event_are_named_for_their_polls() {
+    let mut rig = Rig::firmware();
+    let desktop = rig.in_front();
+    let other = rig.holder(2);
+    assert_eq!(posted(&mut rig), [1], "the front it took");
+    assert!(posted(&mut rig).is_empty(), "named once");
+
+    // A change that shows is its holder's news, and nobody else's.
+    rig.layer.set_time(MS);
+    let rect = Rect::sized(8, 8);
+    assert_eq!(rig.change(desktop, NO_WAIT, 7, &[changed(MAIN, rect)]), DONE);
+    assert!(posted(&mut rig).is_empty(), "nothing to read before the beat");
+    rig.layer.set_time(BEAT);
+    rig.layer.beat(CARD);
+    assert!(rig.layer.take_news());
+    assert_eq!(posted(&mut rig), [1]);
+    assert_eq!(rig.kinds(desktop), [EVENT_SHOWN]);
+    assert!(rig.kinds(other).is_empty());
+
+    // A change that waited and showed gives its caller news and nobody
+    // an event.
+    rig.layer.set_time(BEAT + MS);
+    let Ok(Made::Wait(_)) = rig.change(desktop, 0, 0, &[changed(MAIN, rect)]) else {
+        panic!("the change was to wait for its beat");
+    };
+    rig.layer.set_time(2 * BEAT);
+    rig.layer.beat(CARD);
+    assert!(rig.layer.take_news());
+    assert!(posted(&mut rig).is_empty());
+
+    // The front that passes is news for both.
+    assert_eq!(rig.layer.lend(desktop, other), Ok(()));
+    assert_eq!(posted(&mut rig), [1, 2]);
+    assert_eq!(rig.layer.give_back(other), Ok(()));
+    assert_eq!(posted(&mut rig), [1, 2]);
+    // A holder that ends before it was named has no polls to tell.
+    assert_eq!(rig.layer.lend(desktop, other), Ok(()));
+    rig.layer.end(other);
+    assert_eq!(posted(&mut rig), [1]);
+}
+
 #[test]
 fn a_pipe_takes_one_waiting_change_unless_the_newest_wins() {
     let mut rig = Rig::firmware();

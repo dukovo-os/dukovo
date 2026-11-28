@@ -328,6 +328,11 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     acpi::thermal::start();
     hwmon::find();
     check_timers(online);
+    if flags.value("tick") == Some("always") {
+        info!("Timer: idle CPUs keep their tick (tick=always)");
+    } else {
+        sched::pause_idle_ticks();
+    }
     check_ipis(online);
     usb::wait_for_disks();
     hyperv::wait_for_disks();

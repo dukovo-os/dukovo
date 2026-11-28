@@ -57,6 +57,9 @@ pub struct Holder<R, A: Allocator> {
     pub(crate) wanted: Option<Stored<A>>,
     ring: Ring,
     events: Vec<DisplayEvent, A>,
+    /// Whether an event was added since its file's polls were last told
+    /// ([`Holder::take_posted`]).
+    posted: bool,
     alloc: A,
 }
 
@@ -73,6 +76,7 @@ impl<R: Deref<Target: Picture>, A: Allocator + Copy> Holder<R, A> {
             wanted: None,
             ring: Ring::new(),
             events: Vec::new_in(alloc),
+            posted: false,
             alloc,
         }
     }
@@ -176,6 +180,12 @@ impl<R: Deref<Target: Picture>, A: Allocator + Copy> Holder<R, A> {
             self.grow_events();
         }
         self.ring.push(&mut self.events, event);
+        self.posted = true;
+    }
+
+    /// Whether an event was added since this was last asked.
+    pub(crate) fn take_posted(&mut self) -> bool {
+        core::mem::take(&mut self.posted)
     }
 
     /// Gives the ring four times its storage, if there is memory for it:

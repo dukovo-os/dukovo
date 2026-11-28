@@ -587,6 +587,13 @@ pub trait Out {
     fn fault_in(&mut self, _at: usize, _len: usize) -> Result<()> {
         Ok(())
     }
+    /// Copies `len` bytes of RAM at `phys`, which the caller holds, to
+    /// `at` bytes from its start, in one copy, if it can: a program's
+    /// memory does. `None` if it cannot, which the default says: the
+    /// caller reads the RAM into a buffer and calls [`Out::put`].
+    fn put_frames(&mut self, _at: usize, _phys: u64, _len: usize) -> Option<Result<()>> {
+        None
+    }
     /// Lends its memory to a device to write into, if it can, as
     /// [`radix_block::BlockDevice::read_frames`] takes it: as much of the
     /// `len` bytes from `at` as [`radix_block::MAX_FRAMES`] parts of pages
@@ -626,6 +633,13 @@ pub trait In {
     /// [`Out::fault_in`] does.
     fn fault_in(&self, _at: usize, _len: usize) -> Result<()> {
         Ok(())
+    }
+    /// Copies `len` bytes from `at` bytes from its start into RAM at
+    /// `phys`, which the caller holds, in one copy, if it can, as
+    /// [`Out::put_frames`] does the other way: `None` has the caller call
+    /// [`In::get`] into a buffer and write the RAM from it.
+    fn get_frames(&self, _at: usize, _phys: u64, _len: usize) -> Option<Result<()>> {
+        None
     }
     /// Lends its memory to a device to read from, as [`Out::lend`] does.
     fn lend(

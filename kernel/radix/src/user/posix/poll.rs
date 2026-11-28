@@ -321,7 +321,7 @@ pub(crate) fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
             } else if file.is_crashes() {
                 each(&crate::fs::crashes::POLLED);
             } else if file.is_display() {
-                each(&crate::display::POLLED);
+                each(crate::display::polled(file));
             }
         }
         Object::Notification(notification) => each(notification.polled()),

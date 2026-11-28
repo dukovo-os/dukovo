@@ -106,8 +106,15 @@ static LAYER: Mutex<Layer> = Mutex::new(Layer::new_in(kmalloc()));
 /// wait for. A thread that waits reads it, looks under the lock, and
 /// sleeps until it moves.
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
-/// What polls of the holders' files wait on: one for all of them.
-pub static POLLED: Polled = Polled::new();
+/// How many [`Polled`]s the holders' files share.
+const POLLED_SLOTS: usize = 16;
+/// What polls of the holders' files wait on: each file one of these, by
+/// its description's address ([`polled`]). An event for one holder then
+/// wakes the polls of its own file, and of the few files that share its
+/// slot, which look and sleep again: not every holder's, as when the
+/// consoles' service was switched to for each frame a desktop showed
+/// (ADR 0815).
+static POLLED: [Polled; POLLED_SLOTS] = [const { Polled::new() }; POLLED_SLOTS];
 /// `/devices/display`.
 static DIR: Once<KArc<FixedDir>> = Once::new();
 /// What the input hub was last told of the layer: the holder in front
@@ -408,20 +415,45 @@ impl Card<Picture> for CardRun {
 }
 
 /// Runs `with` on the layer, its lock held, and then wakes whoever waits
-/// for what it changed.
+/// for what it changed: the threads that wait in a request, and the
+/// polls of the holders with a new event to read.
 fn with_layer<R>(with: impl FnOnce(&mut Layer) -> R) -> R {
     let mut layer = LAYER.lock();
     layer.set_time(sched::now_ns());
     let result = with(&mut layer);
     let news = layer.take_news();
+    // The slots of the holders with a new event to read, a bit each.
+    let mut posted = 0u32;
+    if news {
+        layer.take_posted(|key| posted |= 1 << slot_of(key));
+    }
     tell_input(&layer);
     drop(layer);
     if news {
         PROGRESS.fetch_add(1, Ordering::AcqRel);
         wait::wake_all(progress_key());
-        POLLED.changed();
+        for (slot, polled) in POLLED.iter().enumerate() {
+            if posted & (1 << slot) != 0 {
+                polled.changed();
+            }
+        }
     }
     result
+}
+
+/// The slot of [`POLLED`] for the holder whose description is at `key`:
+/// the top bits of the address times the golden ratio's odd number,
+/// since descriptions' addresses differ in few bits, and not in the
+/// lowest.
+fn slot_of(key: usize) -> usize {
+    const _: () = assert!(POLLED_SLOTS.is_power_of_two() && POLLED_SLOTS <= u32::BITS as usize);
+    let hash = (key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    (hash >> (u64::BITS - POLLED_SLOTS.ilog2())) as usize
+}
+
+/// What polls of the holder's file `file` wait on.
+pub fn polled(file: &FileObject) -> &'static Polled {
+    &POLLED[slot_of(file.address())]
 }
 
 /// Tells the input hub who is in front, who has the attention file and

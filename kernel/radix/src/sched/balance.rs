@@ -16,6 +16,12 @@
 //! warm are left where they are, unless attempts at that level have
 //! failed several times in a row.
 //!
+//! An idle CPU's tick is paused (ADR 0812), so once it sleeps it tries no
+//! more by itself. A CPU with a thread waiting ticks, and at each tick
+//! wakes one sleeping CPU that the thread may run on to try again
+//! ([`offer`]), as Linux's busy CPUs kick one idle CPU to balance for the
+//! idle ones.
+//!
 //! On a processor whose cores differ in speed, as Intel's performance and
 //! efficient cores do (ADR 0740), each CPU has a rank ([`rank_cores`]):
 //! a performance core's first hardware thread, then an efficient core,
@@ -31,7 +37,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use radix_hal::{CoreKind, MAX_CPUS, Smp};
+use radix_hal::{CoreKind, CpuLocal, MAX_CPUS, Smp};
 use radix_klog::info;
 use radix_sched::{Level, interval_ticks};
 
@@ -169,6 +175,46 @@ pub(super) fn tick(cpu: usize, now: u64) {
         if ticks.is_multiple_of(interval_ticks(level)) && pull(cpu, level, now) {
             return;
         }
+    }
+}
+
+/// How many ticks apart a CPU with a thread waiting offers it to another
+/// resting CPU than the nearest ([`offer`]): the nearest then has had
+/// more tries in a row than force a warm thread over
+/// ([`FORCE_AFTER`]).
+const OFFER_ROUND: u64 = 8;
+
+/// From the timer tick on CPU `cpu`, with interrupts off: if a thread
+/// waits here, wakes one CPU that rests in its idle loop and may run it,
+/// which then tries to pull as it does before it sleeps ([`idle`]). Its
+/// own tick would have woken it for that before idle CPUs paused theirs
+/// (ADR 0812).
+///
+/// The CPU woken is the next one up from this, most often of the same
+/// package; every [`OFFER_ROUND`]th tick it is the next one up from a
+/// place that moves on by one CPU each such tick. So the same CPU is
+/// asked tick after tick, as often as it takes to pull a thread whose
+/// caches are warm, and one whose own rules keep it from pulling (its
+/// group is as busy as this one's) does not keep the others from being
+/// asked.
+pub(super) fn offer(cpu: usize) {
+    let slot = CPUS.get(cpu);
+    if !slot.waiting.load(Ordering::Relaxed) {
+        return;
+    }
+    let count = Arch::cpu_count().min(MAX_CPUS);
+    let ticks = slot.ticks.load(Ordering::Relaxed);
+    let turn = if ticks.is_multiple_of(OFFER_ROUND) { ticks / OFFER_ROUND } else { 0 };
+    let from = cpu + 1 + (turn % count as u64) as usize;
+    let rests = {
+        let guard = slot.rq.lock();
+        let Some(rq) = guard.as_ref() else { return };
+        (0..count)
+            .map(|step| (from + step) % count)
+            .find(|&other| other != cpu && Arch::resting(other) && rq.waits_for(other))
+    };
+    if let Some(other) = rests {
+        super::kick(other);
     }
 }
 

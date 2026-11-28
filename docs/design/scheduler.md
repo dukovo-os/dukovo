@@ -309,6 +309,38 @@ Under KVM a CPU that answers a TLB shootdown late also has its timer fire
 every 250 µs for a while, so that interrupts a host holds for a running
 virtual CPU are delivered sooner (ADR 0109); those firings are not ticks.
 
+**An idle CPU's tick is paused** (ADR 0812). The tick charges the
+running thread, balances, and lets a grace period pass; for a CPU that
+runs nothing it only wakes it, a hundred times a second, and in a
+virtual machine each time is an exit to the host and back. So the idle
+loop pauses its CPU's tick as it halts (`Timer::tick_pause`), and the
+tick comes again as the CPU leaves idle for a switch
+(`Timer::tick_resume`). The timer's deadline, a sleeper's, interrupts as
+ever. The tick is paused one of two ways. *At once* the timer is written
+for the deadline alone, or disarmed, and written again for the tick as
+the CPU leaves idle: no tick wakes the CPU, for two writes. *Lazily*
+nothing is written: the tick that is armed comes once more and is not
+armed again, so a CPU that leaves idle before it has paid nothing. Two
+writes are two exits in a virtual machine, more than a thread that waits
+50 µs for a disk or for another's answer should pay at each wait, so
+each CPU guesses which kind its next halt is from its last ones
+(`radix_sched::tickless::TickPause`): whether each of the last three
+halts lasted a quarter of a tick or more makes a pattern, and for each
+pattern a two-bit count says whether the halt after it did, as a
+processor guesses a branch from its history. A machine at rest pauses
+at once from each CPU's sixth halt; a window's program and the desktop,
+which take turns in short halts and then wait long for the screen, are
+guessed right once the frame's pattern has come round three times. The
+boot CPU's tick comes back by itself for the load averages' sample,
+every 5 seconds. What else the tick did for an idle CPU is done as
+follows: the kernel log's readers are told as a CPU goes idle
+(ADR 0811); a grace period does not wait for a halted CPU (*RCU* below);
+a CPU with a thread waiting wakes a halted one to pull it (*Placement
+and balancing*); and a CPU whose speed the kernel picks counts how busy
+it is from the moment it leaves idle (`pstate::restart`). The kernel
+flag `tick=always` keeps every CPU's tick, for telling whether a fault
+is the pause's.
+
 ## Blocking and waking
 
 Blocking and waking meet under the thread's lock:
@@ -389,7 +421,16 @@ node, 16 for the machine); an idle CPU tries every level before it
 sleeps. Only threads waiting in a queue move, never the running one, and
 threads that ran within the level's cache window (`is_cache_hot`: 0.5 ms
 in a package, 5 ms across nodes) stay unless attempts at that level have
-failed several times in a row.
+failed several times in a row. A CPU that halts with its tick paused
+(ADR 0812) tries no more by itself, so a CPU with a thread waiting, which
+ticks, wakes one halted CPU that the thread may run on at each tick
+(`balance::offer`), and that one tries as it does before it sleeps: the
+next CPU up from the busy one, tick after tick, so that the failures
+that force a warm thread over add up on one CPU as before; every 8th
+tick the next one up from a place that moves on by one CPU each time,
+so that a CPU whose own group is too busy for it to pull does not keep
+the others from being asked. Linux's busy CPUs kick one idle CPU the
+same way, to balance for all the idle ones.
 
 **Cores of more than one kind.** Intel's processors from the 12th
 generation Core on have performance cores, with two hardware threads
@@ -474,7 +515,13 @@ state* (`sched/rcu.rs`).
 
 A grace period starts with the set of CPUs that run threads and ends when
 each has passed a quiescent state; CPUs that stop running threads drop
-out. `synchronize` waits for the grace period after the one under way, if
+out. A CPU halted in its idle loop *rests* (`CpuLocal::rest`) and is
+left out from the start (ADR 0812): it is in no read section, and with
+its tick paused it would pass no quiescent state until something woke
+it. It says that it rests just before it halts and then passes a
+quiescent state, for a grace period that began before; the interrupt
+that ends its halt ends its rest before the handler runs. A grace period
+that finds every CPU at rest completes at once. `synchronize` waits for the grace period after the one under way, if
 one is: a reader that began after the running one started might still be
 inside. Grace periods run one at a time and are shared, so many callers
 cost one grace period. With one CPU, `synchronize` returns at once: a
@@ -733,9 +780,24 @@ ends, so its CPU cannot switch, idle, or count a tick as quiescent until
 then; `G` waits for that CPU, so `G` ends after the reader. `synchronize`
 waits for a grace period that starts after it was called, so every reader
 that could have seen the old pointer has finished before the writer
-frees it, and a deferred call waits for the same grace period. *(The
-`rcu` self-test: readers on three CPUs never see an object freed too
-early over 100 replacements, nor over 1,000 freed by deferred calls.)*
+frees it, and a deferred call waits for the same grace period. `G` does
+not wait for a CPU that rests when `G` starts. Such a CPU is in no read
+section then: it wrote that it rests with interrupts masked, in the idle
+loop, and from then until its halt it takes only the grace periods' own
+lock (it wakes no one while it rests). A read section it begins later,
+in an interrupt handler, begins after it wrote that it rests no longer
+and passed a full barrier; the writer took its item away and passed a
+full barrier before `G` read that the CPU rests (`rcu::request`). The
+barriers and the two sequentially consistent accesses of the flag are
+in one order: `G`'s read saw the CPU rest, so it comes before the write
+that ended the rest, so the writer's barrier comes before the reader's,
+and the reader's loads see the item taken away. A CPU about to rest
+that `G` did not see rest writes the flag and then reads whether a grace
+period runs, while `G` writes that it runs and then reads the flag, all
+sequentially consistent: since `G` did not see the flag, the CPU sees
+`G`, and passes its quiescent state before it halts. *(The `rcu`
+self-test: readers on three CPUs never see an object freed too early
+over 100 replacements, nor over 1,000 freed by deferred calls.)*
 
 **12. The lock checker finds every cycle it has seen.** The graph has an
 edge for every pair of classes taken nested in one context. A deadlock

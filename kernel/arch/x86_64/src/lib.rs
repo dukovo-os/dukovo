@@ -322,6 +322,14 @@ impl CpuLocal for Arch {
         percpu::interrupted_user()
     }
 
+    fn rest(resting: bool) {
+        percpu::rest(resting);
+    }
+
+    fn resting(cpu: usize) -> bool {
+        percpu::resting(cpu)
+    }
+
     fn running_word() -> usize {
         percpu::running_word()
     }
@@ -429,6 +437,14 @@ impl Timer for Arch {
 
     fn set_deadline(deadline_ns: u64) {
         time::set_deadline(deadline_ns);
+    }
+
+    fn tick_pause(until_ns: u64, at_once: bool) {
+        time::tick_pause(until_ns, at_once);
+    }
+
+    fn tick_resume() -> bool {
+        time::tick_resume()
     }
 
     fn next_interrupt_ns() -> u64 {
@@ -1144,6 +1160,14 @@ impl UserMode for Arch {
 
     fn copy_to_user(dst: u64, src: &[u8]) -> bool {
         user::copy_to_user(dst, src)
+    }
+
+    fn copy_user_to_frames(phys: u64, src: u64, len: usize) -> bool {
+        user::copy_user_to_frames(phys, src, len)
+    }
+
+    fn copy_frames_to_user(dst: u64, phys: u64, len: usize) -> bool {
+        user::copy_frames_to_user(dst, phys, len)
     }
 
     fn new_shared(pages: usize) -> Option<Self::Shared> {
