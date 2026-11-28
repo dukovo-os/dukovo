@@ -181,8 +181,10 @@ pub enum Fills {
     Nothing,
     /// A zone.
     Zone(Zone),
-    /// All of it.
+    /// All of it, under a title bar: the window is maximized.
     All,
+    /// All of it, with no frame: the window is full screen.
+    Screen,
 }
 
 /// An arrow key.
@@ -213,9 +215,13 @@ pub enum Then {
 /// right snap it to that side, a part of a side to the same part of
 /// the other. Up and down go through a side's parts: from a half to a
 /// quarter, from a quarter back to the half; up from the top is the
-/// whole screen, and down from the bottom is the window as it was.
+/// whole screen, and down from the bottom is the window as it was. A
+/// full-screen window is as it was before at the down arrow, and
+/// stays at the others.
 pub fn after(now: Fills, arrow: Arrow) -> Then {
     let to = match (now, arrow) {
+        (Fills::Screen, Arrow::Down) => return Then::Fill(Fills::Nothing),
+        (Fills::Screen, _) => return Then::Stay,
         (Fills::Zone(Zone::Quarter(_, level)), Arrow::Left) => Zone::Quarter(Side::Left, level),
         (Fills::Zone(Zone::Quarter(_, level)), Arrow::Right) => Zone::Quarter(Side::Right, level),
         (_, Arrow::Left) => Zone::Half(Side::Left),
@@ -382,6 +388,10 @@ mod tests {
         assert_eq!(after(Fills::Nothing, Arrow::Down), Then::Minimize);
         assert_eq!(after(Fills::All, Arrow::Up), Then::Stay);
         assert_eq!(after(Fills::All, Arrow::Down), Then::Fill(Fills::Nothing));
+        assert_eq!(after(Fills::Screen, Arrow::Down), Then::Fill(Fills::Nothing));
+        for arrow in [Arrow::Left, Arrow::Right, Arrow::Up] {
+            assert_eq!(after(Fills::Screen, arrow), Then::Stay);
+        }
     }
 
     #[test]

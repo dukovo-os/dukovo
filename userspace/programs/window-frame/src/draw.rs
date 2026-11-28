@@ -186,7 +186,7 @@ fn button(
     let strokes: &[Stroke] = match (button, layout.shape) {
         (Button::Minimize, _) => &MINIMIZE,
         (Button::Maximize, Shape::Normal) => &MAXIMIZE,
-        (Button::Maximize, Shape::Maximized) => &RESTORE,
+        (Button::Maximize, Shape::Maximized | Shape::Full) => &RESTORE,
         (Button::Close, _) => &CLOSE,
     };
     let side = theme.mark_side as f32;
@@ -198,12 +198,14 @@ fn button(
 }
 
 /// Draws the frame of `layout` as `look` has it, where it lies in
-/// `canvas`. What the canvas held is gone.
+/// `canvas`. What the canvas held is gone. A full-screen window has no
+/// frame: nothing is drawn.
 pub fn frame(theme: &Theme, layout: &Layout, look: &Look<'_>, canvas: &mut Canvas<'_>) {
     canvas.clear();
     let tone = theme.tone(look.active);
     let around = layout.frame;
     match layout.shape {
+        Shape::Full => return,
         Shape::Normal => {
             let radius = theme.radius;
             let shadow = around.moved(0, tone.shadow_rows);

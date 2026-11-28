@@ -15,6 +15,9 @@
 //! content never differ on the screen. A resize asks for one size at a
 //! time ([`resize`]).
 //!
+//! A window a program asks to be full screen fills its screen with no
+//! frame (ADR 0728), and is as it was before when it is that no more.
+//!
 //! A window's title bar is windowd's whole or shared with the window's
 //! program ([`crate::titlebar`]). A window keeps its frame's box when
 //! the bar changes hands: its own surface is the bar's rows higher
@@ -118,6 +121,21 @@ pub struct Restore {
     /// chooses.
     frame: Option<Size<i32, Logical>>,
 }
+
+/// Where a full-screen window was before, with a frame's sides, to be
+/// there again.
+#[derive(Debug, Clone, Copy)]
+struct Back {
+    /// The corner of the frame's box.
+    at: Point<i32, Logical>,
+    /// The size of the frame's box.
+    frame: Size<i32, Logical>,
+}
+
+/// The screen a program named for a window to be full screen on when it
+/// first shows, kept with the window.
+#[derive(Debug, Default)]
+struct FullOn(std::cell::RefCell<Option<String>>);
 
 /// The splits of a screen's desktop that a drag of an edge moves: the
 /// edge of a snapped window where it meets the other zones.
@@ -259,6 +277,11 @@ pub struct Framed {
     fills: Rectangle<i32, Logical>,
     /// The zone of its screen the window is snapped to.
     zone: Option<Zone>,
+    /// Whether its program was asked to draw it full screen, and where
+    /// a window that is neither maximized nor snapped goes when it is
+    /// that no more.
+    full: bool,
+    back: Option<Back>,
     /// The resize that is under way.
     resize: Option<Resize>,
     /// Where it goes back to when a screen that went is there again.
@@ -329,21 +352,52 @@ impl Framed {
     }
 
     /// The parts of the desktop the window's own surface shows in: the
-    /// content, and the region of a shared title bar.
+    /// content, and the region of a shared title bar. A full-screen
+    /// window shows on its screen alone, whatever size its program
+    /// drew.
     pub fn shows(&self) -> impl Iterator<Item = Rectangle<i32, Logical>> {
         let parts = [Some(self.layout.content), self.layout.region];
-        parts.into_iter().flatten().map(|part| {
-            Rectangle::new(self.at + Point::from((part.x, part.y)), (part.w, part.h).into())
+        let within = (self.layout.shape == Shape::Full).then_some(self.fills);
+        parts.into_iter().flatten().filter_map(move |part| {
+            let part =
+                Rectangle::new(self.at + Point::from((part.x, part.y)), (part.w, part.h).into());
+            within.map_or(Some(part), |within| part.intersection(within))
         })
+    }
+
+    /// The screen a full-screen window fills, where its program drew
+    /// it smaller than that: the rest of the screen is black.
+    pub fn around(&self) -> Option<(&Id, Rectangle<i32, Logical>)> {
+        let short = self.layout.shape == Shape::Full && !self.frame().contains_rect(self.fills);
+        short.then_some((&self.ground, self.fills))
     }
 
     /// What the window fills of its screen, or is asked to.
     pub fn fills(&self) -> Fills {
         match self.zone {
+            _ if self.full => Fills::Screen,
             Some(zone) => Fills::Zone(zone),
             None if self.maximized() => Fills::All,
             None => Fills::Nothing,
         }
+    }
+
+    /// The shape of `window` as its program has drawn it.
+    fn drawn_shape(window: &Window) -> Shape {
+        let states = window.toplevel().map(|toplevel| toplevel.current_state().states);
+        match states {
+            Some(states) if states.contains(State::Fullscreen) => Shape::Full,
+            Some(states) if states.contains(State::Maximized) => Shape::Maximized,
+            _ => Shape::Normal,
+        }
+    }
+
+    /// Where the corner of a full-screen window's box is: its screen's,
+    /// or for one its program drew smaller than the screen, where the
+    /// window is in the screen's middle.
+    fn full_at(&self) -> Point<i32, Logical> {
+        let spare = self.fills.size - self.frame().size;
+        self.fills.loc + Point::from((spare.w.max(0) / 2, spare.h.max(0) / 2))
     }
 
     /// Whether the program was asked to draw the window maximized, or
@@ -726,6 +780,8 @@ impl Windows {
         let framed = &mut self.framed[index];
         if framed.maximized() {
             framed.restore.at = at;
+        } else if let (true, Some(back), Some(at)) = (framed.full, &mut framed.back, at) {
+            back.at = at;
         } else if let Some(at) = at {
             if let Some(resize) = &mut framed.resize {
                 resize.moved(at - framed.at);
@@ -750,7 +806,11 @@ impl Windows {
             self.place(index, Some(at));
         } else {
             framed.restore.at = framed.restore.at.map(|at| layout::across(from, to, at));
+            if let Some(back) = &mut framed.back {
+                back.at = layout::across(from, to, back.at);
+            }
             let (fills, shape) = match zone {
+                _ if framed.full => (to, Shape::Full),
                 Some(area) => (area, Shape::Normal),
                 None => (to, Shape::Maximized),
             };
@@ -808,9 +868,14 @@ impl Windows {
         }
     }
 
-    /// Has the window at `index` fill `fills` of `screen`.
+    /// Has the window at `index` fill `fills` of `screen`. A window
+    /// that is full screen stays so unless it is to be as it was.
     fn fill_on(&mut self, index: usize, screen: &Screen, fills: Fills) {
+        if self.framed[index].full && fills != Fills::Nothing {
+            return;
+        }
         match fills {
+            Fills::Screen => self.full_on(index, screen),
             Fills::All => self.maximize_on(index, screen.1),
             Fills::Zone(zone) => self.snap_on(index, screen, zone),
             Fills::Nothing => {
@@ -878,7 +943,7 @@ impl Windows {
         let name = screen.name();
         let filled = match fills {
             Fills::Nothing => return None,
-            Fills::All => area,
+            Fills::All | Fills::Screen => area,
             Fills::Zone(zone) => self.splits_of(&name, self.row(&name).shown()).area(area, zone),
         };
         Some((fills, filled))
@@ -897,11 +962,11 @@ impl Windows {
         let (name, desk) = (&snapped.screen, snapped.desk);
         let area = self.screens().into_iter().find(|(other, _)| other == name)?.1;
         let here = |framed: &&Framed| framed.screen == *name && framed.desk == desk;
-        let taken = |framed: &Framed| framed.zone.filter(|_| !framed.minimized);
+        let taken = |framed: &Framed| framed.zone.filter(|_| !framed.minimized && !framed.full);
         let zones: Vec<Zone> = self.framed.iter().filter(here).filter_map(taken).collect();
         let zone = zones::free(&zones)?;
         let mut others = self.by_use();
-        others.retain(|framed| here(framed) && taken(framed).is_none());
+        others.retain(|framed| here(framed) && taken(framed).is_none() && !framed.full);
         let area = self.splits_of(name, desk).area(area, zone);
         (!others.is_empty()).then_some((zone, area, others))
     }
@@ -945,7 +1010,7 @@ impl Windows {
     /// snapped window there with a side along them is resized, paced by
     /// its program as a resize is, until [`Windows::split_done`].
     pub fn split_from(&mut self, window: &Window, edge: Edge) -> Option<Split> {
-        let framed = self.framed(window)?;
+        let framed = self.framed(window).filter(|framed| !framed.full)?;
         let zone = framed.zone.filter(|zone| zone.meets_at(edge))?;
         let (screen, desk) = (framed.screen.clone(), framed.desk);
         let area = self.screens().into_iter().find(|(name, _)| *name == screen)?.1;
@@ -1139,18 +1204,21 @@ impl Windows {
     /// A program drew `window` for the first time: it shows on the
     /// screen the pointer, at `pointer`, is on, in front.
     pub fn show(&mut self, window: Window, pointer: Point<f64, Logical>) {
-        let maximized = window
-            .toplevel()
-            .is_some_and(|toplevel| toplevel.current_state().states.contains(State::Maximized));
-        let shape = if maximized { Shape::Maximized } else { Shape::Normal };
+        let shape = Framed::drawn_shape(&window);
         let layout = Windows::layout_of(&self.theme, &window, shape);
-        let screen = self.screen_at(pointer);
+        // A window that first shows full screen does on the screen its
+        // program named, if it named one that is there.
+        let named = window.user_data().get::<FullOn>().and_then(|on| on.0.take());
+        let named = named.filter(|_| shape == Shape::Full);
+        let named = named.and_then(|name| self.screens().into_iter().find(|(on, _)| *on == name));
+        let (on, screen) = named.unwrap_or_else(|| {
+            (self.screen_name_at(pointer).unwrap_or_default(), self.screen_at(pointer))
+        });
         let at = match shape {
-            Shape::Maximized => screen.loc,
+            Shape::Maximized | Shape::Full => screen.loc,
             Shape::Normal => self.first_place(screen, (layout.frame.w, layout.frame.h).into()),
         };
         let title = title_of(&window);
-        let on = self.screen_name_at(pointer).unwrap_or_default();
         let desk = self.row(&on).shown();
         self.framed.push(Framed {
             window: window.clone(),
@@ -1163,6 +1231,8 @@ impl Windows {
             restore: Restore::default(),
             fills: screen,
             zone: None,
+            full: shape == Shape::Full,
+            back: None,
             resize: None,
             home: None,
             ground: Id::new(),
@@ -1173,6 +1243,11 @@ impl Windows {
         let within = Point::from((layout.surface.x, layout.surface.y));
         self.tell(&window);
         self.space.map_element(window, at + within, false);
+        if shape == Shape::Full {
+            let last = self.framed.len() - 1;
+            self.framed[last].at = self.framed[last].full_at();
+            self.put(last);
+        }
     }
 
     /// `window` is gone.
@@ -1199,17 +1274,26 @@ impl Windows {
         self.tell(window);
         let framed = &mut self.framed[index];
         let Some(toplevel) = framed.window.toplevel().cloned() else { return false };
-        let drawn = toplevel.current_state().states.contains(State::Maximized);
-        let shape = if drawn { Shape::Maximized } else { Shape::Normal };
+        let shape = Framed::drawn_shape(window);
         let before = framed.layout;
         framed.layout = Windows::layout_of(&theme, window, shape);
         if framed.layout == before && framed.resize.is_none() {
             return true;
         }
         let frame = Size::from((framed.layout.frame.w, framed.layout.frame.h));
+        // A window that is full screen no more is where it was before,
+        // which only one that is neither maximized nor snapped has to
+        // be told here.
+        let back = if shape == Shape::Full { None } else { framed.back.take() };
         match (before.shape, shape) {
+            (_, Shape::Full) => framed.at = framed.full_at(),
             (_, Shape::Maximized) => framed.at = framed.fills.loc,
             (_, Shape::Normal) if framed.zone.is_some() => framed.at = framed.fills.loc,
+            (Shape::Full, Shape::Normal) => {
+                let fills = framed.fills;
+                let at = back.map_or_else(|| self.first_place(fills, frame), |back| back.at);
+                self.framed[index].at = at;
+            }
             (Shape::Maximized, Shape::Normal) => {
                 let (fills, restore) = (framed.fills, core::mem::take(&mut framed.restore));
                 let at = restore.at.unwrap_or_else(|| self.first_place(fills, frame));
@@ -1343,6 +1427,15 @@ impl Windows {
         if asked && framed.fills == fills {
             return;
         }
+        if framed.full {
+            // It is maximized once it is full screen no more.
+            framed.zone = None;
+            toplevel.with_pending_state(|state| {
+                state.states.set(State::Maximized);
+                tiled(&mut state.states, None);
+            });
+            return;
+        }
         // A snapped window goes back to where it was before the snap.
         if framed.layout.shape == Shape::Normal && framed.zone.is_none() {
             framed.restore = Restore { at: Some(framed.at), frame: Some(framed.frame().size) };
@@ -1375,6 +1468,9 @@ impl Windows {
             return;
         };
         let framed = &mut self.framed[index];
+        if framed.full {
+            return self.unfull(window);
+        }
         if framed.fills() == Fills::Nothing {
             return;
         }
@@ -1396,9 +1492,119 @@ impl Windows {
         }
     }
 
+    /// The program of `window` asks for the window to be maximized no
+    /// more. A full-screen window stays that, and is not maximized
+    /// once it is full screen no more.
+    pub fn unmaximize(&mut self, window: &Window) {
+        match self.framed_mut(window) {
+            Some(framed) if framed.full => {
+                if let Some(toplevel) = framed.window.toplevel() {
+                    toplevel.with_pending_state(|state| state.states.unset(State::Maximized));
+                }
+            }
+            Some(framed) if framed.maximized() => self.restore(window),
+            _ => {}
+        }
+    }
+
+    /// The program of `window` names `screen`, or none, for the window
+    /// to be full screen on when it first shows.
+    pub fn full_when_shown(window: &Window, screen: Option<String>) {
+        window.user_data().insert_if_missing(FullOn::default);
+        if let Some(on) = window.user_data().get::<FullOn>() {
+            on.0.replace(screen);
+        }
+    }
+
+    /// What `window` fills of its screen, or is asked to.
+    pub fn fills(&self, window: &Window) -> Fills {
+        self.framed(window).map_or(Fills::Nothing, Framed::fills)
+    }
+
+    /// Asks the program of `window` to draw it full screen: to fill the
+    /// screen named `screen` if that is there, and the one most of the
+    /// window is on otherwise, with no frame (ADR 0728).
+    pub fn full(&mut self, window: &Window, screen: Option<&str>) {
+        let Some(index) = self.framed.iter().position(|framed| framed.window == *window) else {
+            return;
+        };
+        let screens = self.screens();
+        let named = screen.and_then(|name| screens.iter().find(|(on, _)| on == name));
+        let on = named.or_else(|| most_of(&screens, Windows::on(&self.framed[index])));
+        if let Some(screen) = on {
+            self.full_on(index, screen);
+        }
+    }
+
+    /// Asks the program of the window at `index` to draw it full
+    /// screen on `screen`.
+    fn full_on(&mut self, index: usize, (name, area): &Screen) {
+        let desk = self.row(name).shown();
+        let framed = &mut self.framed[index];
+        let Some(toplevel) = framed.window.toplevel() else { return };
+        if framed.full && framed.fills == *area {
+            return;
+        }
+        if !framed.full && framed.layout.shape == Shape::Normal && framed.zone.is_none() {
+            framed.back = Some(Back { at: framed.at, frame: framed.frame().size });
+        }
+        if framed.screen != *name {
+            (framed.screen, framed.desk) = (name.clone(), desk);
+        }
+        (framed.full, framed.fills, framed.resize) = (true, *area, None);
+        let size = area.size;
+        toplevel.with_pending_state(|state| {
+            state.states.set(State::Fullscreen);
+            state.states.unset(State::Resizing);
+            state.size = Some(size);
+        });
+        toplevel.send_pending_configure();
+        // One that is drawn full screen already goes to another screen
+        // at once.
+        if framed.layout.shape == Shape::Full {
+            framed.at = framed.full_at();
+            self.put(index);
+        }
+    }
+
+    /// Asks the program of `window`, which is full screen, to draw it
+    /// as it was before: maximized, snapped, or where it was at the
+    /// size it had.
+    pub fn unfull(&mut self, window: &Window) {
+        let theme = self.theme;
+        let Some(index) = self.framed.iter().position(|framed| framed.window == *window) else {
+            return;
+        };
+        let framed = &self.framed[index];
+        let Some(toplevel) = framed.window.toplevel().filter(|_| framed.full) else { return };
+        let screen = framed.fills;
+        let zone = framed.zone.map(|zone| self.zone_area(index, screen, zone));
+        let maximized =
+            toplevel.with_pending_state(|state| state.states.contains(State::Maximized));
+        let bar = TitleBar::of(window).told();
+        let framed = &mut self.framed[index];
+        let size = match (maximized, zone, framed.back) {
+            (true, _, _) => Some(inside(&theme, Shape::Maximized, bar, screen.size)),
+            (false, Some(area), _) => {
+                framed.fills = area;
+                Some(inside(&theme, Shape::Normal, bar, area.size))
+            }
+            (false, None, Some(back)) => Some(inside(&theme, Shape::Normal, bar, back.frame)),
+            (false, None, None) => None,
+        };
+        framed.full = false;
+        if let Some(toplevel) = framed.window.toplevel() {
+            toplevel.with_pending_state(|state| {
+                state.states.unset(State::Fullscreen);
+                state.size = size;
+            });
+            toplevel.send_pending_configure();
+        }
+    }
+
     /// The width of the frame of `window`, which is maximized or
-    /// snapped, once it
-    /// is restored, if its program does not choose it.
+    /// snapped, once it is restored, if its program does not choose
+    /// it.
     pub fn restored_width(&self, window: &Window) -> Option<i32> {
         Some(self.framed(window)?.restore.frame?.w)
     }
@@ -1427,7 +1633,7 @@ impl Windows {
     /// as a window the person put there.
     pub fn resize_from(&mut self, window: &Window, edge: Edge) -> bool {
         let Some(framed) = self.framed_mut(window) else { return false };
-        if framed.maximized() || framed.minimized {
+        if framed.maximized() || framed.minimized || framed.full {
             return false;
         }
         if framed.zone.take().is_some() {

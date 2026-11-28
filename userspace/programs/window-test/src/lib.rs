@@ -108,6 +108,9 @@ pub enum Heard {
         /// Whether the window is to be drawn maximized.
         maximized: bool,
     },
+    /// The window server asked for the window to be drawn full screen,
+    /// or no longer. The size to draw it at follows ([`Heard::Size`]).
+    Full(bool),
     /// The popup is done: the person went elsewhere.
     PopupDone,
     /// The window server said who draws the window's frame: itself, or
@@ -196,6 +199,11 @@ struct Told {
     pointer: Option<wl_pointer::WlPointer>,
     /// Each screen, by the number of its global.
     screens: Vec<(u32, Screen)>,
+    /// Each screen's object, by the same number.
+    outputs: Vec<(u32, wl_output::WlOutput)>,
+    /// Whether the window server last asked for the window to be full
+    /// screen.
+    full: bool,
     /// The bytes of the keyboard's layout, once it came.
     layout_bytes: Option<u32>,
     /// How long a held key waits and how often it repeats, once told.
@@ -775,6 +783,35 @@ impl Client {
         self.sent()
     }
 
+    /// Asks the window server to show the window full screen, on the
+    /// screen named `on` or on the one the window server chooses, or
+    /// for `full` false to show it as it was before. The window server
+    /// then says so ([`Heard::Full`]) and asks for a size
+    /// ([`Heard::Size`]). The window may be one that is open and not
+    /// yet drawn.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window or no screen of that name, or the
+    /// window server is gone.
+    pub fn full(&mut self, full: bool, on: Option<&str>) -> Outcome {
+        let toplevel = &self.window()?.toplevel;
+        let screen = match on {
+            None => None,
+            Some(name) => {
+                let named = self.told.screens.iter().find(|(_, screen)| screen.name == name);
+                let global = named.ok_or("no screen of that name")?.0;
+                self.told.outputs.iter().find(|(other, _)| *other == global).map(|found| &found.1)
+            }
+        };
+        if full {
+            toplevel.set_fullscreen(screen);
+        } else {
+            toplevel.unset_fullscreen();
+        }
+        self.sent()
+    }
+
     /// Asks the window server to minimize the window.
     ///
     /// # Errors
@@ -1104,13 +1141,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                     told.fractions = Some(registry.bind(name, 1, handle, ()));
                 }
                 "wl_output" => {
-                    let _: wl_output::WlOutput = registry.bind(name, version.min(4), handle, name);
+                    told.outputs.push((name, registry.bind(name, version.min(4), handle, name)));
                     told.screens.push((name, Screen::default()));
                 }
                 _ => {}
             },
             wl_registry::Event::GlobalRemove { name } => {
                 told.screens.retain(|(screen, _)| *screen != name);
+                told.outputs.retain(|(screen, _)| *screen != name);
             }
             _ => {}
         }
@@ -1300,6 +1338,11 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Told {
                 if active != told.active {
                     told.active = active;
                     told.heard.push_back(Heard::Active(active));
+                }
+                let full = has(xdg_toplevel::State::Fullscreen);
+                if full != told.full {
+                    told.full = full;
+                    told.heard.push_back(Heard::Full(full));
                 }
                 let asked = (width, height, has(xdg_toplevel::State::Maximized));
                 if asked != told.asked {

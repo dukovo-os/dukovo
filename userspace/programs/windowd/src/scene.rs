@@ -370,7 +370,15 @@ fn window(
     );
     let cut = whole.into_iter().filter_map(|surface| Cut::of(surface, parts));
     pieces.extend(cut.map(Piece::Window));
-    if onto.zoom.fract() != 0.0 {
+    if let Some((id, around)) = framed.around() {
+        pieces.push(Piece::Solid(SolidColorRenderElement::new(
+            id.clone(),
+            onto.rect(around),
+            CommitCounter::default(),
+            solid(Colour::BLACK),
+            Kind::Unspecified,
+        )));
+    } else if onto.zoom.fract() != 0.0 && framed.layout().bar_rows() > 0 {
         let (id, ground) = framed.ground();
         pieces.push(Piece::Solid(SolidColorRenderElement::new(
             id.clone(),

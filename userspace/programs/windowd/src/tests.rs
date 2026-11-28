@@ -6,6 +6,7 @@
 //! desktop told of each thing as `main` tells it.
 
 mod desks;
+mod full;
 mod laid;
 mod managed;
 mod rig;

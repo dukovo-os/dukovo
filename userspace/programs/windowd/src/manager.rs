@@ -628,6 +628,8 @@ impl Manager {
             return;
         }
         match asked {
+            // A full-screen window has no place to be moved to.
+            Asked::Move(window, _) if shell.windows.fills(&window) == Fills::Screen => {}
             Asked::Move(window, code) => self.hold = moved(window, code, at),
             Asked::Resize(window, edge, code) => self.by_edge(shell, window, edge, code, at),
             Asked::Menu(window, at) => self.menu(shell, window, at),
@@ -695,7 +697,7 @@ impl Manager {
                     let off = match item {
                         Item::Restore => fills == Fills::Nothing,
                         Item::Move | Item::Size => fills != Fills::Nothing,
-                        Item::Maximize => fills == Fills::All,
+                        Item::Maximize => matches!(fills, Fills::All | Fills::Screen),
                         Item::Minimize | Item::FullBar | Item::Close => false,
                     };
                     let ticked = *item == Item::FullBar && full == Some(true);

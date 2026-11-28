@@ -157,7 +157,12 @@ impl Shell {
         let mut seats = SeatState::new();
         let mut seat = seats.new_wl_seat(display, "seat0");
         seat.add_pointer();
-        let does = [WmCapabilities::WindowMenu, WmCapabilities::Maximize, WmCapabilities::Minimize];
+        let does = [
+            WmCapabilities::WindowMenu,
+            WmCapabilities::Maximize,
+            WmCapabilities::Minimize,
+            WmCapabilities::Fullscreen,
+        ];
         Shell {
             compositor: CompositorState::new_v6::<Shell>(display),
             xdg: XdgShellState::new_with_capabilities::<Shell>(display, does),
@@ -631,7 +636,7 @@ impl XdgShellHandler for Shell {
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         match self.window(&surface) {
-            Some(window) => self.windows.restore(&window),
+            Some(window) => self.windows.unmaximize(&window),
             None => surface.with_pending_state(|state| {
                 state.states.unset(State::Maximized);
                 state.size = None;
@@ -642,10 +647,47 @@ impl XdgShellHandler for Shell {
         }
     }
 
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        let named = output.as_ref().and_then(Output::from_resource).map(|screen| screen.name());
+        match self.window(&surface) {
+            Some(window) => self.windows.full(&window, named.as_deref()),
+            // A window that has not shown yet shows full screen, on the
+            // screen its program named or the one the pointer is on.
+            None => {
+                let screens = self.windows.screens();
+                let on = named.as_ref().and_then(|name| {
+                    screens.iter().find(|(screen, _)| screen == name).map(|(_, area)| *area)
+                });
+                let size = on.unwrap_or_else(|| self.windows.screen_at(self.pointer_at())).size;
+                if let Some(window) = self.window_with(surface.wl_surface()) {
+                    Windows::full_when_shown(&window, named);
+                }
+                surface.with_pending_state(|state| {
+                    state.states.set(State::Fullscreen);
+                    state.size = Some(size);
+                });
+            }
+        }
         if surface.is_initial_configure_sent() {
             surface.send_configure();
         }
+        self.changed.windows = true;
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        match self.window(&surface) {
+            Some(window) => self.windows.unfull(&window),
+            None => surface.with_pending_state(|state| {
+                state.states.unset(State::Fullscreen);
+                if !state.states.contains(State::Maximized) {
+                    state.size = None;
+                }
+            }),
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+        self.changed.windows = true;
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
