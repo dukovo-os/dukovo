@@ -17,6 +17,7 @@
 use std::io;
 use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use display::Holder;
@@ -37,6 +38,7 @@ use crate::curve::Curve;
 use crate::keys::{self, Ask, Chord};
 use crate::link::Link;
 use crate::manager::Manager;
+use crate::places::Places;
 use crate::pointer::{Arrows, Picture, Shown};
 use crate::scene::Scene;
 use crate::screens::{Failed, Pointing, Screens, Told};
@@ -194,8 +196,26 @@ where
         Ok(())
     }
 
-    /// What of the settings could not be followed since this was last
-    /// asked, a line for each thing.
+    /// Keeps where the windows their programs name are in `file`, and
+    /// shows those that were there before where the file has them
+    /// ([`crate::places`]).
+    pub fn keep_places(&mut self, file: PathBuf) {
+        let (places, wrong) = Places::read(file);
+        self.shell.places = places;
+        self.said.extend(wrong.map(|wrong| format!("the windows' places: {wrong}")));
+    }
+
+    /// Writes where the windows are to the file they are kept in, if
+    /// they changed since it was written.
+    pub fn write_places(&mut self) {
+        if let Err(why) = self.shell.places.write() {
+            self.said.push(format!("the windows' places are not kept: {why}"));
+        }
+    }
+
+    /// What of the settings could not be followed, and what else the
+    /// person is to read, since this was last asked: a line for each
+    /// thing.
     pub fn said(&mut self) -> Vec<String> {
         core::mem::take(&mut self.said)
     }
@@ -285,6 +305,8 @@ where
         let changed = core::mem::take(&mut self.shell.changed);
         if changed.windows {
             self.find_under();
+            let placed = self.shell.windows.placed();
+            self.shell.places.note(placed);
         }
         let stale = self.look() | changed.windows | changed.pointer;
         if changed.pointer {
@@ -647,15 +669,18 @@ where
         self.settle();
     }
 
-    /// When the next frame is to be drawn, or the pointer has rested
-    /// long enough on a button for what that shows, on the monotonic
-    /// clock, if either is due.
+    /// When the next frame is to be drawn, the pointer has rested long
+    /// enough on a button for what that shows, or the windows have
+    /// stayed long enough for their places to be written, on the
+    /// monotonic clock, if any is due.
     pub fn due(&self, now_ns: u64) -> Option<u64> {
-        [self.screens.due(now_ns), self.manager.due()].into_iter().flatten().min()
+        let due = [self.screens.due(now_ns), self.manager.due(), self.shell.places.due(now_ns)];
+        due.into_iter().flatten().min()
     }
 
     /// Draws the frames that are due at `now_ns`, after what a pointer
-    /// that has rested until then shows.
+    /// that has rested until then shows, and writes the windows'
+    /// places if they have stayed long enough.
     ///
     /// A frame that cannot be drawn because a program's pixels cannot
     /// be read, as when the program cut their file short, is drawn anew
@@ -668,6 +693,9 @@ where
     pub fn draw(&mut self, now_ns: u64) -> Result<(), Failed> {
         if self.manager.rested(&mut self.shell, now_ns) {
             self.settle();
+        }
+        if self.shell.places.due(now_ns).is_some_and(|due| due <= now_ns) {
+            self.write_places();
         }
         let Some(pointer) = self.shell.seat.get_pointer() else { return Ok(()) };
         let shown = match self.own {

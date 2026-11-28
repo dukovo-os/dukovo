@@ -89,6 +89,7 @@ use window_frame::{Bar, Edge};
 use crate::clients::Peer;
 use crate::constraints::{self, Held};
 use crate::manager::Asked;
+use crate::places::{self, Key, Places};
 use crate::settings::TitleBars;
 use crate::shm::Files;
 use crate::stamps::Stamps;
@@ -128,8 +129,10 @@ pub struct Shell {
     /// Kept for as long as programs may ask to hold the pointer, and
     /// for a mouse's own motion.
     _constraints: constraints::Offered,
-    /// Kept for as long as programs may ask for a part of a title bar.
+    /// Kept for as long as programs may ask for a part of a title bar,
+    /// and name their windows.
     _title_bars: GlobalId,
+    _session: GlobalId,
     /// Where events of windowd's own protocols are sent from.
     display: DisplayHandle,
     popups: PopupManager,
@@ -161,6 +164,8 @@ pub struct Shell {
     /// The surface that holds the pointer, locked or confined, as the
     /// desktop last settled it.
     pub held: Option<Held>,
+    /// Where the windows their programs named were.
+    pub places: Places,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -195,9 +200,11 @@ impl Shell {
             _tearing: tearing::offer(display),
             _constraints: constraints::offer(display),
             _title_bars: titlebar::offer(display),
+            _session: places::offer(display),
             stamps: Stamps::offer(display),
             files: Files::default(),
             held: None,
+            places: Places::default(),
             display: display.clone(),
             popups: PopupManager::default(),
             grabbed: None,
@@ -212,6 +219,17 @@ impl Shell {
             changed: Changed::default(),
             lights: None,
         }
+    }
+
+    /// Whether a window there is, drawn or not yet, has `key`.
+    pub fn has_key(&self, key: &Key) -> bool {
+        let drawn = self.windows.by_use().into_iter().map(|framed| &framed.window);
+        drawn.chain(&self.waiting).any(|window| places::key_of(window).as_ref() == Some(key))
+    }
+
+    /// Where the window `window`, which is known by a key, was before.
+    fn before(&self, window: &Window) -> Option<places::Place> {
+        self.places.of(&places::key_of(window)?).cloned()
     }
 
     /// The window whose own surface is `surface`, drawn or not yet.
@@ -384,11 +402,19 @@ impl Shell {
         let Some(toplevel) = self.waiting[at].toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
             // The program draws its first frame for the screen the
-            // window shows on.
-            self.windows.tell_at(surface, self.pointer_at());
+            // window shows on: the one it was on, for a window that is
+            // known again, as large and of the shape it was.
             let bar = TitleBar::of(&self.waiting[at]).told();
-            let room = self.windows.room(self.pointer_at(), bar);
-            toplevel.with_pending_state(|state| state.bounds = Some(room));
+            let pointer = self.pointer_at();
+            let on = match self.before(&self.waiting[at]) {
+                Some(place) => self.windows.ask_as_before(&toplevel, &place, pointer, bar),
+                None => {
+                    let room = self.windows.room(pointer, bar);
+                    toplevel.with_pending_state(|state| state.bounds = Some(room));
+                    pointer
+                }
+            };
+            self.windows.tell_at(surface, on);
             toplevel.send_configure();
             return;
         }
@@ -399,7 +425,8 @@ impl Shell {
             return;
         }
         let window = self.waiting.remove(at);
-        self.windows.show(window.clone(), self.pointer_at());
+        let before = self.before(&window);
+        self.windows.show(window.clone(), self.pointer_at(), before.as_ref());
         self.focus(Some(&window));
     }
 

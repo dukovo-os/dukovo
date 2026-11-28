@@ -17,4 +17,16 @@
 
 #![forbid(unsafe_code)]
 
+use wayland_backend::protocol::Interface;
+
+pub mod session;
 pub mod title_bar;
+#[cfg(test)]
+mod xml;
+
+/// The interface a request of these protocols names a window by. An
+/// argument's interface is held to its name alone, so the name is all
+/// there is of it here: the interface itself is the xdg-shell
+/// protocol's.
+pub static XDG_TOPLEVEL: Interface =
+    Interface { name: "xdg_toplevel", version: 1, requests: &[], events: &[], c_ptr: None };

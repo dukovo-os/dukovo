@@ -21,7 +21,7 @@ use window_protocols::title_bar::{MANAGER, bar, manager};
 use crate::Outcome;
 
 /// The number of `wl_registry.bind` among the registry's requests.
-const BIND: u16 = 0;
+pub(crate) const BIND: u16 = 0;
 
 /// What the window server said of the window's title bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,9 +67,9 @@ impl ObjectData for Hears {
     fn destroyed(&self, _object: ObjectId) {}
 }
 
-/// The manager hears nothing: it has no events.
+/// A manager hears nothing: it has no events.
 #[derive(Debug)]
-struct Quiet;
+pub(crate) struct Quiet;
 
 impl ObjectData for Quiet {
     fn event(
@@ -95,7 +95,7 @@ pub struct TitleBar {
 /// object it makes, if it makes one: `makes` is what hears that
 /// object's events, and `bound` its interface and version where the
 /// request's table does not say (`wl_registry.bind`).
-fn request(
+pub(crate) fn request(
     backend: &Backend,
     object: &ObjectId,
     opcode: u16,

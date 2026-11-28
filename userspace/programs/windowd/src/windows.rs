@@ -27,6 +27,7 @@
 //! [`Shell`](crate::shell::Shell)'s to say.
 
 pub mod desks;
+mod known;
 pub mod resize;
 pub mod zones;
 
@@ -52,6 +53,7 @@ use desks::Row;
 use resize::Resize;
 use zones::{Fills, Outer, Side, Splits, Zone};
 
+use crate::places::Place;
 use crate::screens::layout;
 
 use crate::titlebar::TitleBar;
@@ -1202,8 +1204,9 @@ impl Windows {
     }
 
     /// A program drew `window` for the first time: it shows on the
-    /// screen the pointer, at `pointer`, is on, in front.
-    pub fn show(&mut self, window: Window, pointer: Point<f64, Logical>) {
+    /// screen the pointer, at `pointer`, is on, in front. A window that
+    /// was at `place` before shows there ([`known`]).
+    pub fn show(&mut self, window: Window, pointer: Point<f64, Logical>, place: Option<&Place>) {
         let shape = Framed::drawn_shape(&window);
         let layout = Windows::layout_of(&self.theme, &window, shape);
         // A window that first shows full screen does on the screen its
@@ -1211,12 +1214,18 @@ impl Windows {
         let named = window.user_data().get::<FullOn>().and_then(|on| on.0.take());
         let named = named.filter(|_| shape == Shape::Full);
         let named = named.and_then(|name| self.screens().into_iter().find(|(on, _)| *on == name));
-        let (on, screen) = named.unwrap_or_else(|| {
+        let known = place.map(|place| self.screen_for(place, pointer));
+        let (on, screen) = named.or(known).unwrap_or_else(|| {
             (self.screen_name_at(pointer).unwrap_or_default(), self.screen_at(pointer))
         });
         let at = match shape {
             Shape::Maximized | Shape::Full => screen.loc,
-            Shape::Normal => self.first_place(screen, (layout.frame.w, layout.frame.h).into()),
+            Shape::Normal => {
+                let before = place.and_then(|place| self.corner_for(place, screen, layout.frame.w));
+                before.unwrap_or_else(|| {
+                    self.first_place(screen, (layout.frame.w, layout.frame.h).into())
+                })
+            }
         };
         let title = title_of(&window);
         let desk = self.row(&on).shown();
@@ -1225,7 +1234,7 @@ impl Windows {
             at,
             layout,
             minimized: false,
-            screen: on,
+            screen: on.clone(),
             desk,
             title,
             restore: Restore::default(),
@@ -1243,10 +1252,13 @@ impl Windows {
         let within = Point::from((layout.surface.x, layout.surface.y));
         self.tell(&window);
         self.space.map_element(window, at + within, false);
+        let last = self.framed.len() - 1;
         if shape == Shape::Full {
-            let last = self.framed.len() - 1;
             self.framed[last].at = self.framed[last].full_at();
             self.put(last);
+        }
+        if let Some(place) = place {
+            self.settle_known(last, place, &(on, screen));
         }
     }
 

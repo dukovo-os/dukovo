@@ -20,7 +20,7 @@ use crate::screens::BACKGROUND;
 
 /// The size a window's program is asked to draw for a frame's box of
 /// `frame`, and where its own pixels begin in the box.
-fn inside((width, height): (i32, i32)) -> ((u32, u32), (i32, i32)) {
+pub(super) fn inside((width, height): (i32, i32)) -> ((u32, u32), (i32, i32)) {
     // A frame's sides and its title bar are the same around any size.
     let layout = Layout::of(&Theme::basic(), (100, 100), Shape::Normal, Bar::Full, None);
     let (sides, rows) = (layout.frame.w - 100, layout.frame.h - 100);
@@ -29,7 +29,7 @@ fn inside((width, height): (i32, i32)) -> ((u32, u32), (i32, i32)) {
 
 /// Presses Super with `arrow`, has `program` draw its window as it is
 /// asked to with the pattern of `seed`, and returns the size drawn.
-fn arrow(world: &mut World, program: &Program, arrow: u16, seed: u32) -> (u32, u32) {
+pub(super) fn arrow(world: &mut World, program: &Program, arrow: u16, seed: u32) -> (u32, u32) {
     world.key(KEY_LEFTMETA, true);
     world.tap(arrow);
     world.key(KEY_LEFTMETA, false);
@@ -50,7 +50,12 @@ fn arrow_alone(world: &mut World, arrow: u16) {
 /// Fails unless the first screen shows a window that fills `zone`,
 /// its corner and its size, with the pattern of `seed`, and `size` is
 /// what its program drew for that.
-fn fills(world: &mut World, zone: ((i32, i32), (i32, i32)), size: (u32, u32), seed: u32) {
+pub(super) fn fills(
+    world: &mut World,
+    zone: ((i32, i32), (i32, i32)),
+    size: (u32, u32),
+    seed: u32,
+) {
     let (corner, frame) = zone;
     let (asked, within) = inside(frame);
     assert_eq!(size, asked);

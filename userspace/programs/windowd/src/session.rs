@@ -264,6 +264,10 @@ impl Session {
     /// Ends the desktop: gives the screens back, and asks the command,
     /// if it still runs, to end.
     pub fn end(&mut self) {
+        self.desktop.write_places();
+        for said in self.desktop.said() {
+            eprintln!("desktop: {said}");
+        }
         // In the back there is nothing to give back.
         let _ = self.desktop.holder().give_back();
         if let Some(command) = self.command.take() {

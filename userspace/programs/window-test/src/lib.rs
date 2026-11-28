@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod bar;
+mod named;
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -173,6 +174,10 @@ pub struct Open {
     /// The program says how it would have the window decorated before
     /// the window is first configured, as a toolkit does.
     pub decoration: Option<Decoration>,
+    /// The program gives the window this name before the window is
+    /// first configured, for the window server to know it again by
+    /// ([`Client::name`]).
+    pub name: Option<&'static str>,
 }
 
 /// How a program would have its window decorated.
@@ -222,6 +227,8 @@ struct Told {
     /// The registry, and the number of the title bar manager's global.
     registry: Option<wl_registry::WlRegistry>,
     title_bars: Option<u32>,
+    /// The number of the global that names windows.
+    names: Option<u32>,
     decorations: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
     times: Option<zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1>,
     viewporter: Option<wp_viewporter::WpViewporter>,
@@ -522,6 +529,9 @@ impl Client {
         }
         if let Some(decoration) = how.decoration {
             self.decorate(decoration)?;
+        }
+        if let Some(name) = how.name {
+            self.name(name)?;
         }
         // A commit with no buffer asks for the first configure.
         self.window()?.surface.commit();
@@ -976,6 +986,23 @@ impl Client {
         self.sent()
     }
 
+    /// Gives the window the name `name`, which the window server knows
+    /// it again by: a window of that name shows where the last one was.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window, the window server does not offer to
+    /// know windows again, or it refuses the name.
+    pub fn name(&mut self, name: &str) -> Outcome {
+        let backend = self.connection.backend();
+        let (Some(registry), Some(global)) = (&self.told.registry, self.told.names) else {
+            return Err("the window server offers no names for windows".into());
+        };
+        let toplevel = self.window()?.toplevel.id();
+        named::name(&backend, &registry.id(), global, &toplevel, name)?;
+        self.sent()
+    }
+
     /// What the window server last said of the window's title bar, if
     /// the program asks for a part of it, once the program has all the
     /// window server sent.
@@ -1411,6 +1438,40 @@ impl Client {
         }
     }
 
+    /// The size the window server last asked for the window's own
+    /// pixels to be, where 0 leaves a side to the program, and whether
+    /// it asked for the window to be drawn maximized.
+    pub fn asked(&self) -> (i32, i32, bool) {
+        self.told.asked
+    }
+
+    /// Takes the window away, as a program does that closes it and
+    /// goes on running: the program may ask for another.
+    ///
+    /// # Errors
+    ///
+    /// When there is no window, or the window server is gone.
+    pub fn close_window(&mut self) -> Outcome {
+        let Some(window) = self.window.take() else { return Err("no window".into()) };
+        if let Some(decoration) = window.decoration {
+            decoration.destroy();
+        }
+        if let Some(bar) = window.bar {
+            bar.give_back()?;
+        }
+        window.toplevel.destroy();
+        window.role.destroy();
+        window.surface.destroy();
+        for (buffer, _) in window.shown.into_iter().chain(window.spare) {
+            buffer.destroy();
+        }
+        // The next window is told everything anew.
+        (self.told.asked, self.told.configured) = ((0, 0, false), None);
+        (self.told.active, self.told.full) = (false, false);
+        (self.holds, self.told.heard) = (None, VecDeque::new());
+        self.sent()
+    }
+
     /// Whether the window is the one the person works in, as the window
     /// server last said.
     pub fn active(&self) -> bool {
@@ -1445,6 +1506,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                     told.decorations = Some(registry.bind(name, 1, handle, ()));
                 }
                 "dukovo_title_bar_manager_v1" => told.title_bars = Some(name),
+                "dukovo_session_manager_v1" => told.names = Some(name),
                 "zwp_input_timestamps_manager_v1" => {
                     told.times = Some(registry.bind(name, 1, handle, ()));
                 }

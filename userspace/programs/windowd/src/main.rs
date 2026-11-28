@@ -23,6 +23,7 @@ mod link;
 mod manager;
 mod panel;
 mod picker;
+mod places;
 mod pointer;
 mod scene;
 mod screens;
@@ -128,7 +129,10 @@ fn run() -> Result<ExitCode, String> {
     let (borrowed, lent) = Borrowed::ask()?;
     let card = Card::new(lent).map_err(|err| format!("the display layer: {err}"))?;
     let devices = Devices::ask(card.as_fd()).map_err(|err| format!("inputd: {err}"))?;
-    let desktop = Desktop::new(Holder::new(card), &layout).map_err(|err| err.to_string())?;
+    let mut desktop = Desktop::new(Holder::new(card), &layout).map_err(|err| err.to_string())?;
+    if let Some(file) = places::personal() {
+        desktop.keep_places(file);
+    }
     let mut session = Session {
         desktop,
         devices,
