@@ -278,14 +278,6 @@ int stat_path(const radix::Path &path, struct stat *st, int flags = 0) {
 	return 0;
 }
 
-// Whether `path` names a directory: 0, ENOTDIR or an errno.
-int must_be_dir(const radix::Path &path) {
-	struct stat st;
-	if(int e = stat_path(path, &st); e)
-		return e;
-	return S_ISDIR(st.st_mode) ? 0 : ENOTDIR;
-}
-
 // Removes `path`: a directory only with `directory`, which fails with
 // ENOTDIR on anything else; a file only without, which fails with EISDIR
 // on a directory. A symbolic link is removed itself, as a file.
@@ -1188,25 +1180,23 @@ int Sysdeps<Chdir>::operator()(const char *path) {
 	radix::Path resolved;
 	if(int e = radix::resolve(AT_FDCWD, path, &resolved); e)
 		return e;
-	if(int e = must_be_dir(resolved); e)
-		return e;
-	// Going in needs the directory's execute bit, as on Linux (ADR 0214).
-	if(uint64_t status = radix_directory_check_access(resolved.dir, resolved.text, resolved.len, 0,
-			   RADIX_DIRECTORY_EXECUTE_OK);
-			status)
-		return radix::to_errno(status);
-	// Where it really is, links followed, so that getcwd says so and
-	// `..` from it leads where the kernel's would.
+	// One call (radix-directory(2)'s `enter`, ADR 0800): a directory the
+	// caller may search, as on Linux (ADR 0214), and where it really is,
+	// links followed, so that getcwd says so and `..` from it leads where
+	// the kernel's would. The kernel notes it for /processes
+	// (radix-proc(5)). The path is beneath the root: after a `/`, with
+	// room for the NUL.
 	char absolute[radix::PATH_MAX_BYTES];
-	if(int e = sysdep<Realpath>(path, absolute, sizeof(absolute)); e)
-		return e;
-	if(int e = radix::set_cwd(absolute); e)
-		return e;
-	// The kernel shows it in /processes (radix-proc(5)); a failure there is
-	// no failure of chdir.
-	const char *dir = radix::cwd();
-	radix_process_set_directory(radix::SLOT_PROCESS, dir, strlen(dir));
-	return 0;
+	struct radix_directory_enter_results r;
+	if(uint64_t status = radix_directory_enter(resolved.dir, resolved.text, resolved.len,
+			absolute + 1, sizeof(absolute) - 2, &r); status)
+		return radix::to_errno(status);
+	absolute[0] = '/';
+	if(r.len == 1 && absolute[1] == '.')
+		absolute[1] = 0;
+	else
+		absolute[r.len + 1] = 0;
+	return radix::set_cwd(absolute);
 }
 
 int Sysdeps<Fchdir>::operator()(int fd) {

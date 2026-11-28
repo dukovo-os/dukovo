@@ -907,6 +907,62 @@ static int in_dir(const char *path) {
 	return getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, path);
 }
 
+// Whether /processes shows `path` as this process's working directory,
+// as the C library has the kernel note it (radix-proc(5)).
+static int shown_dir(const char *path) {
+	char status[64], text[8192], line[PATH_MAX + 16];
+	snprintf(status, sizeof(status), "/processes/%d/status", (int)getpid());
+	int fd = open(status, O_RDONLY | O_CLOEXEC);
+	if(fd < 0)
+		return 0;
+	size_t len = 0;
+	ssize_t got;
+	while(len < sizeof(text) - 1 && (got = read(fd, text + len, sizeof(text) - 1 - len)) > 0)
+		len += (size_t)got;
+	close(fd);
+	text[len] = 0;
+	snprintf(line, sizeof(line), "\ndirectory: %s\n", path);
+	return strstr(text, line) != NULL;
+}
+
+// chdir, one call to the kernel (ADR 0800): into a directory by a link
+// and by paths with `.`, `..` and doubled slashes, relative and absolute,
+// and into the root, which getcwd and /processes then both say; and a
+// file, a link to one, a missing path and the empty one, which fail as on
+// Linux and leave the working directory where it was.
+static void entering(void) {
+	char saved[PATH_MAX];
+	CHECK(getcwd(saved, sizeof(saved)) != NULL);
+	CHECK(mkdir("/tmp/files-enter", 0755) == 0);
+	CHECK(mkdir("/tmp/files-enter/a", 0755) == 0);
+	CHECK(mkdir("/tmp/files-enter/a/b", 0755) == 0);
+	CHECK(symlink("a/b", "/tmp/files-enter/l") == 0);
+	int fd = open("/tmp/files-enter/f", O_WRONLY | O_CREAT, 0644);
+	CHECK(fd >= 0);
+	close(fd);
+	CHECK(symlink("f", "/tmp/files-enter/to-f") == 0);
+	CHECK(chdir("/tmp/files-enter/l") == 0 && in_dir("/tmp/files-enter/a/b"));
+	CHECK(shown_dir("/tmp/files-enter/a/b"));
+	CHECK(chdir("../..//./a/") == 0 && in_dir("/tmp/files-enter/a"));
+	CHECK(shown_dir("/tmp/files-enter/a"));
+	CHECK(chdir("b/../../l") == 0 && in_dir("/tmp/files-enter/a/b"));
+	CHECK(chdir("/") == 0 && in_dir("/") && shown_dir("/"));
+	CHECK(chdir("tmp/files-enter") == 0 && in_dir("/tmp/files-enter"));
+	CHECK_ERROR(chdir("f"), ENOTDIR);
+	CHECK_ERROR(chdir("to-f"), ENOTDIR);
+	CHECK_ERROR(chdir("f/"), ENOTDIR);
+	CHECK_ERROR(chdir("a/nowhere"), ENOENT);
+	CHECK_ERROR(chdir(""), ENOENT);
+	CHECK(in_dir("/tmp/files-enter") && shown_dir("/tmp/files-enter"));
+	CHECK(chdir(saved) == 0 && in_dir(saved) && shown_dir(saved));
+	CHECK(unlink("/tmp/files-enter/to-f") == 0);
+	CHECK(unlink("/tmp/files-enter/f") == 0);
+	CHECK(unlink("/tmp/files-enter/l") == 0);
+	CHECK(rmdir("/tmp/files-enter/a/b") == 0);
+	CHECK(rmdir("/tmp/files-enter/a") == 0);
+	CHECK(rmdir("/tmp/files-enter") == 0);
+}
+
 // `..` beneath a directory descriptor, and fchdir, which go by the path
 // the C library notes for each one (ADR 0089): up from descriptors
 // opened beneath others, with O_PATH as tree walks open them, and from a
@@ -1971,6 +2027,7 @@ int main(void) {
 	RUN(special_files);
 	RUN(named_pipe_identity);
 	RUN(climbing);
+	RUN(entering);
 	RUN(path_forms);
 	RUN(mapped);
 	RUN(busy_while_shared);

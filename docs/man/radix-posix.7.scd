@@ -217,8 +217,10 @@ root. A path relative to a directory descriptor (*openat* and the rest)
 goes to the kernel with that directory's capability, beneath which *..*
 cannot climb. So the C library notes the path each directory descriptor
 was opened by, and a path with *..* in it goes from the root by that
-path instead (ADR 0089). *chdir* and *fchdir* check the directory and
-keep its canonical path.
+path instead (ADR 0089). *chdir* and *fchdir* check the directory,
+learn its canonical path and have the kernel note it for _/processes_
+in one call, *radix-directory*(2)'s *enter* (ADR 0800), and keep the
+path.
 
 A symbolic link with an absolute target, met beneath a directory
 descriptor, goes on from the root as on Linux. The C library opens every

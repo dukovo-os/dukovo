@@ -576,7 +576,7 @@ struct ScrubProgress {
 }
 
 /// A directory.
-interface directory = 0x000b version 12 {
+interface directory = 0x000b version 13 {
     kind = directory;
     /// Opens the file or directory at `path` (`.` for this one) and puts
     /// a capability to it with `rights` in slot `to`. Returns what it is.
@@ -1280,4 +1280,19 @@ interface directory = 0x000b version 12 {
                 outside, io, corrupt, too_many_links, not_socket, not_supported, connected,
                 refused, wrong_type, not_permitted, message_too_long, too_many, would_block,
                 gone, interrupted, denied];
+    /// Goes into the directory at `path`, as chdir(2) does with this
+    /// directory as the root, in one call where it took four: `path`
+    /// must lead to a directory (not_directory otherwise) that the name
+    /// this capability acts for may search (denied otherwise, as
+    /// `check_access` says for EXECUTE_OK). Writes where it is into
+    /// `buffer`, as `real_path` does, and returns its length; one that
+    /// `buffer` cannot hold, or that is longer than PATH_MAX, fails with
+    /// name_too_long. Then notes `/` and that path (`/` alone for `.`) as
+    /// the caller's working directory, as radix-process(2)'s
+    /// `set_directory` does, so that /processes shows it (radix-proc(5)).
+    /// Needs the read right. (Since version 13, ADR 0800.)
+    method enter = 56 (path: in bytes, buffer: out bytes) -> (len: u64)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside, io,
+                corrupt, too_many_links, denied];
 }
