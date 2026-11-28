@@ -58,6 +58,12 @@ impl Resize {
         Point::from((x, y))
     }
 
+    /// The window was moved by `by`: the sides that are not dragged
+    /// stay where the move put them.
+    pub fn moved(&mut self, by: Point<i32, Logical>) {
+        self.start.loc += by;
+    }
+
     /// The size a frame that began as the resize's did has when the
     /// pointer has moved by `by` since: the sides the edge names follow
     /// the pointer.
@@ -149,6 +155,17 @@ mod tests {
         assert_eq!(resize(Edge::TopLeft).placed(larger), Point::from((30, 31)));
         assert_eq!(resize(Edge::BottomLeft).placed(larger), Point::from((30, 50)));
         assert_eq!(resize(Edge::TopRight).placed(larger), Point::from((100, 31)));
+    }
+
+    #[test]
+    fn a_window_moved_before_its_program_drew_the_last_size_stays_where_it_was_put() {
+        let larger = Size::from((400, 300));
+        let mut right = resize(Edge::BottomRight);
+        right.moved((40, -10).into());
+        assert_eq!(right.placed(larger), Point::from((140, 40)));
+        let mut left = resize(Edge::TopLeft);
+        left.moved((40, -10).into());
+        assert_eq!(left.placed(larger), Point::from((70, 21)));
     }
 
     #[test]

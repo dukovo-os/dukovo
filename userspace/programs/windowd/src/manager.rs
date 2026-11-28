@@ -143,6 +143,9 @@ impl Default for Manager {
     }
 }
 
+/// A button of a window's frame.
+pub type OnButton<'a> = Option<(&'a Window, Button)>;
+
 /// How far `one` is from `other`.
 fn apart(one: Point<f64, Logical>, other: Point<f64, Logical>) -> f64 {
     (one.x - other.x).hypot(one.y - other.y)
@@ -169,11 +172,7 @@ impl Manager {
 
     /// The button of a frame the pointer is on, and the one that is
     /// held down and shows so, when the pointer is over `under`.
-    #[allow(clippy::type_complexity)]
-    pub fn buttons<'a>(
-        &'a self,
-        under: &'a Under,
-    ) -> (Option<(&'a Window, Button)>, Option<(&'a Window, Button)>) {
+    pub fn buttons<'a>(&'a self, under: &'a Under) -> (OnButton<'a>, OnButton<'a>) {
         let over = match under {
             Under::Part { window, part: Part::Button(button) } => Some((window, *button)),
             _ => None,
@@ -310,12 +309,7 @@ impl Manager {
             Hold::Move { code: held, .. } | Hold::Resize { code: held, .. } if *held == code => {
                 self.let_go(shell);
             }
-            Hold::Menu { panel, .. } if code == BTN_LEFT => {
-                if let Some(row) = panel.row_at(at) {
-                    self.choose(shell, row);
-                }
-            }
-            Hold::List { panel, .. } if code == BTN_LEFT => {
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } if code == BTN_LEFT => {
                 if let Some(row) = panel.row_at(at) {
                     self.choose(shell, row);
                 }

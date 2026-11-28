@@ -216,6 +216,35 @@ fn an_edge_resizes_its_window_one_size_at_a_time_and_the_other_sides_stay() {
 }
 
 #[test]
+fn a_window_moved_before_its_program_drew_a_resize_s_last_size_stays_where_it_was_put() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, SIZE, 7);
+    world.settle();
+    let (layout, (left, top)) = framed(SIZE);
+    // The right edge is dragged and let go, and the program is slow to
+    // draw the size it was asked for.
+    let edge = left + layout.frame.w - 2;
+    world.point(edge, top + 120);
+    world.button(BTN_LEFT, true);
+    world.point(edge + 40, top + 120);
+    world.button(BTN_LEFT, false);
+    // Meanwhile the title bar moves the window.
+    world.point(left + 100, top + 15);
+    world.button(BTN_LEFT, true);
+    world.point(left + 150, top + 40);
+    world.point(left + 200, top + 65);
+    world.button(BTN_LEFT, false);
+    world.settle();
+    let moved = (left + 100, top + 50);
+    world.shows_frame(&layout, moved, &look(true));
+    // The size shows where the window is now, not where it was resized.
+    assert_eq!(world.follow(&program, SIZE, 8), ((360, 200), false));
+    world.settle();
+    world.shows_frame(&frame_of((360, 200), Shape::Normal), moved, &look(true));
+}
+
+#[test]
 fn the_buttons_show_the_pointer_and_minimize_maximize_and_close() {
     let mut world = World::one_screen();
     let program = world.program();

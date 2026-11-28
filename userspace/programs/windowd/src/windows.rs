@@ -581,6 +581,11 @@ impl Windows {
         if framed.layout.shape == Shape::Maximized {
             framed.restore.at = Some(at);
         } else {
+            // A resize whose last size the program has yet to draw
+            // goes with the window.
+            if let Some(resize) = &mut framed.resize {
+                resize.moved(at - framed.at);
+            }
             framed.at = at;
             self.put(index);
         }
@@ -592,7 +597,10 @@ impl Windows {
         let bar = Rectangle::new(at, (width, self.theme.bar).into());
         let screen = self.screen_of(bar);
         let kept = KEPT.min(width);
-        let x = at.x.clamp(screen.loc.x + kept - width, screen.loc.x + screen.size.w - kept);
+        // With no screen, or one narrower than what is kept, the left
+        // end of the bar is the part that stays.
+        let (least, most) = (screen.loc.x + kept - width, screen.loc.x + screen.size.w - kept);
+        let x = at.x.clamp(least.min(most), most);
         let y = at.y.clamp(screen.loc.y, screen.loc.y + (screen.size.h - self.theme.bar).max(0));
         Point::from((x, y))
     }
@@ -747,4 +755,17 @@ fn title_of(window: &Window) -> String {
         let title = role.and_then(|role| role.lock().ok()?.title.clone());
         title.unwrap_or_default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_narrow_frame_has_a_place_with_no_screen() {
+        // Twice what is kept of a bar is more than the frame and no
+        // screen have between them.
+        let windows = Windows::default();
+        assert_eq!(windows.reachable((30, 20).into(), 60), Point::from((-KEPT, 0)));
+    }
 }
