@@ -24,8 +24,9 @@
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::os::fd::OwnedFd;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -160,8 +161,9 @@ impl Places {
     }
 
     /// Writes the table to its file, if it has changes the file has
-    /// not. The file is written whole beside the old one and then takes
-    /// its place, so that no reader finds half of it.
+    /// not. The file is written whole beside the old one, for the
+    /// person alone to read, and then takes its place, so that no
+    /// reader finds half of it.
     ///
     /// # Errors
     ///
@@ -177,8 +179,17 @@ impl Places {
         let mut beside = file.as_os_str().to_owned();
         beside.push(".new");
         let beside = PathBuf::from(beside);
-        fs::write(&beside, text_of(&self.kept)).map_err(|err| said(&err))?;
-        fs::rename(&beside, file).map_err(|err| said(&err))
+        // The names are the programs' and the windows the person's: the
+        // file is for nobody else to read. It is on the disk before it
+        // takes the old one's place, so that a machine that stops then
+        // has one of the two whole.
+        let mut how = fs::OpenOptions::new();
+        how.write(true).create(true).truncate(true).mode(0o600);
+        let written = how.open(&beside).and_then(|mut new| {
+            new.write_all(text_of(&self.kept).as_bytes())?;
+            new.sync_all()
+        });
+        written.and_then(|()| fs::rename(&beside, file)).map_err(|err| said(&err))
     }
 }
 
@@ -468,6 +479,8 @@ mod tests {
 
     #[test]
     fn the_file_is_written_whole_and_read_again() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let folder = std::env::temp_dir().join(format!("windowd-places-{}", std::process::id()));
         let _ = fs::remove_dir_all(&folder);
         let file = folder.join("home/.config/kept.json");
@@ -481,6 +494,9 @@ mod tests {
         assert_eq!(again.of(&key("main")), Some(&place((40, 60), Fills::All)));
         let beside: Vec<_> = fs::read_dir(file.parent().unwrap()).unwrap().collect();
         assert_eq!(beside.len(), 1, "{beside:?}");
+        // It is the person's alone to read.
+        let mode = fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         // A file that is no table is said to be, and written over.
         fs::write(&file, "windows").unwrap();
         let (mut spoiled, wrong) = Places::read(file.clone());
