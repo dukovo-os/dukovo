@@ -217,7 +217,7 @@ impl Rq {
         let delta = now.saturating_sub(self.clock_ns);
         self.clock_ns = now;
         let current = &self.current;
-        current.stats.runtime_ns.fetch_add(delta, Ordering::Relaxed);
+        super::bump(&current.stats.runtime_ns, delta);
         if self.idling() {
             return false;
         }
