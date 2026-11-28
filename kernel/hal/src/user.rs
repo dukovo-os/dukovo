@@ -499,6 +499,13 @@ pub trait UserMode: crate::Threads {
     /// Copies RAM at `phys` into `dst`.
     fn read_frames(phys: u64, dst: &mut [u8]);
 
+    /// [`UserMode::read_frames`] into a `dst` that is mapped
+    /// write-combining, such as a framebuffer: by the copy
+    /// [`Cpu::copy_in_order`](crate::Cpu::copy_in_order) is.
+    fn read_frames_in_order(phys: u64, dst: &mut [u8]) {
+        Self::read_frames(phys, dst);
+    }
+
     /// The frequency of the cycle counter programs can read (x86-64: the
     /// TSC), in hertz, or 0 if unknown.
     fn cycle_counter_hz() -> u64;

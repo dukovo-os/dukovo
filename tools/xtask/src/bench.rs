@@ -236,7 +236,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("posix_tcp_mib", 1_700_000),              // 1,515,375
     ("display_check", 7_700),                  // 6,953
     ("display_change_queued", 11_000),         // 9,405
-    ("display_change_firmware", 890_000),      // 809,723, 1280 by 800
+    ("display_change_firmware", 2_000_000),    // 1,809,533, 1280 by 800, in order (ADR 0718)
     ("display_small_firmware", 29_000),        // 26,051, rows of 256 bytes by registers (ADR 0775)
     ("display_pointer_firmware", 46_000),      // 41,165, a solid pointer of 32 by 32, likewise
     ("display_change_virtio", 14_000),         // 12,586
