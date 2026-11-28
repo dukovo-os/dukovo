@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0815. A display holder's event wakes the polls of its own file, on the CPU that told it
+# 0815. A display holder's event wakes the polls of its own file
 
 - Status: Accepted
 - Date: 2026-11-28
@@ -24,11 +24,6 @@ under KVM, the service ran 1.01 times for each frame the desktop
 showed: 5 µs of its own time, and a CPU brought out of its halt and
 put back, about 21 µs of the host's.
 
-The event comes from the card's thread, which keeps the beat (ADR
-0703). The desktop it woke had last run on another CPU, idle by then,
-so that CPU was interrupted out of its halt for it while the card's
-thread went to sleep and its own CPU halted.
-
 ## Decision
 
 - **The layer says which holders were given an event**
@@ -39,11 +34,6 @@ thread went to sleep and its own CPU halted.
   the layer's lock, and a list is there before the first holder and
   after the last. Two holders whose files share a list wake each other
   as all holders did before: the woken poll looks and sleeps again.
-- **The card's thread hands on what its beat brought**
-  (`sched::lazily_handing_on`, ADR 0710). It waits for its next beat
-  once it has told of this one, so a thread it wakes that would have
-  gone to an idle CPU runs after it on its own, if it is all that CPU
-  runs.
 
 ## Alternatives
 
@@ -58,14 +48,21 @@ thread went to sleep and its own CPU halted.
 - **The consoles' service does not poll while it has lent the
   screens.** The event that the screens are back is one of those it
   polls for.
+- **The card's thread, which keeps the beat, also hands on what the
+  beat brought** (`sched::lazily_handing_on`, ADR 0710), so that the
+  desktop it tells runs after it on its CPU and no idle CPU is woken
+  for it. Tried and measured: the desktop wakes the card's thread as
+  it asks for its next change, while it runs, so the card's thread
+  goes to the other CPU and the desktop follows it there at the beat.
+  The two changed CPUs three times a frame between them, the desktop
+  ran 3.8 times a frame where it ran 3.4, and the CPUs halted a
+  quarter of a time less a frame, where the consoles' service alone
+  had been one.
 
 ## Consequences
 
 - The consoles' service sleeps through the frames of a desktop that
-  stands over it, and one CPU is woken at each beat where two were.
+  stands over it: on the same machine it ran once in a hundred frames.
 - A thread that reads a holder's file and waits in the read, and one
   that waits for its change to show, are still woken at every change
   and look again. The desktop and the consoles' service poll.
-- A desktop told that its frame shows runs on the CPU the card's
-  thread ran on. A CPU that runs more than the card's thread hands
-  nothing on, as for an input device's thread.

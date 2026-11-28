@@ -239,9 +239,7 @@ hands on what an interrupt brought and then waits for the next
 too, where it would have been handed to an idle one, if that thread may
 run here and the waker is all the CPU runs: the reader of a virtio
 input device runs after the device's thread, and no sleeping CPU is
-interrupted for a key or a motion; a desktop told that its frame shows
-runs after the display card's thread, which keeps the beat (ADR 0815).
-An idle CPU with a switch pending
+interrupted for a key or a motion. An idle CPU with a switch pending
 does not balance, since a thread on its way is on no queue yet.
 
 **Layout.** What a wake-up reads and writes of a thread (its lock and

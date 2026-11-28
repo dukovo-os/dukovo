@@ -415,55 +415,30 @@ impl Card<Picture> for CardRun {
 }
 
 /// Runs `with` on the layer, its lock held, and then wakes whoever waits
-/// for what it changed.
+/// for what it changed: the threads that wait in a request, and the
+/// polls of the holders with a new event to read.
 fn with_layer<R>(with: impl FnOnce(&mut Layer) -> R) -> R {
-    let (result, news) = locked(with);
-    if let Some(posted) = news {
-        wake_waiters(posted);
-    }
-    result
-}
-
-/// As [`with_layer`], for a card's thread at its beat. The thread waits
-/// for its next beat once it has told of this one, so whoever it wakes
-/// may run after it on its CPU and no idle one is woken for them
-/// ([`sched::lazily_handing_on`]): the desktop, told that its frame
-/// shows.
-fn with_layer_at_beat<R>(with: impl FnOnce(&mut Layer) -> R) -> R {
-    let (result, news) = locked(with);
-    if let Some(posted) = news {
-        sched::lazily_handing_on(|| wake_waiters(posted));
-    }
-    result
-}
-
-/// Runs `with` on the layer, its lock held. Returns what `with` did and,
-/// if anything changed that a holder may wait for, the slots of
-/// [`POLLED`] of the holders with a new event to read, a bit each: for
-/// [`wake_waiters`], once the lock has gone.
-fn locked<R>(with: impl FnOnce(&mut Layer) -> R) -> (R, Option<u32>) {
     let mut layer = LAYER.lock();
     layer.set_time(sched::now_ns());
     let result = with(&mut layer);
-    let news = layer.take_news().then(|| {
-        let mut posted = 0u32;
+    let news = layer.take_news();
+    // The slots of the holders with a new event to read, a bit each.
+    let mut posted = 0u32;
+    if news {
         layer.take_posted(|key| posted |= 1 << slot_of(key));
-        posted
-    });
+    }
     tell_input(&layer);
-    (result, news)
-}
-
-/// Wakes whoever waits for a change of the layer, and the polls of the
-/// files in the slots of `posted`.
-fn wake_waiters(posted: u32) {
-    PROGRESS.fetch_add(1, Ordering::AcqRel);
-    wait::wake_all(progress_key());
-    for (slot, polled) in POLLED.iter().enumerate() {
-        if posted & (1 << slot) != 0 {
-            polled.changed();
+    drop(layer);
+    if news {
+        PROGRESS.fetch_add(1, Ordering::AcqRel);
+        wait::wake_all(progress_key());
+        for (slot, polled) in POLLED.iter().enumerate() {
+            if posted & (1 << slot) != 0 {
+                polled.changed();
+            }
         }
     }
+    result
 }
 
 /// The slot of [`POLLED`] for the holder whose description is at `key`:
@@ -591,7 +566,7 @@ fn beat_thread(card: usize) {
         run.wakes.fetch_add(1, Ordering::Relaxed);
         run.sleeping.store(0, Ordering::Release);
         run.kick.store(false, Ordering::Release);
-        let woken = with_layer_at_beat(|layer| {
+        let woken = with_layer(|layer| {
             layer.card(card)?;
             let look = run.driver.look(layer);
             layer.log_urgent(console::error_at());
