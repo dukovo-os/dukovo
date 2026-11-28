@@ -201,12 +201,31 @@ pub(super) struct Watch {
     read: usize,
     /// Each screen the program has named.
     screens: BTreeMap<String, Expected>,
+    /// Each window the program last said the frame of, by its title:
+    /// its own pixels on the screen, and whether it is maximized.
+    windows: BTreeMap<String, (Rect, bool)>,
+}
+
+/// A window on the screen, for a test that points at its frame.
+#[derive(Debug)]
+pub(super) struct Framed {
+    /// The frame's layout, from the frame's corner.
+    pub layout: Layout,
+    /// Where that corner is on the screen.
+    corner: (i32, i32),
+}
+
+impl Framed {
+    /// The place (`x`, `y`) of the frame, on the screen.
+    pub(super) fn at(&self, x: i32, y: i32) -> (i32, i32) {
+        (self.corner.0 + x, self.corner.1 + y)
+    }
 }
 
 impl Default for Watch {
     /// A watch of what `display-test` says.
     fn default() -> Watch {
-        Watch { start: said::START, read: 0, screens: BTreeMap::new() }
+        Watch { start: said::START, read: 0, screens: BTreeMap::new(), windows: BTreeMap::new() }
     }
 }
 
@@ -278,6 +297,18 @@ impl Watch {
         Ok(())
     }
 
+    /// The window titled `title`, as the program last said it shows.
+    pub(super) fn window(&self, title: &str) -> Result<Framed, String> {
+        let Some((rect, maximized)) = self.windows.get(title) else {
+            return Err(format!("{} said nothing of a window titled {title}", self.program()));
+        };
+        let shape = if *maximized { Shape::Maximized } else { Shape::Normal };
+        let size = (rect.width as i32, rect.height as i32);
+        let layout = Layout::of(&Theme::basic(), size, shape, Bar::Full, None);
+        let corner = (rect.x as i32 - layout.surface.x, rect.y as i32 - layout.surface.y);
+        Ok(Framed { layout, corner })
+    }
+
     /// Takes in one line of the program's.
     fn take(&mut self, line: &Said) -> Result<(), String> {
         match line {
@@ -305,6 +336,7 @@ impl Watch {
                 });
                 let look = Look { title, active: *active, hot, pressed: None };
                 self.frame(screen, rect, shape, &look)?;
+                self.windows.insert(title.clone(), (*rect, *maximized));
             }
             Said::Dark { screen } => {
                 self.screens.insert(screen.clone(), Expected::Dark);

@@ -903,6 +903,31 @@ impl Client {
         }
     }
 
+    /// Takes in what the window server has sent, waiting up to
+    /// `patience` for something: for a program that waits on what the
+    /// client keeps, as the keys' repeat, and not on something heard.
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone.
+    pub fn listen(&mut self, patience: Duration) -> Outcome {
+        self.turn(patience)
+    }
+
+    /// As [`Client::heard`], with `None` when nothing came in that
+    /// time: for a program that listens for more than one of its
+    /// windows.
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone.
+    pub fn heard_within(&mut self, patience: Duration) -> Outcome<Option<Heard>> {
+        if self.told.heard.is_empty() {
+            self.turn(patience)?;
+        }
+        Ok(self.told.heard.pop_front())
+    }
+
     /// Everything the window server has told the program and no test
     /// has asked about, in the order it came, without waiting for more.
     pub fn take_heard(&mut self) -> Vec<Heard> {

@@ -34,15 +34,69 @@ ends. It runs as the person who typed it and needs no rights of its own:
 the screens are lent by consoled and the keyboards and pointers handed
 over by *inputd*(8).
 
-Release 1.1 draws a window as its program drew it, with no title bar,
-and its programs place nothing themselves: a new window shows in the
-middle of the screen the pointer is on, a step down and to the right of
-the one before. A click on a window brings it to the front and gives it
-the keyboard.
+# WINDOWS
+
+Every window has a frame the desktop draws: a title bar with an icon,
+the window's title and three buttons, and a border. A new window shows
+in the middle of the screen the pointer is on, a step down and to the
+right of the one before, in front and with the keyboard. A click on a
+window brings it to the front and gives it the keyboard.
+
+The pointer works a window by its frame:
+
+- The title bar, held with the left button, moves the window. Some of
+  the bar always stays on a screen. A double click on the bar maximizes
+  the window, or restores a maximized one; dragging a maximized window
+  by its bar restores it under the pointer.
+- An edge or a corner, held with the left button, resizes the window.
+  The edges reach a few pixels out from the frame, so that they are
+  easy to catch.
+- The buttons minimize the window, maximize or restore it, and ask it
+  to close. A button acts when the left button is let go on it.
+- The right button on the title bar shows the window's menu.
+
+A minimized window shows nowhere and is still in the list of windows
+(*KEYS*), which brings it back.
+
+The window's menu has *Restore*, *Move*, *Size*, *Minimize*, *Maximize*
+and *Close*. *Move* and *Size* give the arrow keys the window: each
+press moves it, or its right and bottom edges, 16 pixels, or one pixel
+with Ctrl; *Enter* keeps the change and *Esc* takes it back. A program
+may draw a part of its windows' title bars itself, as a browser does
+for its tabs; the menu of such a window also has *Full title bar for
+this app*, which gives its windows the desktop's whole bar from then on
+(*windowd.json*(5)).
+
+How the title bars are shared out, how fast the pointer moves, what a
+double click is and how a held key repeats are settings
+(*windowd.json*(5)).
 
 # KEYS
 
-Three chords are the desktop's own and reach no program:
+These keys are the desktop's own and reach no program:
+
+*Alt+Tab*, *Alt+Shift+Tab*
+	Shows the list of windows, the one last worked in first, and goes
+	to the next in it, or with Shift to the one before. Letting go of
+	Alt brings the chosen window to the front, a minimized one too.
+
+*Super*
+	Pressed and let go by itself, shows the list of windows to stay:
+	the arrow keys choose, *Enter* takes the choice, and *Esc* or
+	Super again puts the list away.
+
+*Alt+F4*
+	Asks the window worked in to close.
+
+*Alt+Space*
+	Shows that window's menu. The arrow keys choose a line, *Enter*
+	takes it, and *Esc* puts the menu away.
+
+*Super+Up*
+	Maximizes the window.
+
+*Super+Down*
+	Restores a maximized window, and minimizes another.
 
 *Ctrl+Alt+F1* to *Ctrl+Alt+F12*
 	Shows the console of that number, as Alt and the key do at a console
@@ -105,4 +159,5 @@ desktop /users/ada/apps/editor notes.txt
 
 # SEE ALSO
 
-*windowd*(1), *consoled*(8), *inputd*(8), *keymap*(1), *radix-display*(2)
+*windowd*(1), *windowd.json*(5), *consoled*(8), *inputd*(8), *keymap*(1),
+*radix-display*(2)

@@ -60,7 +60,7 @@ fn desktop_window(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 /// The sign-in line of console `number`, which shows there with or
 /// without a shell.
-fn console_line(number: u32) -> String {
+pub(super) fn console_line(number: u32) -> String {
     format!("{RELEASE} {VERSION} (tty{number})")
 }
 

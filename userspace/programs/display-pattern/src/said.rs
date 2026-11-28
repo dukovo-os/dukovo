@@ -92,6 +92,14 @@ impl FrameButton {
     ];
 }
 
+/// How far the host drags the window by its title bar at the step
+/// `shown` of `window-test windows`, to the right and down in pixels:
+/// the program reckons where its window then is from it.
+pub const DRAGGED_BY: (i32, i32) = (96, -64);
+
+/// How far the host then drags the window's bottom right corner.
+pub const RESIZED_BY: (i32, i32) = (48, 32);
+
 /// One line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Said {

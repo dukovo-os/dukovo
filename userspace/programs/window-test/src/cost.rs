@@ -142,25 +142,28 @@ impl Stamps {
         }
     }
 
-    /// When the key of `code` that the program just read went down or
-    /// up, given the time the window server told before it, if any.
-    fn of_key(&mut self, told: Option<u64>, code: u32, pressed: bool) -> Outcome<u64> {
+    /// When the key the program just read (its code, and whether it
+    /// went down) was stamped, given the time the window server told
+    /// before it, if any.
+    fn of_key(&mut self, told: Option<u64>, key: (u32, bool)) -> Outcome<u64> {
         match self {
-            Stamps::Told => told.ok_or_else(|| "a key came with no time before it".into()),
+            Stamps::Told => {
+                told.ok_or_else(|| format!("the key {} came with no time before it", key.0))
+            }
             #[cfg(target_os = "linux")]
             Stamps::Devices(devices) => devices
                 .iter_mut()
-                .find_map(|device| key_of(device, code, pressed))
-                .ok_or_else(|| format!("no event device had the key {code}")),
+                .find_map(|device| key_of(device, key))
+                .ok_or_else(|| format!("no event device had the key {}", key.0)),
         }
     }
 }
 
-/// The time of the key of `code` going down or up among the events
-/// `device` has to read. The window server read the same events before
-/// it sent the key, so they are there.
+/// The time of `key` (its code, and whether it went down) among the
+/// events `device` has to read. The window server read the same events
+/// before it sent the key, so they are there.
 #[cfg(target_os = "linux")]
-fn key_of(device: &mut std::fs::File, code: u32, pressed: bool) -> Option<u64> {
+fn key_of(device: &mut std::fs::File, (code, pressed): (u32, bool)) -> Option<u64> {
     use std::io::Read;
     use sysapi::linux::evdev::{EVENT_LEN, Event};
     const EV_KEY: u16 = 1;
@@ -217,7 +220,7 @@ fn keys(client: &mut Client, stamps: &mut Stamps) -> Outcome {
     while took.len() < KEYS * 2 {
         let (told, code, pressed) = key(client)?;
         let now = time::monotonic_ns();
-        took.push(now.saturating_sub(stamps.of_key(told, code, pressed)?));
+        took.push(now.saturating_sub(stamps.of_key(told, (code, pressed))?));
     }
     took.sort_unstable();
     let keys = took.len();

@@ -14,7 +14,11 @@
 //! does. Its last steps are after it has had Spark restart consoled,
 //! which lent the desktop the screens: the desktop goes on. `alone` goes
 //! through what needs nobody at the keyboard and leaves consoled be, for
-//! a machine in the lab.
+//! a machine in the lab: it also asks for its window to be maximized,
+//! which with its frame then fills the screen, and has it back. `windows` is the boot test of window management
+//! ([`windows`]): the host works two windows with the pointer and the
+//! keys, and the program says what the screen shows after each. `cost`
+//! does the work `ob bench --desktop` measures ([`cost`]).
 //!
 //! `in-desktop` starts the desktop itself, with the program in it, once
 //! consoled is there to lend the screens. A boot test's command starts
@@ -24,6 +28,7 @@
 #![forbid(unsafe_code)]
 
 mod cost;
+mod windows;
 
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -109,7 +114,7 @@ impl Shown {
         ensure(client.layout_bytes().is_some_and(|bytes| bytes > 0), || {
             "the keyboard came with no layout".to_owned()
         })?;
-        ensure(client.repeat().is_some_and(|(rate, delay)| rate > 0 && delay > 0), || {
+        ensure(client.repeat().is_some_and(|(delay, rate)| delay > 0 && rate > 0), || {
             format!("the keyboard's repeat: {:?}", client.repeat())
         })?;
         let seed = 7;
@@ -238,6 +243,46 @@ impl Shown {
     }
 }
 
+impl Shown {
+    /// Asks for the window to be maximized, as a program may, draws it
+    /// at the size the window server then asks for, which with its
+    /// frame is the screen's, and has it back as it was.
+    fn maximize_and_back(&mut self) -> Outcome {
+        let size = |maximized: bool| {
+            move |heard: &Heard| match *heard {
+                Heard::Size { width, height, maximized: asked } if asked == maximized => {
+                    Some((width, height))
+                }
+                _ => None,
+            }
+        };
+        self.client.take_heard();
+        self.client.maximize(true)?;
+        let (width, height) = self.client.wait(PATIENCE, size(true))?;
+        let layout =
+            Layout::of(&Theme::basic(), (width, height), Shape::Maximized, Bar::Full, None);
+        let screen = &self.screens[self.on];
+        let fills = (layout.frame.w, layout.frame.h) == (screen.width as i32, screen.height as i32);
+        ensure(width > 0 && height > 0 && fills, || {
+            format!(
+                "maximized, the window is asked to be {width}x{height}, which with its frame \
+                 is not the screen's {}x{}",
+                screen.width, screen.height
+            )
+        })?;
+        self.client.show((width as u32, height as u32), self.seed)?;
+        self.client.wait(PATIENCE, |heard| matches!(heard, Heard::Frame(_)).then_some(()))?;
+        self.client.maximize(false)?;
+        let (width, height) = self.client.wait(PATIENCE, size(false))?;
+        // A side of 0 is the program's to choose.
+        let own = (WINDOW.0 as i32, WINDOW.1 as i32);
+        ensure([0, own.0].contains(&width) && [0, own.1].contains(&height), || {
+            format!("restored, the window is asked to be {width}x{height}, not {own:?}")
+        })?;
+        self.draw(self.seed)
+    }
+}
+
 /// The command that has Spark restart consoled (service(8)).
 const RESTART_CONSOLED: [&str; 3] = ["/system/commands/service", "consoled", "restart"];
 
@@ -276,6 +321,7 @@ fn alone() -> Outcome {
     let mut shown = Shown::open(false)?;
     shown.draw(8)?;
     shown.outlive_cut_pixels()?;
+    shown.maximize_and_back()?;
     shown.say_screens();
     Ok(())
 }
@@ -312,12 +358,16 @@ fn main() -> ExitCode {
         ["steps", "pointer-drawn"] => steps(true),
         ["alone"] => alone(),
         ["cost"] => cost::run(),
+        ["windows"] => windows::run(),
         // The program in the desktop has said whether it passed.
         ["in-desktop", ref inside @ ..] => match in_desktop(inside) {
             Ok(()) => return ExitCode::SUCCESS,
             failed => failed,
         },
-        _ => Err("usage: window-test [in-desktop] steps [pointer-drawn] | alone | cost".into()),
+        _ => {
+            Err("usage: window-test [in-desktop] steps [pointer-drawn] | windows | alone | cost"
+                .into())
+        }
     };
     match outcome {
         Ok(()) => {
