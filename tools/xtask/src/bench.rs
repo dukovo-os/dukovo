@@ -437,6 +437,10 @@ const ROWS: &[Row] = &[
         "POSIX: futex wake and wait each way (semaphores), two threads, two CPUs",
     ),
     posix(
+        "posix_futex_asleep_cross_cpu",
+        "POSIX: futex wake-up of a thread asleep on another CPU, each way (semaphores), less the 5 µs each thread holds the turn",
+    ),
+    posix(
         "posix_futex_shared_same_cpu",
         "POSIX: futex wake and wait each way (semaphores in shared memory), two processes, one CPU",
     ),

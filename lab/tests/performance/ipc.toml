@@ -31,6 +31,7 @@ rows = [
     "posix_events_idle",
     "posix_futex_same_cpu",
     "posix_futex_cross_cpu",
+    "posix_futex_asleep_cross_cpu",
     "posix_futex_shared_same_cpu",
     "posix_futex_shared_cross_cpu",
 ]

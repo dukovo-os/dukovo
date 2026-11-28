@@ -332,6 +332,12 @@ pub struct PerCpu {
     pub thread_stack: [AtomicUsize; 2],
     /// The address of the running thread's context block, or 0.
     pub context: AtomicUsize,
+    /// The block of the context whose extended state the registers hold,
+    /// or 0 (`thread.rs`).
+    pub fpu_holder: AtomicUsize,
+    /// FS base as last written here, or `u64::MAX` (no canonical address)
+    /// before the first write.
+    pub fs_base: AtomicU64,
     /// Reschedule IPIs received.
     pub reschedules: AtomicU64,
     /// When the next periodic tick is due, in nanoseconds.
@@ -391,6 +397,8 @@ impl PerCpu {
             stacks: Once::new(),
             thread_stack: [const { AtomicUsize::new(0) }; 2],
             context: AtomicUsize::new(0),
+            fpu_holder: AtomicUsize::new(0),
+            fs_base: AtomicU64::new(u64::MAX),
             reschedules: AtomicU64::new(0),
             next_tick_ns: AtomicU64::new(0),
             deadline_ns: AtomicU64::new(u64::MAX),

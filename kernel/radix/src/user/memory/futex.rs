@@ -15,9 +15,18 @@
 //! so a `futex_wake` that comes after the word changed (it takes the same
 //! lock) always finds the waiter: no wake-up is lost between the check and
 //! the sleep. A woken waiter is taken off the list by its waker and told
-//! so through its own flag, both with the list locked; the waker wakes
-//! its thread once the list is unlocked, so that the thread, which may
-//! run at once on the waker's CPU, does not find the list still locked.
+//! so through its own flag, which is on its thread's scheduler side, on
+//! the line the wake-up writes anyway, both with the list locked; the
+//! waker wakes its thread once the list is unlocked, so that the thread,
+//! which may run at once on the waker's CPU, does not find the list still
+//! locked. The waiter's reference to its thread goes with the wake-up to
+//! the queue the thread joins ([`sched::wake_given`]).
+//!
+//! Each list has a cache line of its own, which holds its lock and its
+//! oldest waiter; the rest wait in a second list beside it, which the
+//! first's lock covers too. A word one thread waits on, the usual case, is
+//! then waited on and woken in that one line: the waker takes it from the
+//! waiter's CPU once, with the lock.
 //! One that stops waiting for another reason (a timeout, a signal) takes
 //! itself off, unless a waker did first, which then counts as its
 //! wake-up. A waiter without a deadline sleeps on its own, outside the
@@ -25,8 +34,9 @@
 //! wakes it ([`sched::wake`]). The TLA+ model `kernel/radix/tla/Futex.tla`
 //! checks that no wake-up is lost this way.
 //!
-//! A waiter on shared memory holds what it waits on, so that its key
-//! names nothing else while it waits, even if every space unmaps it.
+//! A waiter on shared memory holds what it waits on until it is off its
+//! list, so that its key names nothing else while it waits, even if every
+//! space unmaps it.
 
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -39,9 +49,9 @@ use radix_sync::Mutex;
 use super::anon::SharedRef;
 use super::{FrameRef, RingRef, SpaceObject, kmalloc};
 use crate::Arch;
-use crate::sched::{self, ThreadRef, wait};
+use crate::sched::{self, ThinRef, ThreadRef, wait};
 use crate::user::posix::signal::{Restart, interrupted};
-use crate::user::{Result, UserRef, error};
+use crate::user::{Result, error};
 
 /// How many lists waiters are spread over.
 const BUCKETS: usize = 64;
@@ -77,48 +87,106 @@ pub enum Held {
 struct Waiter {
     owner: usize,
     offset: u64,
-    /// Held while it waits ([`Key::hold`]).
-    #[expect(dead_code, reason = "held only to keep the memory alive")]
-    hold: Option<Held>,
-    thread: ThreadRef,
-    /// Its program side, whose flag the waker sets.
-    user: UserRef,
+    /// Its thread, whose flag the waker sets, in one word.
+    thread: ThinRef,
 }
 
-/// The lists of waiters, each made when first needed.
-static LISTS: [Mutex<Option<Vec<Waiter, Kmalloc>>>; BUCKETS] =
-    [const { Mutex::new(None) }; BUCKETS];
+/// One list of waiters, with its lock and its oldest waiter in one cache
+/// line.
+#[repr(align(64))]
+struct List(Mutex<Waiters>);
 
-/// The list for the word `key` names.
-fn list(key: &Key) -> &'static Mutex<Option<Vec<Waiter, Kmalloc>>> {
-    let hash = (key.owner as u64 ^ key.offset.rotate_left(17)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    &LISTS[(hash >> 58) as usize % BUCKETS]
+const _: () = assert!(size_of::<List>() == 64, "a list's lock and oldest waiter share a line");
+
+/// The waiters of one list, in the order they came: the oldest here, the
+/// rest in the list's part of [`MORE`].
+struct Waiters {
+    first: Option<Waiter>,
+    /// How many wait in [`MORE`]: none while `first` is empty.
+    more: usize,
+}
+
+/// The lists of waiters.
+static LISTS: [List; BUCKETS] =
+    [const { List(Mutex::new(Waiters { first: None, more: 0 })) }; BUCKETS];
+
+/// Each list's waiters after its oldest, made when first needed, and
+/// locked only with that list locked.
+static MORE: [Mutex<Option<Vec<Waiter, Kmalloc>>>; BUCKETS] = [const { Mutex::new(None) }; BUCKETS];
+
+/// The list for the word a key names by `owner` and `offset`, by index.
+fn list(owner: usize, offset: u64) -> usize {
+    let hash = (owner as u64 ^ offset.rotate_left(17)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    (hash >> 58) as usize % BUCKETS
+}
+
+impl Waiters {
+    /// Adds `waiter` after the others of list `index`; gives it back if
+    /// there is no memory for it.
+    fn push(&mut self, index: usize, waiter: Waiter) -> core::result::Result<(), Waiter> {
+        if self.first.is_none() {
+            self.first = Some(waiter);
+            return Ok(());
+        }
+        let mut more = MORE[index].lock();
+        let rest = more.get_or_insert_with(|| Vec::new_in(kmalloc()));
+        if rest.try_reserve(1).is_err() {
+            return Err(waiter);
+        }
+        // Room was reserved above.
+        let _ = rest.push_within_capacity(waiter);
+        self.more += 1;
+        Ok(())
+    }
+
+    /// Takes the oldest waiter of list `index` that `matches`, keeping the
+    /// others in order.
+    fn take(&mut self, index: usize, matches: impl Fn(&Waiter) -> bool) -> Option<Waiter> {
+        if self.first.as_ref().is_some_and(&matches) {
+            let taken = self.first.take();
+            if self.more > 0 {
+                self.more -= 1;
+                self.first = MORE[index].lock().as_mut().map(|rest| rest.remove(0));
+            }
+            return taken;
+        }
+        if self.more == 0 {
+            return None;
+        }
+        let mut more = MORE[index].lock();
+        let rest = more.as_mut()?;
+        let at = rest.iter().position(matches)?;
+        self.more -= 1;
+        Some(rest.remove(at))
+    }
 }
 
 /// What a waiter with a deadline waits on in the scheduler's table: its
 /// own flag.
-fn key_of(user: &UserRef) -> usize {
-    &raw const user.futex_woken as usize
+fn key_of(thread: &ThreadRef) -> usize {
+    &raw const thread.futex_woken as usize
 }
 
 /// Waits while the word at `address` of `space`, the running thread's,
 /// holds `expected`, until a wake, `deadline_ns` (on the kernel's clock)
-/// or a signal. `user` is the running thread's program side.
+/// or a signal.
 pub fn wait(
     space: &SpaceObject,
     address: u64,
     expected: u32,
     deadline_ns: Option<u64>,
-    user: &UserRef,
 ) -> Result<()> {
     if !address.is_multiple_of(4) {
         return Err(Kernel::InvalidArgument.status(0));
     }
-    let me = sched::current().ok_or(error(Kernel::Gone))?;
-    let key = space.futex_key(address);
-    let bucket = list(&key);
+    // Borrowed: the waiter's reference is the one counted.
+    let me = sched::running().ok_or(error(Kernel::Gone))?;
+    // What the key holds stays held here until the waiter is off its list,
+    // by its waker or by itself, both before this returns.
+    let Key { owner, offset, hold: _held } = space.futex_key(address);
+    let index = list(owner, offset);
     {
-        let mut waiters = bucket.lock();
+        let mut waiters = LISTS[index].0.lock();
         // Read with the list locked: a waker changes the word before it
         // takes the lock.
         let mut word = [0u8; 4];
@@ -128,20 +196,13 @@ pub fn wait(
         if u32::from_le_bytes(word) != expected {
             return Err(error(Kernel::WouldBlock));
         }
-        let waiters = waiters.get_or_insert_with(|| Vec::new_in(kmalloc()));
-        waiters.try_reserve(1).map_err(|_| error(Kernel::NoMemory))?;
-        user.futex_woken.store(false, Ordering::Relaxed);
-        // Room was reserved above.
-        let waiter = Waiter {
-            owner: key.owner,
-            offset: key.offset,
-            hold: key.hold,
-            thread: me.clone(),
-            user: user.clone(),
-        };
-        let _ = waiters.push_within_capacity(waiter);
+        me.futex_woken.store(false, Ordering::Relaxed);
+        let waiter = Waiter { owner, offset, thread: ThinRef::new(ThreadRef::clone(&me)) };
+        if waiters.push(index, waiter).is_err() {
+            return Err(error(Kernel::NoMemory));
+        }
     }
-    let done = || user.futex_woken.load(Ordering::Acquire) || sched::interrupted();
+    let done = || me.futex_woken.load(Ordering::Acquire) || sched::interrupted();
     let in_time = match deadline_ns {
         None => {
             // A wake that comes before the thread sleeps makes the sleep
@@ -151,21 +212,18 @@ pub fn wait(
             }
             true
         }
-        Some(deadline) => wait::wait_until_or_timeout(key_of(user), "futex", deadline, done),
+        Some(deadline) => wait::wait_until_or_timeout(key_of(&me), "futex", deadline, done),
     };
-    if user.futex_woken.load(Ordering::Acquire) {
+    if me.futex_woken.load(Ordering::Acquire) {
         return Ok(());
     }
     // Off the list, unless a waker took it off just now: then the wake-up
-    // is this wait's. What it held goes with the list unlocked.
-    let mine = {
-        let mut waiters = bucket.lock();
-        let Some(waiters) = waiters.as_mut() else { return Ok(()) };
-        let Some(at) = waiters.iter().position(|w| ThreadRef::ptr_eq(&w.thread, &me)) else {
-            return Ok(());
-        };
-        waiters.remove(at)
-    };
+    // is this wait's. Its reference goes with the list unlocked.
+    let mine =
+        LISTS[index].0.lock().take(index, |w| core::ptr::eq(&raw const *w.thread, &raw const **me));
+    if mine.is_none() {
+        return Ok(());
+    }
     drop(mine);
     if !in_time {
         return Err(error(Kernel::TimedOut));
@@ -184,35 +242,25 @@ pub fn wake(space: &SpaceObject, address: u64, count: u32) -> Result<u32> {
         return Err(Kernel::InvalidArgument.status(0));
     }
     let key = space.futex_key(address);
-    let bucket = list(&key);
+    let index = list(key.owner, key.offset);
     let mut woken = 0;
     loop {
-        let mut batch: [Option<ThreadRef>; WAKE_BATCH] = [const { None }; WAKE_BATCH];
+        let mut batch: [Option<ThinRef>; WAKE_BATCH] = [const { None }; WAKE_BATCH];
         let mut taken = 0;
         let more = {
-            let mut waiters = bucket.lock();
-            let Some(waiters) = waiters.as_mut() else { return Ok(0) };
-            let mut index = 0;
-            while index < waiters.len() && woken < count && taken < WAKE_BATCH {
-                let waiter = &waiters[index];
-                if waiter.owner != key.owner || waiter.offset != key.offset {
-                    index += 1;
-                    continue;
-                }
-                let waiter = waiters.remove(index);
-                waiter.user.futex_woken.store(true, Ordering::Release);
-                // What the wait held goes here, with the list locked, and
-                // is never the last hold: a waiter on the same word holds
-                // the same memory as `key`, which is held until this
-                // returns, so no object is freed under the lock.
+            let mut waiters = LISTS[index].0.lock();
+            while woken < count && taken < WAKE_BATCH {
+                let on_word = |w: &Waiter| w.owner == key.owner && w.offset == key.offset;
+                let Some(waiter) = waiters.take(index, on_word) else { break };
+                waiter.thread.futex_woken.store(true, Ordering::Release);
                 batch[taken] = Some(waiter.thread);
                 taken += 1;
                 woken += 1;
             }
             taken == WAKE_BATCH && woken < count
         };
-        for thread in batch.iter().flatten() {
-            sched::wake(thread);
+        for thread in batch.into_iter().flatten() {
+            sched::wake_given(thread.into_ref());
         }
         if !more {
             return Ok(woken);

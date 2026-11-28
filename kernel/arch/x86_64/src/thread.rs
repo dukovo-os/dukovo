@@ -15,6 +15,21 @@
 //! base), and otherwise the kernel's own tables, so a space is only ever
 //! loaded while a context that holds it runs. It also points this CPU's
 //! system call and interrupt stack at the incoming context's kernel stack.
+//! FS base is written only when it changes on the CPU: a program's thread
+//! that blocks while the CPU idles comes back to the base it left.
+//!
+//! Only a context with extended state of its own, a program's or one that
+//! fills the vector registers itself (the FPU self-test), has its state
+//! kept: the kernel never uses those registers, so a switch to a kernel
+//! thread leaves them as they are. Such a context's state is saved each
+//! time it leaves a CPU, and loaded as it comes back only if the CPU's
+//! registers no longer hold it: if another such context's state was
+//! loaded there since, or it last ran on another CPU. A program's thread
+//! that blocks while its CPU idles, as a futex's waiter does, comes back
+//! to registers that still hold its state, as Linux's does
+//! (`fpregs_state_valid`). Registers only ever hold the state of the last
+//! such context loaded on the CPU, which a kernel thread never reads, so
+//! no program sees another's (unlike lazy switching, `fpu.rs`).
 //!
 //! The area of a context that goes is kept, zeroed and still mapped, for
 //! the next new context of its size, up to [`SPARE_MOST`] of them, as Linux
@@ -55,6 +70,12 @@ const USER_ENTRY: usize = 16;
 const FULL_RETURN: usize = 24;
 const FULL_RCX: usize = 32;
 const FULL_R11: usize = 40;
+/// The CPU whose registers were last loaded with or saved from the
+/// context's extended state, as its index plus one; 0 for none.
+const FPU_HERE: usize = 48;
+/// Whether the context's extended state is kept (1) or not (0): see the
+/// module comment.
+const EXTENDED: usize = 56;
 const AREA: usize = 64;
 
 /// Most areas of gone contexts kept for new ones.
@@ -108,6 +129,68 @@ fn current_word(offset: usize) -> &'static AtomicU64 {
     // above, and those words are only ever accessed atomically, by the
     // context itself.
     unsafe { &*((block + offset) as *const AtomicU64) }
+}
+
+/// Word `offset` of context block `block`.
+#[inline]
+fn block_word(block: usize, offset: usize) -> &'static AtomicU64 {
+    // SAFETY: as in `current_word`: `block` is a mapped context block,
+    // whose context the caller runs or holds, and `offset` one of the
+    // 8-aligned words above, only ever accessed atomically.
+    unsafe { &*((block + offset) as *const AtomicU64) }
+}
+
+/// The running CPU's number in a context's [`FPU_HERE`] word.
+#[inline]
+fn fpu_here(cpu: &percpu::PerCpu) -> u64 {
+    cpu.index() as u64 + 1
+}
+
+/// Notes that this CPU's registers hold the extended state of the context
+/// in block `block`, which runs here or has just been saved from here.
+#[inline]
+fn hold_extended(cpu: &percpu::PerCpu, block: usize) {
+    cpu.fpu_holder.store(block, Ordering::Relaxed);
+    block_word(block, FPU_HERE).store(fpu_here(cpu), Ordering::Relaxed);
+}
+
+/// Loads the extended state of the context in block `block`, which is
+/// about to run on this CPU, unless the registers still hold it.
+#[inline]
+fn load_extended(block: usize) {
+    let cpu = percpu::current();
+    if cpu.fpu_holder.load(Ordering::Relaxed) == block
+        && block_word(block, FPU_HERE).load(Ordering::Relaxed) == fpu_here(cpu)
+    {
+        return;
+    }
+    // SAFETY: `block` is the running context's, whose area holds what
+    // `save` wrote or `init_area` set up.
+    unsafe { fpu::restore(block + AREA) };
+    hold_extended(cpu, block);
+}
+
+/// Makes the running context keep extended state of its own from now on,
+/// starting from its initial state: for a kernel thread about to fill the
+/// vector registers (the FPU self-test).
+pub fn claim_extended() {
+    let were = cpu::disable_interrupts();
+    let cpu = percpu::current();
+    let block = cpu.context.load(Ordering::Relaxed);
+    assert!(block != 0, "no context runs on this CPU");
+    if block_word(block, EXTENDED).swap(1, Ordering::Relaxed) == 0 {
+        // Loading the area, rather than taking the registers as they are,
+        // also tells XSAVEOPT that what the area holds is what was loaded
+        // from it: the last load here from the same address may have been
+        // a context that went, whose block this one has now.
+        // SAFETY: the running context's area, which `init_area` set up and
+        // nothing has saved into, since the context kept no state.
+        unsafe { fpu::restore(block + AREA) };
+        hold_extended(cpu, block);
+    }
+    if were {
+        cpu::enable_interrupts();
+    }
 }
 
 /// Records how the running context came in from user mode.
@@ -224,10 +307,12 @@ unsafe extern "C" {
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 extern "C" fn radix_thread_start(entry: fn(usize) -> !, arg: usize, block: usize) -> ! {
-    // SAFETY: `block` is this context's block (the trampoline got it from
-    // the frame `new` built), whose save area `new` initialised; this is
-    // the context's own first use of it.
-    unsafe { fpu::restore(block + AREA) };
+    // `block` is this context's block (the trampoline got it from the
+    // frame `new` built), whose save area `new` initialised. A kernel
+    // thread leaves the registers to the context whose state they hold.
+    if block_word(block, EXTENDED).load(Ordering::Relaxed) != 0 {
+        load_extended(block);
+    }
     entry(arg)
 }
 
@@ -319,8 +404,10 @@ impl Context {
         })
     }
 
-    /// Makes the context run in `space` from its next switch on.
+    /// Makes the context run in `space` from its next switch on, with
+    /// extended state of its own.
     pub fn attach_space(&self, space: &UserSpace) -> bool {
+        block_word(self.block, EXTENDED).store(1, Ordering::Relaxed);
         self.space.set(space.clone()).is_ok()
     }
 
@@ -331,10 +418,12 @@ impl Context {
         }
         let were = cpu::disable_interrupts();
         self.thread_pointer.store(base, Ordering::Relaxed);
-        if percpu::current().context.load(Ordering::Relaxed) == self.block {
+        let here = percpu::current();
+        if here.context.load(Ordering::Relaxed) == self.block {
             // SAFETY: FS base is the program's; the kernel never uses FS,
             // and the value is a user address, so canonical.
             unsafe { cpu::wrmsr(msr::FS_BASE, base) };
+            here.fs_base.store(base, Ordering::Relaxed);
         }
         if were {
             cpu::enable_interrupts();
@@ -353,9 +442,14 @@ impl Context {
         if from.block == to.block {
             return;
         }
-        // SAFETY: `from` runs on this CPU (checked above), so its save area
-        // is this thread's own.
-        unsafe { fpu::save(from.block + AREA) };
+        let extended = block_word(from.block, EXTENDED).load(Ordering::Relaxed) != 0;
+        if extended {
+            // SAFETY: `from` runs on this CPU (checked above), so its save
+            // area is this thread's own.
+            unsafe { fpu::save(from.block + AREA) };
+            // The registers still hold what was just saved.
+            hold_extended(cpu, from.block);
+        }
         cpu.context.store(to.block, Ordering::Relaxed);
         cpu.thread_stack[0].store(to.stack.start, Ordering::Relaxed);
         cpu.thread_stack[1].store(to.stack.end, Ordering::Relaxed);
@@ -364,9 +458,11 @@ impl Context {
         match to.space.get() {
             Some(space) => {
                 space.space().switch_to();
-                // SAFETY: as in `set_thread_pointer`.
-                unsafe {
-                    cpu::wrmsr(msr::FS_BASE, to.thread_pointer.load(Ordering::Relaxed));
+                let base = to.thread_pointer.load(Ordering::Relaxed);
+                if cpu.fs_base.load(Ordering::Relaxed) != base {
+                    // SAFETY: as in `set_thread_pointer`.
+                    unsafe { cpu::wrmsr(msr::FS_BASE, base) };
+                    cpu.fs_base.store(base, Ordering::Relaxed);
                 }
             }
             // A kernel thread keeps the tables loaded: a switch back to
@@ -383,8 +479,9 @@ impl Context {
         // stacks, so nothing uses the stack while no context owns it.
         unsafe { radix_context_switch(from.block, to.block) };
         // Back in `from`, possibly on another CPU.
-        // SAFETY: `from` runs here again; its area holds what `save` wrote.
-        unsafe { fpu::restore(from.block + AREA) };
+        if extended {
+            load_extended(from.block);
+        }
     }
 
     /// The context's thread pointer in user mode.
@@ -397,11 +494,15 @@ impl Context {
     pub fn copy_extended_state(&self) {
         assert!(!self.is_running(), "copying extended state into a context that runs");
         let were = cpu::disable_interrupts();
-        // SAFETY: `self`'s area is a save area set up by `init_area` that
-        // nothing uses until the context first runs (checked above: it
-        // has not), and saving the running thread's registers into it
-        // changes nothing else.
-        unsafe { fpu::save(self.block + AREA) };
+        // A kernel thread's registers hold another context's state: the
+        // new one keeps its initial state.
+        if current_word(EXTENDED).load(Ordering::Relaxed) != 0 {
+            // SAFETY: `self`'s area is a save area set up by `init_area`
+            // that nothing uses until the context first runs (checked
+            // above: it has not), and saving the running thread's
+            // registers into it changes nothing else.
+            unsafe { fpu::save(self.block + AREA) };
+        }
         if were {
             cpu::enable_interrupts();
         }

@@ -309,6 +309,10 @@ pub struct Thread {
     /// Set by [`super::wake`]; a thread that blocks with it set does not
     /// sleep, so a wake that comes before the block is not lost.
     pub(super) wake_pending: AtomicBool,
+    /// Set by the futex wake that takes it off a futex's waiters
+    /// (`user::memory::futex`), just before that wake's [`super::wake`]:
+    /// on the line the wake writes anyway.
+    pub(crate) futex_woken: AtomicBool,
     // Written under its run queue's lock (and, but for the balancer's
     // moves, its own).
     /// [`NOT_QUEUED`], [`FAIR`] or [`REAL_TIME`].
@@ -326,8 +330,6 @@ pub struct Thread {
     signalled: AtomicBool,
     /// Set once the reaper is done with it.
     pub(super) reaped: AtomicBool,
-    /// Set once it no longer counts among its domain's threads.
-    left: AtomicBool,
     /// The CPU whose run queue it is on, or last ran on.
     pub(super) cpu: AtomicUsize,
     /// While it waits in a CPU's inbox ([`super::hand_over`]), the address
@@ -345,6 +347,8 @@ pub struct Thread {
     pub(super) quantum_left_ns: AtomicU64,
     /// The mutex it waits for, by key, for priority inheritance.
     pub(super) blocked_on: AtomicUsize,
+    /// Set once it no longer counts among its domain's threads.
+    left: AtomicBool,
     /// Where it may run.
     allowed: [AtomicU64; WORDS],
     pub(super) stats: Stats,
@@ -392,6 +396,7 @@ impl Thread {
             state: SpinLock::new(State { run: Run::New, policy, boost: 0, affinity, lag_ns: 0 }),
             cpu: AtomicUsize::new(affinity.lowest().unwrap_or(0)),
             wake_pending: AtomicBool::new(false),
+            futex_woken: AtomicBool::new(false),
             handed_next: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             signalled: AtomicBool::new(false),

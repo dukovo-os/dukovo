@@ -150,10 +150,12 @@ static struct mark start(void) {
 // Prints the time per operation since `started`, and on Radix the
 // kernel's events since then as a BENCHCOUNT line, which ob bench divides
 // by the rounds, with how long the benchmarks' CPU sat idle and how long
-// the other CPUs worked meanwhile.
-static void report(const char *name, struct mark started, uint64_t count) {
+// the other CPUs worked meanwhile. `held` is time the benchmark measured
+// itself spending on purpose between operations, which the time per
+// operation leaves out.
+static void report_less(const char *name, struct mark started, uint64_t count, uint64_t held) {
 	uint64_t elapsed = now_ns() - started.ns;
-	double ns = (double)elapsed / (double)count;
+	double ns = (double)(elapsed > held ? elapsed - held : 0) / (double)count;
 	// A time under 10 ns, as a clock row's fraction of a nanosecond, gets
 	// four decimals: at two, a cycle of 0.195 ns prints as 0.19 or 0.20,
 	// 5% apart, and the lab holds the two systems' clocks to 3%.
@@ -172,6 +174,10 @@ static void report(const char *name, struct mark started, uint64_t count) {
 		       (unsigned long long)(elsewhere > idle_elsewhere ? elsewhere - idle_elsewhere : 0));
 	}
 	fflush(stdout);
+}
+
+static void report(const char *name, struct mark started, uint64_t count) {
+	report_less(name, started, count, 0);
 }
 
 static void fail(const char *what) {
@@ -461,38 +467,67 @@ static void poll_idle(uint64_t rounds) {
 }
 
 // Two threads passing a turn there and back through two semaphores, as
-// futexes wake and wait in both C libraries.
+// futexes wake and wait in both C libraries. Each holds the turn `hold`
+// nanoseconds before it passes it on, if `hold` is not 0, and the time
+// the answerer held it in the rounds timed is `held`.
 struct turns {
 	sem_t ask, answer;
 	uint64_t rounds;
+	uint64_t hold;
+	uint64_t held;
 	int cpu;
 };
+
+// How long a thread of posix_futex_asleep_cross_cpu holds the turn: long
+// enough for the other to be asleep in the kernel by then, on either
+// system, and short enough that neither system's CPU idles deeper than
+// it does between the turns of posix_futex_cross_cpu.
+#define ASLEEP_HOLD_NS 5000
+
+// Keeps the CPU busy for `ns` nanoseconds; returns how long it did.
+static uint64_t hold_turn(uint64_t ns) {
+	uint64_t from = now_ns(), to;
+	while((to = now_ns()) - from < ns) {}
+	return to - from;
+}
 
 static void *answerer(void *argument) {
 	struct turns *turns = argument;
 	pin(turns->cpu);
 	for(uint64_t i = 0; i < turns->rounds; i++) {
 		while(sem_wait(&turns->ask) != 0) {}
+		if(turns->hold) {
+			uint64_t held = hold_turn(turns->hold);
+			// The first round is not timed (pass_turns). The passer
+			// reads this after the last round's sem_wait, which the
+			// sem_post below orders after the write.
+			if(i > 0)
+				turns->held += held;
+		}
 		sem_post(&turns->answer);
 	}
 	return NULL;
 }
 
 // Passes the turns to the answerer and back, and reports all but the
-// first, which only finds the answerer pinned and waiting.
+// first, which only finds the answerer pinned and waiting, less the time
+// both held the turns.
 static void pass_turns(const char *name, struct turns *turns) {
 	sem_post(&turns->ask);
 	while(sem_wait(&turns->answer) != 0) {}
+	uint64_t held = 0;
 	struct mark started = start();
 	for(uint64_t i = 1; i < turns->rounds; i++) {
+		if(turns->hold)
+			held += hold_turn(turns->hold);
 		sem_post(&turns->ask);
 		while(sem_wait(&turns->answer) != 0) {}
 	}
-	report(name, started, turns->rounds - 1);
+	report_less(name, started, turns->rounds - 1, held + turns->held);
 }
 
-static void futex_pingpong(const char *name, int other, uint64_t rounds) {
-	struct turns turns = {.rounds = rounds, .cpu = other};
+static void futex_pingpong(const char *name, int other, uint64_t rounds, uint64_t hold) {
+	struct turns turns = {.rounds = rounds, .hold = hold, .cpu = other};
 	if(sem_init(&turns.ask, 0, 0) != 0 || sem_init(&turns.answer, 0, 0) != 0)
 		fail("sem_init");
 	pthread_t thread;
@@ -1321,9 +1356,15 @@ int main(int argc, char **argv) {
 	pipe_throughput();
 	signal_delivery(100000);
 	poll_ready(100000);
-	futex_pingpong("posix_futex_same_cpu", cpus[0], 50000);
-	if(count > 1)
-		futex_pingpong("posix_futex_cross_cpu", cpus[1], 50000);
+	futex_pingpong("posix_futex_same_cpu", cpus[0], 50000, 0);
+	if(count > 1) {
+		futex_pingpong("posix_futex_cross_cpu", cpus[1], 50000, 0);
+		// A pair that does nothing between turns can pass a turn back
+		// before the other thread is asleep, and then never sleep, if
+		// the wake-ups are quick enough; this row times only wake-ups
+		// of a thread that is.
+		futex_pingpong("posix_futex_asleep_cross_cpu", cpus[1], 20000, ASLEEP_HOLD_NS);
+	}
 	futex_processes("posix_futex_shared_same_cpu", cpus[0], 50000);
 	if(count > 1)
 		futex_processes("posix_futex_shared_cross_cpu", cpus[1], 50000);

@@ -798,7 +798,6 @@ impl ProcessObject {
             window: AtomicU64::new(default_window()),
             process: process.clone(),
             signals: SpinLock::new(signals),
-            futex_woken: AtomicBool::new(false),
             poll_changed: AtomicBool::new(false),
             scheduling: Mutex::new(scheduling),
             stock: super::account::Stock::new(),
