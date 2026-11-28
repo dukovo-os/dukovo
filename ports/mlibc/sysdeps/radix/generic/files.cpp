@@ -406,6 +406,7 @@ int dup_from(int fd, int min_fd, bool close_on_exec, int *newfd) {
 		return e;
 	radix::set_dir_cursor(*newfd, radix::dir_cursor(fd));
 	radix::copy_dir_path(fd, *newfd);
+	radix::note_socket_kind(*newfd, radix::socket_kind(fd));
 	if(close_on_exec) {
 		struct radix_capability_flags_results old;
 		radix_capability_flags(radix::slot_of(*newfd), true, RADIX_SLOT_FLAGS_CLOSE_ON_EXEC, &old);
@@ -837,6 +838,7 @@ int Sysdeps<Dup2>::operator()(int fd, int flags, int newfd) {
 	radix::fd_taken(newfd);
 	radix::set_dir_cursor(newfd, radix::dir_cursor(fd));
 	radix::copy_dir_path(fd, newfd);
+	radix::note_socket_kind(newfd, radix::socket_kind(fd));
 	if(flags & O_CLOEXEC) {
 		struct radix_capability_flags_results old;
 		radix_capability_flags(to, true, RADIX_SLOT_FLAGS_CLOSE_ON_EXEC, &old);
