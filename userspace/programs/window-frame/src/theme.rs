@@ -202,8 +202,6 @@ pub struct Theme {
     /// The width of the title bar a program's region always leaves, to
     /// move the window by.
     pub drag_strip: i32,
-    /// The least width of a window's content.
-    pub content_least: i32,
     /// The menu and the list.
     pub panel: Panel,
 }
@@ -273,7 +271,6 @@ impl Theme {
             corner: 20,
             top_edge: 4,
             drag_strip: 96,
-            content_least: 120,
             panel: Panel {
                 fill: Fill { top: rgb(0x1e_3a5b), knee: None, bottom: rgb(0x17_2e4a) },
                 line: rgb(0x3a_5677),

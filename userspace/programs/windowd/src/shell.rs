@@ -5,12 +5,26 @@
 //! windowd speaks (ADR 0712), and the choices a protocol leaves to the
 //! compositor.
 //!
-//! A program's window shows once the program has drawn it: in the
-//! middle of the screen the pointer is on, a step down and to the right
-//! of the window before it, in front of the others and with the
-//! keyboard. A click on a window brings it to the front and gives it
-//! the keyboard. When the window with the keyboard goes, the one then
-//! in front has it.
+//! A program's window shows once the program has drawn it, in front of
+//! the others and with the keyboard ([`crate::windows`] says where). A
+//! click on a window brings it to the front and gives it the keyboard.
+//! When the window with the keyboard goes, the one then in front has
+//! it.
+//!
+//! A program may ask for its window to be maximized, restored or
+//! minimized, which is done as the frame's buttons do it. It may ask
+//! for the pointer to move or resize the window, or for the window's
+//! menu, with the serial of a button it was told went down: those are
+//! kept in [`Shell::asked`] for the window manager
+//! ([`crate::manager`]). A program that asks for a window to fill the
+//! screen with nothing around it is answered with the window as it is,
+//! in this step of release 1.1 (docs/deferred.md).
+//!
+//! A popup that asks for the keyboard and the pointer has them until it
+//! goes. A press outside it and its program's other surfaces ends it,
+//! and so does whatever gives the keyboard to another window: the
+//! popup's program is told it is done, and the keyboard goes where it
+//! was to go.
 //!
 //! Nothing here reaches the screens or a device. What a request of a
 //! program changes is kept in [`Changed`] and [`Shell::lights`], which
@@ -21,16 +35,23 @@ use std::time::Duration;
 
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::desktop::utils::send_frames_surface_tree;
-use smithay::desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType};
+use smithay::desktop::{
+    PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
+    Window, find_popup_root_surface,
+};
 use smithay::input::keyboard::LedState;
-use smithay::input::pointer::CursorImageStatus;
+use smithay::input::pointer::{CursorImageStatus, Focus};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{
+    ResizeEdge, State, WmCapabilities,
+};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
-use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial, Size};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, get_parent,
@@ -45,15 +66,12 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{
     delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
 };
+use sysapi::time::monotonic_ns;
+use window_frame::Edge;
 
 use crate::clients::Peer;
-
-/// How far down and to the right of the window before it a new window
-/// shows.
-const STEP: i32 = 32;
-
-/// After how many windows the steps start again at the middle.
-const STEPS: i32 = 8;
+use crate::manager::Asked;
+use crate::windows::Windows;
 
 /// What the programs' requests changed since the desktop last looked.
 #[derive(Clone, Copy, Debug, Default)]
@@ -75,15 +93,20 @@ pub struct Shell {
     /// Kept for as long as the screens' globals are offered.
     _outputs: OutputManagerState,
     popups: PopupManager,
+    /// The popups that have the keyboard and the pointer, with the
+    /// surface of the window they are of.
+    grabbed: Option<(WlSurface, PopupGrab<Shell>)>,
     /// The windows a program has asked for and not yet drawn.
     waiting: Vec<Window>,
-    /// How many windows have shown, for the step of the next.
-    shown: i32,
+    /// The window the person works in: the one with the keyboard.
+    active: Option<Window>,
     /// The one seat: every keyboard and pointer of the machine.
     pub seat: Seat<Shell>,
-    /// The windows that show, and the screens they show on.
-    pub space: Space<Window>,
-    /// What the pointer shows.
+    /// The windows a program has drawn, and the screens.
+    pub windows: Windows,
+    /// What the programs asked of the window manager.
+    pub asked: Vec<Asked>,
+    /// What the pointer shows over a program's surface.
     pub pointer: CursorImageStatus,
     /// What changed.
     pub changed: Changed,
@@ -99,17 +122,20 @@ impl Shell {
         let mut seats = SeatState::new();
         let mut seat = seats.new_wl_seat(display, "seat0");
         seat.add_pointer();
+        let does = [WmCapabilities::WindowMenu, WmCapabilities::Maximize, WmCapabilities::Minimize];
         Shell {
             compositor: CompositorState::new::<Shell>(display),
-            xdg: XdgShellState::new::<Shell>(display),
+            xdg: XdgShellState::new_with_capabilities::<Shell>(display, does),
             shm: ShmState::new::<Shell>(display, Vec::new()),
             seats,
             _outputs: OutputManagerState::new_with_xdg_output::<Shell>(display),
             popups: PopupManager::default(),
+            grabbed: None,
             waiting: Vec::new(),
-            shown: 0,
+            active: None,
             seat,
-            space: Space::default(),
+            windows: Windows::default(),
+            asked: Vec::new(),
             pointer: CursorImageStatus::default_named(),
             changed: Changed::default(),
             lights: None,
@@ -117,39 +143,39 @@ impl Shell {
     }
 
     /// The window whose surface, or whose surface's ancestor, `surface`
-    /// is, among those that show.
+    /// is, among those a program has drawn.
     fn window_of(&self, surface: &WlSurface) -> Option<Window> {
-        let root = root_of(surface);
-        let has = |window: &&Window| window.wl_surface().is_some_and(|its| *its == root);
-        self.space.elements().find(has).cloned()
+        self.windows.of_surface(&root_of(surface)).cloned()
     }
 
-    /// Where a window of `size` first shows.
-    fn place(&self, size: Size<i32, Logical>) -> Point<i32, Logical> {
-        let at = self.seat.get_pointer().map(|pointer| pointer.current_location());
-        let under = at.and_then(|at| self.space.output_under(at).next().cloned());
-        let screen = under.or_else(|| self.space.outputs().next().cloned());
-        let Some(screen) = screen.and_then(|screen| self.space.output_geometry(&screen)) else {
-            return Point::from((0, 0));
-        };
-        let step = self.shown % STEPS * STEP;
-        let middle = |room: i32, taken: i32| ((room - taken) / 2 + step).min(room - taken).max(0);
-        let x = screen.loc.x + middle(screen.size.w, size.w);
-        let y = screen.loc.y + middle(screen.size.h, size.h);
-        Point::from((x, y))
+    /// The window of `toplevel`, if its program has drawn it.
+    fn window(&self, toplevel: &ToplevelSurface) -> Option<Window> {
+        self.windows.of_surface(toplevel.wl_surface()).cloned()
+    }
+
+    /// Where the pointer is.
+    fn pointer_at(&self) -> Point<f64, Logical> {
+        self.seat.get_pointer().map_or_default(|pointer| pointer.current_location())
+    }
+
+    /// The window the person works in.
+    pub fn active(&self) -> Option<&Window> {
+        self.active.as_ref()
     }
 
     /// Gives the keyboard to `window`, in front of the others, or to no
-    /// window.
+    /// window. A window that is minimized shows again.
     pub fn focus(&mut self, window: Option<&Window>) {
+        self.end_popups(window);
         if let Some(window) = window {
-            self.space.raise_element(window, false);
+            self.windows.unminimize(window);
+            self.windows.used(window);
         }
         // Each window is told here whether it is the one the person
         // works in, and only when that changed.
-        for other in self.space.elements() {
-            let Some(toplevel) = other.toplevel() else { continue };
-            if other.set_activated(window == Some(other)) {
+        for other in self.windows.by_use() {
+            let Some(toplevel) = other.window.toplevel() else { continue };
+            if other.window.set_activated(window == Some(&other.window)) {
                 toplevel.send_pending_configure();
             }
         }
@@ -157,12 +183,55 @@ impl Shell {
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
         }
+        self.active = window.cloned();
         self.changed.windows = true;
     }
 
-    /// The window in front, which has the keyboard when another goes.
-    fn front(&self) -> Option<Window> {
-        self.space.elements().next_back().cloned()
+    /// The popups that have the keyboard and the pointer are done,
+    /// unless they are of `keep`: the keyboard is to go elsewhere, or a
+    /// key of windowd's was pressed.
+    pub fn end_popups(&mut self, keep: Option<&Window>) {
+        let Some((root, mut grab)) = self.grabbed.take() else { return };
+        if grab.has_ended() {
+            return;
+        }
+        if keep.and_then(WaylandFocus::wl_surface).is_some_and(|its| *its == root) {
+            self.grabbed = Some((root, grab));
+            return;
+        }
+        grab.ungrab(PopupUngrabStrategy::All);
+        let (serial, before) = (grab.serial(), grab.previous_serial());
+        let next = SERIAL_COUNTER.next_serial();
+        if let Some(pointer) = self.seat.get_pointer()
+            && (pointer.has_grab(serial) || before.is_some_and(|before| pointer.has_grab(before)))
+        {
+            // The pointer's grab takes the keyboard's with it, and the
+            // keyboard is the popups' window's again.
+            pointer.unset_grab(self, next, now_ms());
+        }
+        if let Some(keyboard) = self.seat.get_keyboard()
+            && (keyboard.has_grab(serial) || before.is_some_and(|before| keyboard.has_grab(before)))
+        {
+            keyboard.unset_grab(self);
+            keyboard.set_focus(self, Some(root), next);
+        }
+    }
+
+    /// Gives the keyboard to the window in front, if `window`, which
+    /// went or is off the screens, had it.
+    fn pass_on(&mut self, window: &Window) {
+        if self.active.as_ref() == Some(window) {
+            let front = self.windows.front();
+            self.focus(front.as_ref());
+        }
+        self.changed.windows = true;
+    }
+
+    /// Takes `window` off the screens. If it had the keyboard, the
+    /// window then in front has it.
+    pub fn minimize(&mut self, window: &Window) {
+        self.windows.minimize(window);
+        self.pass_on(window);
     }
 
     /// A program drew `surface` for the first time, if it is a window
@@ -172,6 +241,8 @@ impl Shell {
         let Some(at) = self.waiting.iter().position(waits) else { return };
         let Some(toplevel) = self.waiting[at].toplevel().cloned() else { return };
         if !toplevel.is_initial_configure_sent() {
+            let room = self.windows.room(self.pointer_at());
+            toplevel.with_pending_state(|state| state.bounds = Some(room));
             toplevel.send_configure();
             return;
         }
@@ -182,30 +253,40 @@ impl Shell {
             return;
         }
         let window = self.waiting.remove(at);
-        self.space.map_element(window.clone(), self.place(size), false);
-        self.shown += 1;
+        self.windows.show(window.clone(), self.pointer_at());
         self.focus(Some(&window));
     }
 
-    /// The surface under `at`, a place of the desktop, and where its
-    /// top left corner is.
-    pub fn under(&self, at: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, place) = self.space.element_under(at)?;
-        let (surface, within) =
-            window.surface_under(at - place.to_f64(), WindowSurfaceType::ALL)?;
-        Some((surface, (within + place).to_f64()))
-    }
-
-    /// The window under `at`.
-    pub fn window_under(&self, at: Point<f64, Logical>) -> Option<Window> {
-        self.space.element_under(at).map(|(window, _)| window.clone())
+    /// The window of `toplevel`, if `serial` is that of a button's press
+    /// its program was told of and the button is still down, with the
+    /// button's Linux code. The pointer is the program's no longer.
+    fn pressed_on(&mut self, toplevel: &ToplevelSurface, serial: Serial) -> Option<(Window, u16)> {
+        let pointer = self.seat.get_pointer()?;
+        if !pointer.has_grab(serial) {
+            return None;
+        }
+        let start = pointer.grab_start_data()?;
+        let (pressed, _) = start.focus?;
+        if !pressed.id().same_client_as(&toplevel.wl_surface().id()) {
+            return None;
+        }
+        let window = self.window(toplevel)?;
+        // The desktop tells the program next that the pointer left.
+        pointer.unset_grab(self, serial, now_ms());
+        Some((window, start.button as u16))
     }
 
     /// Tidies what the programs' requests left: windows and popups that
     /// went.
     pub fn refresh(&mut self) {
-        self.space.refresh();
+        self.windows.refresh();
         self.popups.cleanup();
+        if self.grabbed.as_ref().is_some_and(|(_, grab)| grab.has_ended()) {
+            self.grabbed = None;
+        }
+        if self.active.as_ref().is_some_and(|active| self.windows.framed(active).is_none()) {
+            self.active = None;
+        }
         let gone =
             matches!(&self.pointer, CursorImageStatus::Surface(surface) if !surface.is_alive());
         if gone {
@@ -222,10 +303,11 @@ impl Shell {
     /// The windows that show on `screen`, each once: on the first of
     /// the screens it is on.
     fn windows_on<'a>(&'a self, screen: &'a Output) -> impl Iterator<Item = &'a Window> {
+        let space = &self.windows.space;
         let first = move |window: &&Window| {
-            self.space.outputs_for_element(window).first().is_some_and(|its| its == screen)
+            space.outputs_for_element(window).first().is_some_and(|its| its == screen)
         };
-        self.space.elements().filter(first)
+        space.elements().filter(first)
     }
 
     /// Whether a program with a window on `screen` waits to hear that a
@@ -254,6 +336,12 @@ impl Shell {
     }
 }
 
+/// The time now as the protocols carry it: the monotonic clock's, in
+/// milliseconds, the low 32 bits.
+fn now_ms() -> u32 {
+    (monotonic_ns() / 1_000_000) as u32
+}
+
 /// The surface at the top of `surface`'s tree: a window's own, for one
 /// of its subsurfaces.
 fn root_of(surface: &WlSurface) -> WlSurface {
@@ -262,6 +350,21 @@ fn root_of(surface: &WlSurface) -> WlSurface {
         root = parent;
     }
     root
+}
+
+/// The edge of a frame a program names with `edges`.
+fn edge_of(edges: ResizeEdge) -> Option<Edge> {
+    Some(match edges {
+        ResizeEdge::Top => Edge::Top,
+        ResizeEdge::Bottom => Edge::Bottom,
+        ResizeEdge::Left => Edge::Left,
+        ResizeEdge::Right => Edge::Right,
+        ResizeEdge::TopLeft => Edge::TopLeft,
+        ResizeEdge::TopRight => Edge::TopRight,
+        ResizeEdge::BottomLeft => Edge::BottomLeft,
+        ResizeEdge::BottomRight => Edge::BottomRight,
+        _ => return None,
+    })
 }
 
 impl CompositorHandler for Shell {
@@ -290,6 +393,7 @@ impl CompositorHandler for Shell {
         }
         if let Some(window) = self.window_of(surface) {
             window.on_commit();
+            self.windows.committed(&window);
         }
         self.show(surface);
         self.changed.pointer |= self.is_pointer(surface);
@@ -319,12 +423,97 @@ impl XdgShellHandler for Shell {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let is = |window: &Window| window.toplevel().is_some_and(|its| *its == surface);
         self.waiting.retain(|window| !is(window));
-        let Some(window) = self.space.elements().find(|window| is(window)).cloned() else {
-            return;
-        };
-        self.space.unmap_elem(&window);
-        let front = self.front();
-        self.focus(front.as_ref());
+        let Some(window) = self.window(&surface) else { return };
+        self.windows.gone(&window);
+        self.pass_on(&window);
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window(&surface) {
+            self.windows.retitled(&window);
+            self.changed.windows = true;
+        }
+    }
+
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
+        if let Some((window, code)) = self.pressed_on(&surface, serial) {
+            self.asked.push(Asked::Move(window, code));
+        }
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        edges: ResizeEdge,
+    ) {
+        let Some(edge) = edge_of(edges) else { return };
+        if let Some((window, code)) = self.pressed_on(&surface, serial) {
+            self.asked.push(Asked::Resize(window, edge, code));
+        }
+    }
+
+    fn show_window_menu(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        location: Point<i32, Logical>,
+    ) {
+        // A program may ask with a key's serial as well. With that of
+        // a button that is still down, the pointer is the program's no
+        // longer.
+        let _ = self.pressed_on(&surface, serial);
+        let Some(window) = self.window(&surface) else { return };
+        let Some(framed) = self.windows.framed(&window) else { return };
+        // The place is from the corner of the window's own geometry.
+        let at = framed.surface_shows().loc + location;
+        self.asked.push(Asked::Menu(window, at));
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        match self.window(&surface) {
+            Some(window) => self.windows.maximize(&window),
+            // A window that has not shown yet shows maximized.
+            None => {
+                let size = self.windows.filling(self.pointer_at());
+                surface.with_pending_state(|state| {
+                    state.states.set(State::Maximized);
+                    state.size = Some(size);
+                });
+            }
+        }
+        // The protocol has the program wait for an answer, whether or
+        // not anything changed.
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        match self.window(&surface) {
+            Some(window) => self.windows.restore(&window),
+            None => surface.with_pending_state(|state| {
+                state.states.unset(State::Maximized);
+                state.size = None;
+            }),
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_pending_configure();
+        }
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window(&surface) {
+            self.minimize(&window);
+        }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -333,9 +522,35 @@ impl XdgShellHandler for Shell {
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // A popup shows without a grab in release 1.1: a click outside
-        // it reaches what is there (docs/deferred.md).
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: Serial) {
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else { return };
+        let seat = self.seat.clone();
+        let Ok(mut grab) = self.popups.grab_popup(root.clone(), popup, &seat, serial) else {
+            return;
+        };
+        // The keyboard and the pointer are the popup's unless another
+        // has them that is not a popup under this one. A popup that may
+        // not have them is told it is done.
+        let before = grab.previous_serial().unwrap_or(serial);
+        if let Some(keyboard) = seat.get_keyboard() {
+            let under = keyboard.has_grab(serial) || keyboard.has_grab(before);
+            if keyboard.is_grabbed() && !under {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
+            let under = pointer.has_grab(serial) || pointer.has_grab(before);
+            if pointer.is_grabbed() && !under {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
+        self.grabbed = Some((root, grab));
     }
 
     fn reposition_request(

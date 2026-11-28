@@ -7,7 +7,9 @@
 //! canvas's own rectangle: windowd calls it once for each of a
 //! layout's strips, and a test on the host for a canvas of the frame's
 //! bounds, and both have the same pixels. The place of the window's
-//! content is left see-through.
+//! content is left see-through, and so is the region of a shared title
+//! bar that the window's program draws: the frame lies over the
+//! window's surface, which shows through those two.
 //!
 //! What is drawn, from the back: the shadow, the black line outside the
 //! box, the box with its inner line and its fill, the ring and the line
@@ -227,6 +229,9 @@ pub fn frame(theme: &Theme, layout: &Layout, look: &Look<'_>, canvas: &mut Canva
         button(canvas, theme, layout, look, each);
     }
     canvas.open(layout.content);
+    if let Some(region) = layout.region {
+        canvas.open(region);
+    }
 }
 
 #[cfg(test)]
@@ -469,17 +474,27 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_shared_bar_has_no_title_and_is_drawn_under_the_programs_rows() {
+    fn a_shared_bar_has_no_title_and_is_open_where_the_program_draws() {
         let theme = Theme::basic();
         let region = Some(Rect::new(40, 4, 200, 28));
         let layout = Layout::of(&theme, (320, 276), Shape::Normal, Bar::Shared, region);
         let bounds = layout.bounds();
         let pixels = drawn(&layout, &PLAIN, bounds);
         let full = drawn(&normal(), &Look { title: "", ..PLAIN }, bounds);
-        // The same frame as a full bar's with no title: the program's
-        // rows lie over it.
+        // The same frame as a full bar's with no title, but for the
+        // region, which is open.
         assert_eq!(layout.frame, normal().frame);
-        assert_eq!(pixels, full);
+        let region = layout.region.unwrap();
+        for y in bounds.y..bounds.bottom() {
+            for x in bounds.x..bounds.right() {
+                let here = at(&pixels, bounds, x, y);
+                if region.contains(x, y) {
+                    assert_eq!(here, [0; 4], "({x}, {y})");
+                } else {
+                    assert_eq!(here, at(&full, bounds, x, y), "({x}, {y})");
+                }
+            }
+        }
     }
 
     #[test]

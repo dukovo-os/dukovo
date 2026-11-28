@@ -38,13 +38,9 @@ use display::outputs::{self, Found};
 use display::wire::{self, ChangeBytes};
 use display::{Holder, Unmade};
 use smithay::backend::renderer::damage::{Error as DamageError, OutputDamageTracker};
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::pixman::{PixmanError, PixmanRenderer};
 use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer};
-use smithay::desktop::space::render_output;
-use smithay::input::pointer::CursorImageStatus;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
@@ -52,7 +48,8 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
 use sysapi::time::monotonic_ns;
 
 use crate::link::Link;
-use crate::pointer::{self, SIDE};
+use crate::pointer::{self, Arrows, SIDE, Shown};
+use crate::scene::Scene;
 use crate::shell::Shell;
 use pace::Pace;
 
@@ -152,12 +149,12 @@ pub struct Pointing<'a> {
     /// Where it is on the desktop.
     pub at: Point<f64, Logical>,
     /// What it shows.
-    pub shown: &'a CursorImageStatus,
+    pub shown: Shown<'a>,
     /// Counts the pictures the pointer has shown: another number is
     /// another picture.
     pub picture: u64,
-    /// windowd's own arrow.
-    pub arrow: &'a MemoryRenderBuffer,
+    /// windowd's own pictures.
+    pub own: &'a Arrows,
 }
 
 /// What an event of the layer's means for the desktop.
@@ -298,16 +295,17 @@ where
             };
             let mode = screen.output.current_mode();
             screen.output.change_current_state(mode, None, None, Some((left, 0).into()));
-            shell.space.map_output(&screen.output, (left, 0));
+            shell.windows.space.map_output(&screen.output, (left, 0));
             left += on.mode.width as i32;
             self.shown.push(screen);
         }
         for gone in &before {
-            shell.space.unmap_output(&gone.output);
+            shell.windows.space.unmap_output(&gone.output);
             display.remove_global::<Shell>(gone.global.clone());
         }
         self.pointed = None;
-        self.first_frames(renderer, shell)?;
+        let scene = Scene { windows: &shell.windows, panel: None };
+        self.first_frames(renderer, &scene)?;
         // The change above stopped showing them.
         for gone in before {
             let pointer = gone.pointer.iter().flat_map(|pointer| pointer.pictures.numbers());
@@ -380,11 +378,15 @@ where
     /// Draws every screen a whole frame and shows them with one change,
     /// which sets the modes and may blank. No pointer shows until the
     /// frames after.
-    fn first_frames(&mut self, renderer: &mut PixmanRenderer, shell: &Shell) -> Result<(), Failed> {
+    fn first_frames(
+        &mut self,
+        renderer: &mut PixmanRenderer,
+        scene: &Scene<'_>,
+    ) -> Result<(), Failed> {
         let mut made = Vec::new();
         for screen in &mut self.shown {
             screen.pictures.forget();
-            let (picture, _) = screen.draw(renderer, shell)?;
+            let (picture, _) = screen.draw(renderer, scene)?;
             screen.pictures.drew();
             made.push((picture, screen.mode_value));
         }
@@ -467,6 +469,7 @@ where
         &mut self,
         renderer: &mut PixmanRenderer,
         shell: &Shell,
+        scene: &Scene<'_>,
         pointing: &Pointing<'_>,
         now_ns: u64,
     ) -> Result<(), Failed> {
@@ -481,7 +484,7 @@ where
             let pointer = (on == Some(at)).then_some(pointing);
             self.cookie += 1;
             let screen = &mut self.shown[at];
-            let made = screen.frame(&self.holder, renderer, shell, pointer, self.cookie);
+            let made = screen.frame(&self.holder, renderer, shell, scene, pointer, self.cookie);
             match made {
                 // The place the pointer was put at was reckoned from
                 // the hot spot its picture had before.
@@ -588,23 +591,14 @@ where
     fn draw(
         &mut self,
         renderer: &mut PixmanRenderer,
-        shell: &Shell,
+        scene: &Scene<'_>,
     ) -> Result<(u32, Vec<Rectangle<i32, Physical>>), Failed> {
         let age = self.pictures.age();
+        let pieces = scene.pieces(renderer, self.area())?;
         let (picture, pixels) = self.pictures.target();
         let mut target = renderer.bind(pixels)?;
-        let none: &[WaylandSurfaceRenderElement<PixmanRenderer>] = &[];
-        let drawn = render_output(
-            &self.output,
-            renderer,
-            &mut target,
-            1.0,
-            age,
-            [&shell.space],
-            none,
-            &mut self.tracker,
-            background(),
-        )?;
+        let drawn =
+            self.tracker.render_output(renderer, &mut target, age, &pieces, background())?;
         Ok((picture, drawn.damage.cloned().unwrap_or_default()))
     }
 
@@ -618,6 +612,7 @@ where
         holder: &Holder<L>,
         renderer: &mut PixmanRenderer,
         shell: &Shell,
+        scene: &Scene<'_>,
         pointing: Option<&Pointing<'_>>,
         cookie: u64,
     ) -> Result<bool, Failed> {
@@ -626,7 +621,7 @@ where
         // lost sight of after: this one, drawn whole, takes its place,
         // so that busy says only that the desktop is not in front.
         let mut change = ChangeBytes::new(NO_WAIT | NEWEST_WINS, cookie);
-        let (picture, changed) = self.draw(renderer, shell)?;
+        let (picture, changed) = self.draw(renderer, scene)?;
         let drew = !changed.is_empty();
         if drew {
             if self.pictures.made.len() > 1 {
@@ -673,7 +668,7 @@ where
     ) -> Result<Option<Option<u64>>, Failed> {
         let Some(plane) = &mut self.pointer else { return Ok(None) };
         let drawn = pointing.and_then(|pointing| {
-            let drawn = pointer::drawn(renderer, pointing.shown, pointing.arrow)?;
+            let drawn = pointer::drawn(renderer, pointing.shown, pointing.own)?;
             Some((pointing.picture, drawn))
         });
         let wanted = drawn.as_ref().map(|(picture, _)| *picture);

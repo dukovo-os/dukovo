@@ -206,6 +206,15 @@ impl Layout {
         (left, right)
     }
 
+    /// The least width and height of a window's content: what leaves
+    /// the icon and the buttons room in the title bar.
+    pub fn least(theme: &Theme) -> (i32, i32) {
+        let buttons: i32 = theme.button_widths.iter().sum();
+        let bar =
+            theme.icon_at.0 + theme.icon_side + theme.title_gap + buttons + theme.buttons_right;
+        (bar - 2 * theme.border, 1)
+    }
+
     /// The layout of the frame of a window of `shape` whose surface is
     /// `surface` wide and high. `region` is what the window's program
     /// asked to draw of a shared title bar, from the surface's corner.
@@ -382,6 +391,15 @@ mod tests {
         assert_eq!(layout.content, layout.surface);
         assert_eq!(layout.region, None);
         assert_eq!(layout.bar_rows(), 36);
+    }
+
+    #[test]
+    fn the_least_content_leaves_the_icon_and_the_buttons_room() {
+        let theme = Theme::basic();
+        assert_eq!(Layout::least(&theme), (152, 1));
+        let layout = Layout::of(&theme, (152, 1), Shape::Normal, Bar::Full, None);
+        assert_eq!(layout.button(Button::Minimize).x, layout.icon.right() + theme.title_gap);
+        assert_eq!(layout.title.w, 0);
     }
 
     #[test]

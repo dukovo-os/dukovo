@@ -21,6 +21,9 @@ radix-abi = { path = "../../../kernel/abi" }
 # display layer and inputd.
 smithay = { version = "0.7.0", default-features = false, features = ["desktop", "renderer_pixman", "wayland_frontend"] }
 sysapi = { path = "../sysapi" }
+# The frame around every window: its sizes and colours, where its parts
+# are, and its pixels (ADR 0718).
+window-frame = { path = "../window-frame" }
 
 [dev-dependencies]
 # The patterns the test program's window shows, pixel for pixel.

@@ -6170,6 +6170,7 @@ dependencies = [
  "radix-display",
  "smithay",
  "sysapi",
+ "window-frame",
  "window-test",
 ]
 

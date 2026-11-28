@@ -19,11 +19,15 @@ mod desktop;
 mod devices;
 mod keys;
 mod link;
+mod manager;
+mod panel;
 mod pointer;
+mod scene;
 mod screens;
 mod session;
 mod shell;
 mod socket;
+mod windows;
 
 #[cfg(test)]
 mod tests;

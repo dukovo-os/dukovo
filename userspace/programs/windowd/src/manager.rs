@@ -1,0 +1,561 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! What the pointer and the keys do to the windows themselves: moving
+//! and resizing them, their buttons, the window menu and the list of
+//! windows (ADR 0720).
+//!
+//! While windowd does any of that, it has a [`Hold`]: the pointer is
+//! over no program's surface, as the programs see it, and for a menu,
+//! the list and a move or a resize by the keys, the keys reach none
+//! either. A hold begins with a press on a frame, a key of windowd's
+//! or a program's request to be moved or resized, and ends with the
+//! button's release, a choice, Esc, or the window's going.
+//!
+//! The [`Manager`] is told each press, release, motion and key by the
+//! desktop, which then gives the programs what is left for them.
+//! Nothing here waits or draws.
+
+use input::abi::{
+    BTN_LEFT, BTN_RIGHT, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_KPENTER, KEY_LEFT, KEY_RIGHT, KEY_SPACE,
+    KEY_TAB, KEY_UP,
+};
+use smithay::desktop::Window;
+use smithay::utils::{Logical, Point};
+use window_frame::panel::Mark;
+use window_frame::{Button, Edge, Part};
+
+use crate::keys::Ask;
+use crate::panel::{Panel, Row};
+use crate::pointer::Picture;
+use crate::shell::Shell;
+use crate::windows::{Framed, Under};
+
+/// How far the pointer moves with a button held on a title bar before
+/// the window follows it, and how far apart the two presses of a double
+/// click may be.
+const SLOP: f64 = 4.0;
+
+/// How far an arrow key moves a window or its edges, and how far with
+/// Ctrl held.
+const STEPS: (i32, i32) = (16, 1);
+
+/// What a line of the window menu does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    Restore,
+    Move,
+    Size,
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// The window menu's rows: what each does, or `None` for the room
+/// between two groups, and what it says.
+const MENU: [(Option<Item>, &str, &str); 7] = [
+    (Some(Item::Restore), "Restore", ""),
+    (Some(Item::Move), "Move", ""),
+    (Some(Item::Size), "Size", ""),
+    (Some(Item::Minimize), "Minimize", ""),
+    (Some(Item::Maximize), "Maximize", ""),
+    (None, "", ""),
+    (Some(Item::Close), "Close", "Alt+F4"),
+];
+
+/// What a line of the list says for a window without a title.
+const UNTITLED: &str = "Window";
+
+/// What a program asked of the window manager.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Asked {
+    /// To have the pointer move its window, with the button of this
+    /// code held.
+    Move(Window, u16),
+    /// To have the pointer resize its window by an edge, with the
+    /// button of this code held.
+    Resize(Window, Edge, u16),
+    /// The window menu, at a place of the desktop.
+    Menu(Window, Point<i32, Logical>),
+}
+
+/// What windowd has the pointer or the keys for.
+#[derive(Debug)]
+enum Hold {
+    /// Nothing: they are the programs'.
+    None,
+    /// A button of a frame is held down.
+    Button { window: Window, button: Button },
+    /// A window is moved by the pointer, with the button `code` held.
+    /// `grip` is where in the frame's box the pointer has hold of it,
+    /// once it has moved far enough from `pressed` for the window to
+    /// follow.
+    Move {
+        window: Window,
+        code: u16,
+        pressed: Point<f64, Logical>,
+        grip: Option<Point<f64, Logical>>,
+    },
+    /// A window is resized by the pointer, which was at `pressed` when
+    /// it began.
+    Resize { window: Window, edge: Edge, code: u16, pressed: Point<f64, Logical> },
+    /// The window menu shows.
+    Menu { window: Window, panel: Panel },
+    /// The list of windows shows: `listed` is the window of each row.
+    /// With `held`, letting Alt go chooses.
+    List { panel: Panel, listed: Vec<Window>, held: bool },
+    /// The arrow keys move a window, or resize it, from where its
+    /// frame's corner was at `start`; `by` is how far they have.
+    Keys { window: Window, size: bool, start: Point<i32, Logical>, by: Point<i32, Logical> },
+}
+
+/// A press on a title bar, which a second makes a double click.
+#[derive(Debug)]
+struct Click {
+    window: Window,
+    at: Point<f64, Logical>,
+    time_ns: u64,
+}
+
+/// The window manager's state over the seat.
+#[derive(Debug)]
+pub struct Manager {
+    hold: Hold,
+    clicked: Option<Click>,
+    /// How long after a press a second makes a double click.
+    pub double_click_ns: u64,
+}
+
+impl Default for Manager {
+    fn default() -> Manager {
+        Manager { hold: Hold::None, clicked: None, double_click_ns: 500_000_000 }
+    }
+}
+
+/// How far `one` is from `other`.
+fn apart(one: Point<f64, Logical>, other: Point<f64, Logical>) -> f64 {
+    (one.x - other.x).hypot(one.y - other.y)
+}
+
+impl Manager {
+    /// Whether windowd keeps the pointer from the programs now.
+    pub fn takes_pointer(&self) -> bool {
+        !matches!(self.hold, Hold::None)
+    }
+
+    /// Whether windowd keeps the keys from the programs now.
+    pub fn takes_keys(&self) -> bool {
+        matches!(self.hold, Hold::Menu { .. } | Hold::List { .. } | Hold::Keys { .. })
+    }
+
+    /// The panel that shows over the windows.
+    pub fn panel(&self) -> Option<&Panel> {
+        match &self.hold {
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } => Some(panel),
+            _ => None,
+        }
+    }
+
+    /// The button of a frame the pointer is on, and the one that is
+    /// held down and shows so, when the pointer is over `under`.
+    #[allow(clippy::type_complexity)]
+    pub fn buttons<'a>(
+        &'a self,
+        under: &'a Under,
+    ) -> (Option<(&'a Window, Button)>, Option<(&'a Window, Button)>) {
+        let over = match under {
+            Under::Part { window, part: Part::Button(button) } => Some((window, *button)),
+            _ => None,
+        };
+        match &self.hold {
+            Hold::None => (over, None),
+            Hold::Button { window, button } => {
+                let on = over.filter(|over| *over == (window, *button));
+                (on, on)
+            }
+            _ => (None, None),
+        }
+    }
+
+    /// The picture windowd shows as the pointer over `under`, or `None`
+    /// for the picture of the program whose surface is there.
+    pub fn picture(&self, under: &Under) -> Option<Picture> {
+        match (&self.hold, under) {
+            (Hold::Resize { edge, .. }, _) => Some(Picture::of(*edge)),
+            (Hold::None, Under::Part { part: Part::Edge(edge), .. }) => Some(Picture::of(*edge)),
+            (Hold::None, Under::Surface { .. }) => None,
+            _ => Some(Picture::Arrow),
+        }
+    }
+
+    /// Ends the hold. A resize that was under way is over.
+    fn let_go(&mut self, shell: &mut Shell) {
+        match core::mem::replace(&mut self.hold, Hold::None) {
+            Hold::Resize { window, .. } | Hold::Keys { window, size: true, .. } => {
+                shell.windows.resize_done(&window);
+            }
+            _ => {}
+        }
+        shell.changed.windows = true;
+    }
+
+    /// Ends a hold whose window is gone or off the screens.
+    pub fn check(&mut self, shell: &mut Shell) {
+        let there = |window: &Window| shell.windows.framed(window).is_some();
+        let shows = |window: &Window| {
+            shell.windows.framed(window).is_some_and(|framed| !framed.minimized())
+        };
+        let holds = match &self.hold {
+            Hold::None => true,
+            Hold::Button { window, .. }
+            | Hold::Move { window, .. }
+            | Hold::Resize { window, .. }
+            | Hold::Menu { window, .. }
+            | Hold::Keys { window, .. } => shows(window),
+            Hold::List { listed, .. } => listed.iter().all(there),
+        };
+        if !holds {
+            self.let_go(shell);
+        }
+    }
+
+    /// A button of Linux code `code` went down at `at`, which is over
+    /// `under`, at `time_ns`.
+    pub fn press(
+        &mut self,
+        shell: &mut Shell,
+        under: &Under,
+        at: Point<f64, Logical>,
+        code: u16,
+        time_ns: u64,
+    ) {
+        match &mut self.hold {
+            Hold::None => {}
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } => {
+                // A press beside the panel puts it away. One in it
+                // chooses the line it is on, which the release does.
+                if !panel.holds(at) {
+                    self.let_go(shell);
+                } else if panel.choose(shell.windows.theme(), panel.row_at(at)) {
+                    shell.changed.windows = true;
+                }
+                return;
+            }
+            // A press keeps what the keys did.
+            Hold::Keys { .. } => return self.let_go(shell),
+            _ => return,
+        }
+        let Some(window) = under.window().cloned() else { return };
+        shell.focus(Some(&window));
+        let Under::Part { part, .. } = under else { return };
+        match (code, *part) {
+            (BTN_LEFT, Part::Title) => {
+                let second = self.clicked.take().is_some_and(|first| {
+                    first.window == window
+                        && apart(first.at, at) <= SLOP
+                        && time_ns.saturating_sub(first.time_ns) <= self.double_click_ns
+                });
+                if second {
+                    toggle(shell, &window);
+                } else {
+                    self.clicked = Some(Click { window: window.clone(), at, time_ns });
+                    self.hold = Hold::Move { window, code, pressed: at, grip: None };
+                }
+            }
+            (BTN_LEFT, Part::Button(button)) => self.hold = Hold::Button { window, button },
+            (BTN_LEFT, Part::Edge(edge)) => {
+                if shell.windows.resize_from(&window, edge) {
+                    self.hold = Hold::Resize { window, edge, code, pressed: at };
+                }
+            }
+            (BTN_RIGHT, Part::Title) => self.menu(shell, window, at.to_i32_floor()),
+            _ => {}
+        }
+    }
+
+    /// A button of Linux code `code` went up at `at`, which is over
+    /// `under`.
+    pub fn release(
+        &mut self,
+        shell: &mut Shell,
+        under: &Under,
+        at: Point<f64, Logical>,
+        code: u16,
+    ) {
+        match &self.hold {
+            Hold::Button { window, button } if code == BTN_LEFT => {
+                let (window, button) = (window.clone(), *button);
+                let on =
+                    *under == Under::Part { window: window.clone(), part: Part::Button(button) };
+                self.let_go(shell);
+                if on {
+                    match button {
+                        Button::Minimize => shell.minimize(&window),
+                        Button::Maximize => toggle(shell, &window),
+                        Button::Close => close(&window),
+                    }
+                }
+            }
+            Hold::Move { code: held, .. } | Hold::Resize { code: held, .. } if *held == code => {
+                self.let_go(shell);
+            }
+            Hold::Menu { panel, .. } if code == BTN_LEFT => {
+                if let Some(row) = panel.row_at(at) {
+                    self.choose(shell, row);
+                }
+            }
+            Hold::List { panel, .. } if code == BTN_LEFT => {
+                if let Some(row) = panel.row_at(at) {
+                    self.choose(shell, row);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The pointer moved to `at`.
+    pub fn motion(&mut self, shell: &mut Shell, at: Point<f64, Logical>) {
+        match &mut self.hold {
+            Hold::Move { window, pressed, grip, .. } => {
+                let Some(framed) = shell.windows.framed(window) else { return };
+                let frame = framed.frame();
+                let hold = match *grip {
+                    Some(grip) => grip,
+                    None if apart(*pressed, at) < SLOP => return,
+                    None if framed.maximized() => {
+                        // The window is restored under the pointer, at
+                        // the same share of its width.
+                        let share = (pressed.x - f64::from(frame.loc.x)) / f64::from(frame.size.w);
+                        let width = shell.windows.restored_width(window).unwrap_or(frame.size.w);
+                        let within = (share * f64::from(width), pressed.y - f64::from(frame.loc.y));
+                        shell.windows.restore(window);
+                        Point::from(within)
+                    }
+                    None => *pressed - frame.loc.to_f64(),
+                };
+                *grip = Some(hold);
+                self.clicked = None;
+                shell.windows.move_to(window, (at - hold).to_i32_round());
+                shell.changed.windows = true;
+            }
+            Hold::Resize { window, pressed, .. } => {
+                shell.windows.resize_by(window, (at - *pressed).to_i32_round());
+                shell.changed.windows = true;
+            }
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } => {
+                // The pointer chooses the line it comes to, and leaves
+                // the keys' choice when it is on none.
+                let row = panel.row_at(at);
+                if row.is_some() && panel.choose(shell.windows.theme(), row) {
+                    shell.changed.windows = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A key that is no modifier, of Linux code `code`, went down while
+    /// windowd has the keys, with Ctrl or Shift held or not.
+    pub fn key(&mut self, shell: &mut Shell, code: u16, ctrl: bool, shift: bool) {
+        let theme = *shell.windows.theme();
+        match &mut self.hold {
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } => {
+                let back = match code {
+                    KEY_UP | KEY_LEFT => Some(true),
+                    KEY_DOWN | KEY_RIGHT => Some(false),
+                    KEY_TAB => Some(shift),
+                    _ => None,
+                };
+                if let Some(back) = back {
+                    panel.step(&theme, back);
+                    shell.changed.windows = true;
+                    return;
+                }
+                let chosen = panel.chosen();
+                match (code, chosen) {
+                    (KEY_ENTER | KEY_KPENTER | KEY_SPACE, Some(row)) => self.choose(shell, row),
+                    (KEY_ESC, _) => self.let_go(shell),
+                    _ => {}
+                }
+            }
+            Hold::Keys { window, size, start, by } => {
+                let step = if ctrl { STEPS.1 } else { STEPS.0 };
+                let moved = match code {
+                    KEY_LEFT => (-step, 0),
+                    KEY_RIGHT => (step, 0),
+                    KEY_UP => (0, -step),
+                    KEY_DOWN => (0, step),
+                    KEY_ESC => (-by.x, -by.y),
+                    KEY_ENTER | KEY_KPENTER => return self.let_go(shell),
+                    _ => return,
+                };
+                *by += Point::from(moved);
+                if *size {
+                    shell.windows.resize_by(window, *by);
+                } else {
+                    let width =
+                        shell.windows.framed(window).map_or(0, |framed| framed.frame().size.w);
+                    let to = shell.windows.reachable(*start + *by, width);
+                    *by = to - *start;
+                    shell.windows.move_to(window, to);
+                }
+                shell.changed.windows = true;
+                if code == KEY_ESC {
+                    self.let_go(shell);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Alt was let go: a list that waited for that has its choice.
+    pub fn alt_let_go(&mut self, shell: &mut Shell) {
+        if let Hold::List { panel, held: true, .. } = &self.hold {
+            match panel.chosen() {
+                Some(row) => self.choose(shell, row),
+                None => self.let_go(shell),
+            }
+        }
+    }
+
+    /// A key of windowd's asked `ask`, with the pointer at `at`.
+    pub fn ask(&mut self, shell: &mut Shell, ask: Ask, at: Point<f64, Logical>) {
+        let theme = *shell.windows.theme();
+        match (ask, &mut self.hold) {
+            (Ask::Next | Ask::Previous, Hold::List { panel, .. }) => {
+                panel.step(&theme, ask == Ask::Previous);
+                shell.changed.windows = true;
+            }
+            (Ask::Next | Ask::Previous, Hold::None) => {
+                self.list(shell, at, Some(ask == Ask::Previous));
+            }
+            (Ask::List, Hold::List { .. }) => self.let_go(shell),
+            (Ask::List, Hold::None) => self.list(shell, at, None),
+            (Ask::Close | Ask::Menu | Ask::Up | Ask::Down, Hold::None) => {
+                let Some(window) = shell.active().cloned() else { return };
+                let Some(framed) = shell.windows.framed(&window) else { return };
+                match ask {
+                    Ask::Close => close(&window),
+                    Ask::Menu => {
+                        let under_bar = framed.at() + Point::from((0, framed.layout().bar_rows()));
+                        self.menu(shell, window, under_bar);
+                    }
+                    Ask::Up => shell.windows.maximize(&window),
+                    Ask::Down if framed.maximized() => shell.windows.restore(&window),
+                    _ => shell.minimize(&window),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A program asked `asked`, with the pointer at `at`.
+    pub fn asked(&mut self, shell: &mut Shell, asked: Asked, at: Point<f64, Logical>) {
+        if !matches!(self.hold, Hold::None) {
+            return;
+        }
+        match asked {
+            Asked::Move(window, code) => {
+                self.hold = Hold::Move { window, code, pressed: at, grip: None };
+            }
+            Asked::Resize(window, edge, code) => {
+                if shell.windows.resize_from(&window, edge) {
+                    self.hold = Hold::Resize { window, edge, code, pressed: at };
+                }
+            }
+            Asked::Menu(window, at) => self.menu(shell, window, at),
+        }
+        shell.changed.windows = true;
+    }
+
+    /// Shows the window menu of `window` with its corner at `at`.
+    fn menu(&mut self, shell: &mut Shell, window: Window, at: Point<i32, Logical>) {
+        let Some(framed) = shell.windows.framed(&window) else { return };
+        let maximized = framed.maximized();
+        let rows = MENU.iter().map(|(item, words, key)| match item {
+            None => Row::Gap,
+            Some(item) => {
+                let off = match item {
+                    Item::Restore => !maximized,
+                    Item::Move | Item::Size | Item::Maximize => maximized,
+                    Item::Minimize | Item::Close => false,
+                };
+                Row::Line { words: (*words).to_owned(), key, mark: Mark::None, off }
+            }
+        });
+        let theme = shell.windows.theme();
+        let screen = shell.windows.screen_at(at.to_f64());
+        let panel = Panel::new(theme, theme.panel.menu_width, rows.collect(), None, at, screen);
+        self.hold = Hold::Menu { window, panel };
+        shell.changed.windows = true;
+    }
+
+    /// Shows the list of windows on the screen the pointer, at `at`, is
+    /// on. With `back` it is one that Alt holds open, with the window
+    /// used before the present one chosen, or for `back` the one used
+    /// longest ago.
+    fn list(&mut self, shell: &mut Shell, at: Point<f64, Logical>, back: Option<bool>) {
+        let all = shell.windows.by_use();
+        if all.is_empty() {
+            return;
+        }
+        let rows = all.iter().map(|framed| {
+            let title = if framed.title().is_empty() { UNTITLED } else { framed.title() };
+            Row::Line { words: title.to_owned(), key: "", mark: Mark::Icon, off: false }
+        });
+        let rows: Vec<Row> = rows.collect();
+        let listed: Vec<Window> = all.iter().map(|framed| framed.window.clone()).collect();
+        let chosen = match back {
+            Some(true) => listed.len() - 1,
+            Some(false) => 1.min(listed.len() - 1),
+            None => 0,
+        };
+        let theme = shell.windows.theme();
+        let screen = shell.windows.screen_at(at);
+        let width = theme.panel.list_width;
+        let panel = Panel::in_the_middle(theme, width, rows, Some(chosen), screen);
+        self.hold = Hold::List { panel, listed, held: back.is_some() };
+        shell.changed.windows = true;
+    }
+
+    /// The person chose the row `row` of the panel that shows.
+    fn choose(&mut self, shell: &mut Shell, row: usize) {
+        match core::mem::replace(&mut self.hold, Hold::None) {
+            Hold::List { listed, .. } => shell.focus(listed.get(row)),
+            Hold::Menu { window, .. } => match MENU.get(row).and_then(|(item, ..)| *item) {
+                Some(Item::Restore) => shell.windows.restore(&window),
+                Some(Item::Maximize) => shell.windows.maximize(&window),
+                Some(Item::Minimize) => shell.minimize(&window),
+                Some(Item::Close) => close(&window),
+                Some(Item::Move | Item::Size) => {
+                    let size = MENU[row].0 == Some(Item::Size);
+                    let Some(start) = shell.windows.framed(&window).map(Framed::at) else {
+                        return;
+                    };
+                    if !size || shell.windows.resize_from(&window, Edge::BottomRight) {
+                        self.hold = Hold::Keys { window, size, start, by: Point::default() };
+                    }
+                }
+                None => {}
+            },
+            other => self.hold = other,
+        }
+        shell.changed.windows = true;
+    }
+}
+
+/// Maximizes `window`, or restores it if it is maximized.
+fn toggle(shell: &mut Shell, window: &Window) {
+    if shell.windows.framed(window).is_some_and(Framed::maximized) {
+        shell.windows.restore(window);
+    } else {
+        shell.windows.maximize(window);
+    }
+}
+
+/// Asks the program of `window` to close it.
+fn close(window: &Window) {
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.send_close();
+    }
+}

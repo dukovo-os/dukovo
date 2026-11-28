@@ -27,7 +27,10 @@ use wayland_client::protocol::{
     wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+pub use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 
 /// How a test's failure is told.
 pub type Outcome<T = ()> = Result<T, String>;
@@ -75,6 +78,26 @@ pub enum Heard {
     Active(bool),
     /// The person asked for the window to close.
     Close,
+    /// The window server asked for the window's own pixels to be of
+    /// another size, where 0 leaves a side to the program, or for the
+    /// window to be drawn maximized or no longer.
+    Size {
+        /// The width.
+        width: i32,
+        /// The height.
+        height: i32,
+        /// Whether the window is to be drawn maximized.
+        maximized: bool,
+    },
+    /// The popup is done: the person went elsewhere.
+    PopupDone,
+}
+
+/// Which of the program's surfaces a configure is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    Window,
+    Popup,
 }
 
 /// A screen the window server told of.
@@ -109,6 +132,13 @@ struct Told {
     repeat: Option<(i32, i32)>,
     /// The serial of the configure the window is to answer.
     configured: Option<u32>,
+    /// The serial of the configure the popup is to answer.
+    popup_configured: Option<u32>,
+    /// The size the window server last asked for, and whether it asked
+    /// for the window to be maximized.
+    asked: (i32, i32, bool),
+    /// The serial of the last press of a button.
+    pressed: Option<u32>,
     active: bool,
     /// The serial of the pointer's last coming onto the window.
     entered: Option<u32>,
@@ -124,8 +154,19 @@ struct Told {
 struct Window {
     surface: wl_surface::WlSurface,
     role: xdg_surface::XdgSurface,
+    toplevel: xdg_toplevel::XdgToplevel,
     /// The buffer that shows, and its pixels' file.
     shown: Option<(wl_buffer::WlBuffer, File)>,
+}
+
+/// A popup of the window, with the buffer it shows and its pixels'
+/// file.
+#[derive(Debug)]
+struct Popup {
+    surface: wl_surface::WlSurface,
+    role: xdg_surface::XdgSurface,
+    popup: xdg_popup::XdgPopup,
+    shown: (wl_buffer::WlBuffer, File),
 }
 
 /// The program.
@@ -134,6 +175,7 @@ pub struct Client {
     queue: EventQueue<Told>,
     told: Told,
     window: Option<Window>,
+    popup: Option<Popup>,
     /// The pointer's picture over the window, and its pixels' file.
     pointer_shown: Option<(wl_surface::WlSurface, wl_buffer::WlBuffer, File)>,
 }
@@ -179,7 +221,7 @@ impl Client {
         if let Some((name, _)) = missing.iter().find(|(_, missing)| *missing) {
             return Err(format!("the window server offers no {name}"));
         }
-        Ok(Client { queue, told, window: None, pointer_shown: None })
+        Ok(Client { queue, told, window: None, popup: None, pointer_shown: None })
     }
 
     /// The screens.
@@ -221,6 +263,41 @@ impl Client {
         self.queue.flush().map_err(|err| gone(&err))
     }
 
+    /// Asks for the window, which shows once it is drawn
+    /// ([`Client::show`]), and waits for the window server's answer.
+    /// With `maximized` the program asks for it to be maximized from
+    /// the first, and the answer has the size to draw it
+    /// ([`Heard::Size`]).
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone or does not answer.
+    pub fn open(&mut self, maximized: bool) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(compositor), Some(shell)) = (&self.told.compositor, &self.told.shell) else {
+            return Err("the window server offers no windows".into());
+        };
+        let surface = compositor.create_surface(&handle, ());
+        let role = shell.get_xdg_surface(&surface, &handle, Role::Window);
+        let toplevel = role.get_toplevel(&handle, ());
+        toplevel.set_title("window-test".into());
+        toplevel.set_app_id("org.dukovo.window-test".into());
+        if maximized {
+            toplevel.set_maximized();
+        }
+        // A commit with no buffer asks for the first configure.
+        surface.commit();
+        self.window = Some(Window { surface, role, toplevel, shown: None });
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.told.configured.is_none() {
+            if Instant::now() >= until {
+                return Err("the window server did not configure the window".into());
+            }
+            self.turn(Duration::from_millis(100))?;
+        }
+        Ok(())
+    }
+
     /// Shows the window, `width` by `height`, with the pattern of
     /// `seed` from its top left corner, or draws an open window anew.
     /// Returns once the window server has all of it; the window is
@@ -230,27 +307,10 @@ impl Client {
     ///
     /// When the window server is gone or does not answer.
     pub fn show(&mut self, (width, height): (u32, u32), seed: u32) -> Outcome {
-        let handle = self.queue.handle();
-        let (Some(compositor), Some(shell)) = (&self.told.compositor, &self.told.shell) else {
-            return Err("the window server offers no windows".into());
-        };
         if self.window.is_none() {
-            let surface = compositor.create_surface(&handle, ());
-            let role = shell.get_xdg_surface(&surface, &handle, ());
-            let toplevel = role.get_toplevel(&handle, ());
-            toplevel.set_title("window-test".into());
-            toplevel.set_app_id("org.dukovo.window-test".into());
-            // A commit with no buffer asks for the first configure.
-            surface.commit();
-            self.window = Some(Window { surface, role, shown: None });
-            let until = Instant::now() + Duration::from_secs(10);
-            while self.told.configured.is_none() {
-                if Instant::now() >= until {
-                    return Err("the window server did not configure the window".into());
-                }
-                self.turn(Duration::from_millis(100))?;
-            }
+            self.open(false)?;
         }
+        let handle = self.queue.handle();
         let shown = self.buffer((width, height), seed)?;
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
@@ -266,6 +326,174 @@ impl Client {
         }
         self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
         Ok(())
+    }
+
+    /// Sends what the program asked and waits until the window server
+    /// has all of it.
+    fn sent(&mut self) -> Outcome {
+        let gone = |err| format!("the window server: {err}");
+        self.queue.roundtrip(&mut self.told).map(|_| ()).map_err(gone)
+    }
+
+    /// The window, if it shows.
+    fn window(&self) -> Outcome<&Window> {
+        self.window.as_ref().ok_or_else(|| "no window".into())
+    }
+
+    /// The seat, and the serial of the last press of a button the
+    /// program was told of.
+    fn pressed(&self) -> Outcome<(&wl_seat::WlSeat, u32)> {
+        let seat = self.told.seat.as_ref().ok_or("the window server offers no wl_seat")?;
+        Ok((seat, self.told.pressed.ok_or("no button was pressed on the window")?))
+    }
+
+    /// Gives the window the title `title`.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, or the window server is gone.
+    pub fn title(&mut self, title: &str) -> Outcome {
+        self.window()?.toplevel.set_title(title.into());
+        self.sent()
+    }
+
+    /// Asks the window server to have the pointer move the window, as a
+    /// program does when a button goes down on a title bar of its own.
+    ///
+    /// # Errors
+    ///
+    /// When no button was pressed on the window, or the window server
+    /// is gone.
+    pub fn ask_move(&mut self) -> Outcome {
+        let (seat, serial) = self.pressed()?;
+        self.window()?.toplevel._move(seat, serial);
+        self.sent()
+    }
+
+    /// Asks the window server to have the pointer resize the window by
+    /// `edge`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::ask_move`].
+    pub fn ask_resize(&mut self, edge: ResizeEdge) -> Outcome {
+        let (seat, serial) = self.pressed()?;
+        self.window()?.toplevel.resize(seat, serial, edge);
+        self.sent()
+    }
+
+    /// Asks the window server for the window's menu at (`x`, `y`) of
+    /// the window.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::ask_move`].
+    pub fn ask_menu(&mut self, x: i32, y: i32) -> Outcome {
+        let (seat, serial) = self.pressed()?;
+        self.window()?.toplevel.show_window_menu(seat, serial, x, y);
+        self.sent()
+    }
+
+    /// Asks the window server to maximize the window, or to restore it.
+    /// The window server then asks for a size ([`Heard::Size`]).
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, or the window server is gone.
+    pub fn maximize(&mut self, maximized: bool) -> Outcome {
+        let toplevel = &self.window()?.toplevel;
+        if maximized {
+            toplevel.set_maximized();
+        } else {
+            toplevel.unset_maximized();
+        }
+        self.sent()
+    }
+
+    /// Asks the window server to minimize the window.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, or the window server is gone.
+    pub fn minimize(&mut self) -> Outcome {
+        self.window()?.toplevel.set_minimized();
+        self.sent()
+    }
+
+    /// Shows a popup of the window, `width` by `height` with the
+    /// pattern of `seed`, with its top left corner at (`x`, `y`) of the
+    /// window. With `grabs` it asks for the keyboard and the pointer,
+    /// as a menu does, with the serial of the last press of a button.
+    /// The program hears [`Heard::PopupDone`] when the window server
+    /// ends it.
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, no button was pressed for a popup that
+    /// grabs, or the window server is gone or does not answer.
+    pub fn popup(
+        &mut self,
+        (width, height): (u32, u32),
+        (x, y): (i32, i32),
+        seed: u32,
+        grabs: bool,
+    ) -> Outcome {
+        let handle = self.queue.handle();
+        let (Some(compositor), Some(shell)) = (&self.told.compositor, &self.told.shell) else {
+            return Err("the window server offers no windows".into());
+        };
+        let places = shell.create_positioner(&handle, ());
+        places.set_size(width as i32, height as i32);
+        places.set_anchor_rect(x, y, 1, 1);
+        places.set_anchor(xdg_positioner::Anchor::TopLeft);
+        places.set_gravity(xdg_positioner::Gravity::BottomRight);
+        let surface = compositor.create_surface(&handle, ());
+        let role = shell.get_xdg_surface(&surface, &handle, Role::Popup);
+        let popup = role.get_popup(Some(&self.window()?.role), &places, &handle, ());
+        places.destroy();
+        if grabs {
+            let (seat, serial) = self.pressed()?;
+            popup.grab(seat, serial);
+        }
+        surface.commit();
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.told.popup_configured.is_none() {
+            if Instant::now() >= until {
+                return Err("the window server did not configure the popup".into());
+            }
+            self.turn(Duration::from_millis(100))?;
+        }
+        let shown = self.buffer((width, height), seed)?;
+        if let Some(serial) = self.told.popup_configured.take() {
+            role.ack_configure(serial);
+        }
+        surface.attach(Some(&shown.0), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+        self.close_popup();
+        self.popup = Some(Popup { surface, role, popup, shown });
+        self.sent()
+    }
+
+    /// Takes the popup away, if one shows.
+    fn close_popup(&mut self) {
+        if let Some(Popup { surface, role, popup, shown }) = self.popup.take() {
+            popup.destroy();
+            role.destroy();
+            surface.destroy();
+            shown.0.destroy();
+        }
+    }
+
+    /// Takes the popup away, as a program does that was told it is
+    /// done, or whose person chose from it.
+    ///
+    /// # Errors
+    ///
+    /// When the window server is gone.
+    pub fn end_popup(&mut self) -> Outcome {
+        self.close_popup();
+        self.sent()
     }
 
     /// Commits the window with nothing new and asks to be told of the
@@ -328,7 +556,7 @@ impl Client {
             return Err("the window server offers no windows".into());
         };
         let surface = compositor.create_surface(&handle, ());
-        let role = shell.get_xdg_surface(&surface, &handle, ());
+        let role = shell.get_xdg_surface(&surface, &handle, Role::Window);
         role.get_toplevel(&handle, ());
         surface.commit();
         let until = Instant::now() + Duration::from_secs(10);
@@ -572,8 +800,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Told {
             wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
                 Heard::Motion(surface_x, surface_y)
             }
-            wl_pointer::Event::Button { button, state, .. } => {
+            wl_pointer::Event::Button { serial, button, state, .. } => {
                 let pressed = state == WEnum::Value(wl_pointer::ButtonState::Pressed);
+                if pressed {
+                    told.pressed = Some(serial);
+                }
                 Heard::Button { code: button, pressed }
             }
             wl_pointer::Event::AxisValue120 { axis, value120 } => {
@@ -601,17 +832,35 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Told {
     }
 }
 
-impl Dispatch<xdg_surface::XdgSurface, ()> for Told {
+impl Dispatch<xdg_surface::XdgSurface, Role> for Told {
     fn event(
         told: &mut Told,
         _role: &xdg_surface::XdgSurface,
         event: xdg_surface::Event,
-        (): &(),
+        role: &Role,
         _connection: &Connection,
         _handle: &QueueHandle<Told>,
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
-            told.configured = Some(serial);
+            match role {
+                Role::Window => told.configured = Some(serial),
+                Role::Popup => told.popup_configured = Some(serial),
+            }
+        }
+    }
+}
+
+impl Dispatch<xdg_popup::XdgPopup, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _popup: &xdg_popup::XdgPopup,
+        event: xdg_popup::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let xdg_popup::Event::PopupDone = event {
+            told.heard.push_back(Heard::PopupDone);
         }
     }
 }
@@ -626,16 +875,20 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Told {
         _handle: &QueueHandle<Told>,
     ) {
         match event {
-            xdg_toplevel::Event::Configure { states, .. } => {
-                let activated = xdg_toplevel::State::Activated as u32;
-                let active = states
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .any(|state| u32::from_ne_bytes(*state) == activated);
+            xdg_toplevel::Event::Configure { width, height, states } => {
+                let has = |state: xdg_toplevel::State| {
+                    let (states, _) = states.as_chunks::<4>();
+                    states.iter().any(|other| u32::from_ne_bytes(*other) == state as u32)
+                };
+                let active = has(xdg_toplevel::State::Activated);
                 if active != told.active {
                     told.active = active;
                     told.heard.push_back(Heard::Active(active));
+                }
+                let asked = (width, height, has(xdg_toplevel::State::Maximized));
+                if asked != told.asked {
+                    told.asked = asked;
+                    told.heard.push_back(Heard::Size { width, height, maximized: asked.2 });
                 }
             }
             xdg_toplevel::Event::Close => told.heard.push_back(Heard::Close),
@@ -660,6 +913,7 @@ impl Dispatch<wl_callback::WlCallback, ()> for Told {
 }
 
 delegate_noop!(Told: wl_compositor::WlCompositor);
+delegate_noop!(Told: xdg_positioner::XdgPositioner);
 delegate_noop!(Told: ignore wl_shm::WlShm);
 delegate_noop!(Told: wl_shm_pool::WlShmPool);
 delegate_noop!(Told: ignore wl_buffer::WlBuffer);
