@@ -32,7 +32,7 @@ pub mod layout;
 pub mod panel;
 pub mod theme;
 
-pub use canvas::{Canvas, Colour, Rect};
+pub use canvas::{Canvas, Colour, Rect, shown_over};
 pub use draw::Look;
 pub use layout::{Bar, Button, Edge, Layout, Margins, Part, Shape};
 pub use theme::Theme;

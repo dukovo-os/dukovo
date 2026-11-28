@@ -198,15 +198,8 @@ impl World {
             }
             let at = (((corner.1 + y) as u32 * width + (corner.0 + x) as u32) * 4) as usize;
             let shows = [shows[at + 2], shows[at + 1], shows[at]];
-            // The pixel over the desktop's, as pixman reckons it, give
-            // or take the rounding of one that covers a part.
-            let slack = i32::from(!whole && *cover != 0);
-            for (part, colour) in [red, green, blue].into_iter().enumerate() {
-                let under = i32::from(BACKGROUND[part]) * (255 - i32::from(*cover));
-                let expected = i32::from(*colour) + (under + 127) / 255;
-                let differs = (i32::from(shows[part]) - expected).abs();
-                assert!(differs <= slack, "({x}, {y}) shows {shows:?}, not {expected} at {part}");
-            }
+            let expected = window_frame::shown_over([*blue, *green, *red, *cover], BACKGROUND);
+            assert_eq!(shows, expected, "({x}, {y})");
         }
     }
 

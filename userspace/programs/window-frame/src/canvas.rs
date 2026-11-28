@@ -213,6 +213,21 @@ fn blend(pixel: &mut [u8], colour: Colour, cover: u8) {
     pixel[3] = mixed(255, pixel[3]);
 }
 
+/// What a pixel of a canvas shows as over a pixel that covers all,
+/// whose red, green and blue are `under`: as the renderer reckons it
+/// (pixman's `OVER`), so that a test can say what a screen shows to
+/// the last bit.
+pub fn shown_over(pixel: [u8; PIXEL], under: [u8; 3]) -> [u8; 3] {
+    let [blue, green, red, cover] = pixel;
+    let through = 255 - u16::from(cover);
+    let over = |own: u8, under: u8| {
+        // The share of what is under, to the nearest 255th.
+        let share = u16::from(under) * through + 128;
+        own.saturating_add(((share + (share >> 8)) >> 8) as u8)
+    };
+    [over(red, under[0]), over(green, under[1]), over(blue, under[2])]
+}
+
 /// A rectangle of the frame's plane, and its pixels.
 #[derive(Debug)]
 pub struct Canvas<'a> {
@@ -398,6 +413,20 @@ mod tests {
     fn at(pixels: &[u8], rect: Rect, x: i32, y: i32) -> [u8; 4] {
         let index = ((y - rect.y) * rect.w + (x - rect.x)) as usize * PIXEL;
         pixels[index..index + PIXEL].try_into().unwrap()
+    }
+
+    #[test]
+    fn a_pixel_shows_over_another_by_how_much_it_covers() {
+        // One that covers all hides what is under, one that covers
+        // nothing shows it.
+        assert_eq!(shown_over([3, 2, 1, 255], [9, 9, 9]), [1, 2, 3]);
+        assert_eq!(shown_over([0, 0, 0, 0], [7, 8, 9]), [7, 8, 9]);
+        // Black that covers 35 of 100 leaves 65 of what is under, to
+        // the nearest: 166 of 255 of 0x1e is 19.53.
+        assert_eq!(shown_over([0, 0, 0, 89], [0x12, 0x16, 0x1e]), [12, 14, 20]);
+        // The colours of a pixel that covers a part are less by that
+        // part already.
+        assert_eq!(shown_over([100, 50, 25, 128], [255, 255, 255]), [152, 177, 227]);
     }
 
     #[test]

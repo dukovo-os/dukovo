@@ -24,6 +24,9 @@ sysapi = { path = "../sysapi" }
 # The Wayland protocols, as a program speaks them.
 wayland-client = "0.31.14"
 wayland-protocols = { version = "0.32.13", features = ["client"] }
+# Where the frame windowd draws around a window puts the window's own
+# pixels, which the program says in the log (ADR 0718).
+window-frame = { path = "../window-frame" }
 
 [lints]
 workspace = true

@@ -6155,6 +6155,7 @@ dependencies = [
  "sysapi",
  "wayland-client",
  "wayland-protocols",
+ "window-frame",
 ]
 
 [[package]]

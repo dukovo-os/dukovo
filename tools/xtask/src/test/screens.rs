@@ -22,14 +22,17 @@
 //! for pixel. The tests of the desktop watch the same way
 //! ([`Watch::of_desktop`]): their program is `window-test`
 //! (userspace/programs/window-test), a window on the desktop, which says
-//! what the screens show around it and in it.
+//! what the screens show around it and in it. The frame around a
+//! window is drawn here as windowd draws it, by the same library
+//! (userspace/programs/window-frame).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use display_pattern::pattern;
-use display_pattern::said::{self, Rect, Said};
+use display_pattern::said::{self, FrameButton, Rect, Said};
+use window_frame::{Bar, Button, Canvas, Layout, Look, Shape, Theme};
 
 use super::{Case, QEMU_EXIT_RESET, Qmp, Vm, boot_report, screen_shows, viewer};
 use crate::qemu;
@@ -242,6 +245,39 @@ impl Watch {
         Ok(())
     }
 
+    /// Draws the frame of a window whose own pixels are `rect` of
+    /// `screen` over the screen's picture, as windowd draws it for
+    /// `look`. What of it is off the screen is left out.
+    fn frame(
+        &mut self,
+        screen: &str,
+        rect: &Rect,
+        shape: Shape,
+        look: &Look<'_>,
+    ) -> Result<(), String> {
+        let Some(Expected::Picture(width, pixels)) = self.screens.get_mut(screen) else {
+            return Err(format!("{screen} was drawn on before it showed a picture"));
+        };
+        let theme = Theme::basic();
+        let size = (rect.width as i32, rect.height as i32);
+        let layout = Layout::of(&theme, size, shape, Bar::Full, None);
+        let bounds = layout.bounds();
+        let mut drawn = vec![0; Canvas::bytes_of(&bounds)];
+        window_frame::draw::frame(&theme, &layout, look, &mut Canvas::over(bounds, &mut drawn));
+        // Where the corner of what was drawn is on the screen.
+        let left = rect.x as i32 - layout.surface.x + bounds.x;
+        let top = rect.y as i32 - layout.surface.y + bounds.y;
+        let (width, height) = (*width as i32, (pixels.len() / (*width).max(1)) as i32);
+        for (index, pixel) in drawn.as_chunks::<4>().0.iter().enumerate() {
+            let (x, y) = (left + index as i32 % bounds.w, top + index as i32 / bounds.w);
+            if (0..width).contains(&x) && (0..height).contains(&y) {
+                let under = &mut pixels[(y * width + x) as usize];
+                *under = window_frame::shown_over(*pixel, *under);
+            }
+        }
+        Ok(())
+    }
+
     /// Takes in one line of the program's.
     fn take(&mut self, line: &Said) -> Result<(), String> {
         match line {
@@ -259,6 +295,16 @@ impl Watch {
             }
             Said::Pointer { screen, rect, seed } => {
                 self.paint(screen, rect, |x, y| pattern::colour(*seed, x, y))?;
+            }
+            Said::Frame { screen, rect, maximized, active, hot, title } => {
+                let shape = if *maximized { Shape::Maximized } else { Shape::Normal };
+                let hot = hot.map(|button| match button {
+                    FrameButton::Minimize => Button::Minimize,
+                    FrameButton::Maximize => Button::Maximize,
+                    FrameButton::Close => Button::Close,
+                });
+                let look = Look { title, active: *active, hot, pressed: None };
+                self.frame(screen, rect, shape, &look)?;
             }
             Said::Dark { screen } => {
                 self.screens.insert(screen.clone(), Expected::Dark);
@@ -456,6 +502,40 @@ mod tests {
         assert!(why.starts_with("1200 of its 1200 pixels"), "{why}");
         let why = differs(expected, &image(30, 40, drawn)).unwrap();
         assert_eq!(why, "it is 30x40, not 40x30");
+    }
+
+    #[test]
+    fn a_frame_is_drawn_around_a_window_over_what_the_screen_showed() {
+        let watch = watched(&[
+            "fill virtio0/0 400x300 colour 12161e",
+            "frame virtio0/0 200x100 at 100,80 normal active hot none title A window",
+            "pointer virtio0/0 200x100 at 100,80 seed 5",
+        ])
+        .unwrap();
+        let Expected::Picture(400, pixels) = &watch.screens["virtio0/0"] else {
+            panic!("no picture of 400 across");
+        };
+        let at = |x: i32, y: i32| pixels[(y * 400 + x) as usize];
+        // The window's own pixels, the title bar over them, the black
+        // line around the frame's box and the desktop beyond it.
+        assert_eq!(at(100, 80), pattern::colour(5, 0, 0));
+        assert_eq!(at(299, 179), pattern::colour(5, 199, 99));
+        let theme = Theme::basic();
+        let bar = at(200, 80 - theme.bar + 2);
+        assert_ne!(bar, [0x12, 0x16, 0x1e]);
+        assert_eq!(at(200, 80 - theme.bar - 1), [0, 0, 0]);
+        assert_eq!(at(200, 80 - theme.bar - 2), [0x12, 0x16, 0x1e]);
+        // The shadow under the box is the desktop's colour, darker.
+        let shadow = at(200, 180 + theme.border + 3);
+        assert!(shadow != [0x12, 0x16, 0x1e] && shadow[2] < 0x1e && shadow[2] > 0, "{shadow:?}");
+        // A frame at the screen's corner is cut by it.
+        let cut = watched(&[
+            "fill virtio0/0 400x300 colour 12161e",
+            "frame virtio0/0 400x264 at 0,36 maximized inactive hot close title",
+        ]);
+        assert!(cut.is_ok(), "{cut:?}");
+        let early = watched(&["frame virtio0/0 200x100 at 100,80 normal active hot none title A"]);
+        assert!(early.unwrap_err().contains("before it showed a picture"));
     }
 
     #[test]
