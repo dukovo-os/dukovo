@@ -52,7 +52,7 @@ run = "tune set benchmark"
 root = true
 expect = "the profile is benchmark"
 [[step]]
-run = "sh -c 'SERVERBENCH_PROFILE=raw /system/tests/posix/serverbench nginx php postgresql events 2>&1'"
+run = "sh -c 'SERVERBENCH_PROFILE=raw /system/tests/posix/serverbench poll events php nginx postgresql 2>&1'"
 expect = "serverbench: done"
 [[step]]
 run = "tune set balanced"

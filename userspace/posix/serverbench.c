@@ -2740,6 +2740,37 @@ static void events_rows(void) {
 	}
 }
 
+// The poll row's rounds, each a poll that returns at once.
+#define POLL_ROUNDS 1000000
+
+// bench.c's posix_poll, profiled: a poll of one pipe with a byte to read,
+// which returns at once, as the gated row times it.
+static void poll_rows(void) {
+	int ends[2];
+	if(pipe(ends) != 0 || write(ends[1], "x", 1) != 1)
+		fail("server_poll", "pipe: %s", strerror(errno));
+	struct pollfd entry = {.fd = ends[0], .events = POLLIN};
+	// A warm-up pass, then the measured ones.
+	for(int pass = -1; pass < PASSES; pass++) {
+		if(pass >= 0)
+			profile_begin();
+		struct counts before = counts_now();
+		uint64_t started = now_ns();
+		for(uint64_t i = 0; i < POLL_ROUNDS; i++) {
+			if(poll(&entry, 1, 0) != 1)
+				fail("server_poll", "poll did not find the ready pipe");
+		}
+		if(pass < 0)
+			continue;
+		report("server_poll", started, POLL_ROUNDS);
+		profile_end();
+		print_counts("server_poll", before, counts_now(), POLL_ROUNDS);
+	}
+	profile_print("server_poll");
+	close(ends[0]);
+	close(ends[1]);
+}
+
 static void malloc_rows(void) {
 	malloc_rounds(NULL);
 	uint64_t started = now_ns();
@@ -2829,7 +2860,7 @@ int main(int argc, char **argv) {
 			REQUIRE_ALL(valkey_programs);
 		else if(!strcmp(argv[i], "postgresql"))
 			REQUIRE_ALL(postgresql_programs);
-		else if(!strcmp(argv[i], "events"))
+		else if(!strcmp(argv[i], "events") || !strcmp(argv[i], "poll"))
 			continue;
 		else {
 			printf("serverbench: %s is not a server; the servers are nginx, php, valkey and postgresql\n", argv[i]);
@@ -2854,6 +2885,8 @@ int main(int argc, char **argv) {
 			valkey_rows();
 		else if(!strcmp(argv[i], "events"))
 			events_rows();
+		else if(!strcmp(argv[i], "poll"))
+			poll_rows();
 		else
 			postgresql_rows();
 	}
