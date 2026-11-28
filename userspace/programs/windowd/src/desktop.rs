@@ -298,8 +298,10 @@ where
         if focus.as_ref().map(|(surface, _)| surface) == pointer.current_focus().as_ref() {
             return;
         }
-        let serial = SERIAL_COUNTER.next_serial();
-        let moved = MotionEvent { location: at, serial, time: ms(monotonic_ns()) };
+        let (serial, now) = (SERIAL_COUNTER.next_serial(), monotonic_ns());
+        let moved = MotionEvent { location: at, serial, time: ms(now) };
+        let comes = focus.as_ref().map(|(surface, _)| surface);
+        self.shell.stamps.pointer([comes, None], now);
         pointer.motion(&mut self.shell, focus, &moved);
         pointer.frame(&mut self.shell);
     }
@@ -345,8 +347,8 @@ where
         let serial = SERIAL_COUNTER.next_serial();
         // XKB's codes are Linux's and 8.
         let xkb = (u32::from(code) + 8).into();
-        let what =
-            keyboard.input(&mut self.shell, xkb, state, serial, ms(time_ns), |_, held, _| {
+        let (what, modifiers_changed) =
+            keyboard.input_intercept(&mut self.shell, xkb, state, |_, held, _| {
                 if !pressed {
                     let was_kept = kept.iter().position(|other| *other == code);
                     return match was_kept.map(|at| kept.swap_remove(at)) {
@@ -368,12 +370,22 @@ where
                 kept.push(code);
                 FilterResult::Intercept(Some(what))
             });
+        let what = match what {
+            FilterResult::Intercept(what) => what,
+            // The key is the program's that has the keyboard.
+            FilterResult::Forward => {
+                self.shell.stamps.keys(keyboard.current_focus().as_ref(), time_ns);
+                let (shell, time) = (&mut self.shell, ms(time_ns));
+                keyboard.input_forward(shell, xkb, state, serial, time, modifiers_changed);
+                None
+            }
+        };
         let at = self.shell.seat.get_pointer().map(|pointer| pointer.current_location());
         let at = at.unwrap_or_default();
         // Super pressed and let go with nothing between shows the list.
         let tapped = !pressed && keys::is_super(code) && self.super_alone;
         self.super_alone = pressed && keys::is_super(code) && keyboard.pressed_keys().len() == 1;
-        match what.flatten() {
+        match what {
             Some(Kept::Chord(chord)) => self.asked = self.asked.or(Some(chord)),
             Some(Kept::Ask(ask)) => self.ask(ask, at),
             Some(Kept::Key { ctrl, shift }) => self.manager.key(&mut self.shell, code, ctrl, shift),
@@ -415,6 +427,7 @@ where
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
         let serial = SERIAL_COUNTER.next_serial();
         let event = ButtonEvent { serial, time: ms(time_ns), button: u32::from(code), state };
+        self.shell.stamps.pointer([pointer.current_focus().as_ref(), None], time_ns);
         pointer.button(&mut self.shell, &event);
         pointer.frame(&mut self.shell);
         self.shell.changed.windows = true;
@@ -457,6 +470,10 @@ where
         let focus = self.focus();
         let serial = SERIAL_COUNTER.next_serial();
         let moved = MotionEvent { location: at, serial, time: ms(time_ns) };
+        // A pointer that is held stays with the program that has it;
+        // otherwise the one under it hears of the motion.
+        let (has, comes) = (pointer.current_focus(), focus.as_ref().map(|(surface, _)| surface));
+        self.shell.stamps.pointer([has.as_ref(), comes], time_ns);
         pointer.motion(&mut self.shell, focus, &moved);
         pointer.frame(&mut self.shell);
         self.screens.point(at);
@@ -474,6 +491,7 @@ where
                 frame = frame.v120(axis, turned).value(axis, f64::from(turned) * NOTCH / 120.0);
             }
         }
+        self.shell.stamps.pointer([pointer.current_focus().as_ref(), None], time_ns);
         pointer.axis(&mut self.shell, frame);
         pointer.frame(&mut self.shell);
         self.settle();
@@ -484,6 +502,7 @@ where
     pub fn let_go(&mut self, time_ns: u64) {
         let time = ms(time_ns);
         if let Some(keyboard) = self.shell.seat.get_keyboard() {
+            self.shell.stamps.keys(keyboard.current_focus().as_ref(), time_ns);
             for held in keyboard.pressed_keys() {
                 let (serial, up) = (SERIAL_COUNTER.next_serial(), KeyState::Released);
                 let shell = &mut self.shell;
@@ -493,6 +512,7 @@ where
         }
         self.kept.clear();
         if let Some(pointer) = self.shell.seat.get_pointer() {
+            self.shell.stamps.pointer([pointer.current_focus().as_ref(), None], time_ns);
             for button in self.held.drain(..).map(u32::from) {
                 let (serial, state) = (SERIAL_COUNTER.next_serial(), ButtonState::Released);
                 pointer.button(&mut self.shell, &ButtonEvent { serial, time, button, state });

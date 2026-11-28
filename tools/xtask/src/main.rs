@@ -20,6 +20,7 @@ mod catalog_pr;
 mod config;
 mod corpus;
 mod deploy;
+mod desktop_bench;
 mod disc_drive;
 mod docs;
 mod doctor;
@@ -39,6 +40,7 @@ mod lab_net;
 mod libc_check;
 mod licenses;
 mod lint;
+mod linux_desktop;
 mod manuals;
 mod memtest;
 mod patched;
@@ -518,8 +520,8 @@ The boot tests are:
         }
         "bench" => {
             "Usage: ./ob bench [--no-linux] [--gate [--defer-close]] [--linux-kernel <file>]
-                [--runs <n>] [--instructions] [--shell] [--scaling] [--from <file>] [--summary <file>]
-                [--debug | --release]
+                [--runs <n>] [--instructions] [--shell] [--scaling] [--desktop] [--from <file>]
+                [--summary <file>] [--debug | --release]
 
 Boots Radix in QEMU on 2 CPUs with selftest=bench, where user programs time
 the cheapest system calls and IPC round trips over endpoints,
@@ -537,6 +539,11 @@ and take minutes.
                       processes at once, on 4 CPUs, Radix next to Linux
                       (out/bench-scaling/report.md); with --gate, every
                       row is held to Linux's time
+  --desktop           Only measure the desktop's everyday work (a frame, a
+                      key, a window moved and resized), Dukovo's desktop
+                      next to labwc on Linux, whose packages are fetched
+                      once into .cache/linux-desktop
+                      (out/bench/desktop.md); a look, with no gate
   --gate              Fail if Radix takes longer than Linux in the same
                       virtual machine at any operation, measuring both
                       again (up to 6 more runs) while one is over

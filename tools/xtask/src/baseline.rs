@@ -39,7 +39,7 @@ const PACKAGES: &[(&str, &str)] = &[
 /// Ubuntu's archive, then a mirror of it. Superseded kernels stay in the
 /// archive's pool, so a pinned one can still be fetched after newer ones
 /// come out.
-const ARCHIVES: &[&str] =
+pub(crate) const ARCHIVES: &[&str] =
     &["https://archive.ubuntu.com/ubuntu", "https://mirrors.edge.kernel.org/ubuntu"];
 
 /// The pinned kernel, unpacked.

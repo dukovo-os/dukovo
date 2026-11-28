@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! linux-bench [--rounds <count>] [--posix-bench <program>] [--git <program>]
-//!             [--disc <device>] [--sd <device>] [--only scaling|display]
+//!             [--disc <device>] [--sd <device>] [--only scaling|display|desktop]
 //! ```
 //!
 //! With `--only scaling` it runs only the POSIX benchmarks' open/close
@@ -14,7 +14,9 @@
 //! from the kernel command line, after `--`. With `--only display` it
 //! runs only the display and input rows ([`display`]), on the machine
 //! `ob bench` boots for them, which has a virtio graphics card and a
-//! virtio mouse.
+//! virtio mouse. With `--only desktop`, as process 1, it runs the Linux
+//! desktop that `ob bench --desktop` measures Dukovo's beside
+//! ([`desktop`]).
 //!
 //! It prints one line per benchmark, in the format of the Radix benchmark
 //! programs:
@@ -91,6 +93,7 @@
 #![forbid(unsafe_code)]
 
 mod btrfs_log;
+mod desktop;
 mod display;
 
 use std::io::{Read, Write};
@@ -162,6 +165,7 @@ fn main() {
     let mut sd = None;
     let mut scaling = false;
     let mut display = false;
+    let mut desktop = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next();
@@ -175,6 +179,7 @@ fn main() {
             ("--sd", Some(device)) => sd = Some(PathBuf::from(device)),
             ("--only", Some(what)) if what == "scaling" => scaling = true,
             ("--only", Some(what)) if what == "display" => display = true,
+            ("--only", Some(what)) if what == "desktop" => desktop = true,
             ("--btrfs-log", Some(mode)) if mode == "make" || mode == "list" => {
                 btrfs_log = Some(mode);
             }
@@ -182,7 +187,7 @@ fn main() {
                 eprintln!(
                     "usage: linux-bench [--rounds <count>] [--posix-bench <program>] \
                      [--git <program>] [--disc <device>] [--sd <device>] \
-                     [--btrfs-log make|list] [--only scaling|display]"
+                     [--btrfs-log make|list] [--only scaling|display|desktop]"
                 );
                 std::process::exit(2);
             }
@@ -216,6 +221,19 @@ fn main() {
         if std::process::id() == 1 {
             println!("linux-bench: done");
             power_off();
+        }
+        return;
+    }
+    if desktop {
+        // `ob bench --desktop`'s boot: the desktop with the program the
+        // host times in it, and nothing else.
+        if std::process::id() == 1 {
+            desktop::run();
+            println!("linux-bench: done");
+            power_off();
+        } else {
+            eprintln!("linux-bench: --only desktop is for process 1 of `ob bench --desktop`");
+            std::process::exit(2);
         }
         return;
     }

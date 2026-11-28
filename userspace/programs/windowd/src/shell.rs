@@ -84,6 +84,7 @@ use window_frame::{Bar, Edge};
 use crate::clients::Peer;
 use crate::manager::Asked;
 use crate::settings::TitleBars;
+use crate::stamps::Stamps;
 use crate::titlebar::{self, TitleBar};
 use crate::windows::Windows;
 use crate::windows::resize::answered;
@@ -136,6 +137,8 @@ pub struct Shell {
     /// each with whether it may, until the choices are kept in the
     /// person's settings.
     pub chosen: Vec<(String, bool)>,
+    /// The programs' objects for the times of input events.
+    pub stamps: Stamps,
     /// What changed.
     pub changed: Changed,
     /// The lock lights the keyboards are to show, when they changed.
@@ -159,6 +162,7 @@ impl Shell {
             _outputs: OutputManagerState::new_with_xdg_output::<Shell>(display),
             _decorations: XdgDecorationState::new::<Shell>(display),
             _title_bars: titlebar::offer(display),
+            stamps: Stamps::offer(display),
             display: display.clone(),
             popups: PopupManager::default(),
             grabbed: None,

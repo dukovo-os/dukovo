@@ -23,6 +23,8 @@
 
 #![forbid(unsafe_code)]
 
+mod cost;
+
 use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
@@ -309,12 +311,13 @@ fn main() -> ExitCode {
         ["steps"] => steps(false),
         ["steps", "pointer-drawn"] => steps(true),
         ["alone"] => alone(),
+        ["cost"] => cost::run(),
         // The program in the desktop has said whether it passed.
         ["in-desktop", ref inside @ ..] => match in_desktop(inside) {
             Ok(()) => return ExitCode::SUCCESS,
             failed => failed,
         },
-        _ => Err("usage: window-test [in-desktop] steps [pointer-drawn] | alone".into()),
+        _ => Err("usage: window-test [in-desktop] steps [pointer-drawn] | alone | cost".into()),
     };
     match outcome {
         Ok(()) => {

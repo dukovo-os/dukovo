@@ -28,6 +28,7 @@ mod session;
 mod settings;
 mod shell;
 mod socket;
+mod stamps;
 mod titlebar;
 mod windows;
 

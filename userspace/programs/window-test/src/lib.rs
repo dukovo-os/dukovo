@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,9 @@ use wayland_client::protocol::{
     wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::input_timestamps::zv1::client::{
+    zwp_input_timestamps_manager_v1, zwp_input_timestamps_v1,
+};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
@@ -49,6 +53,10 @@ pub const DESKTOP: [u8; 3] = [0x12, 0x16, 0x1e];
 /// One thing the window server told the program.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Heard {
+    /// The key or pointer event that comes next happened at this time
+    /// on the monotonic clock, in nanoseconds. Told to a program that
+    /// asked for the times ([`Client::ask_times`]).
+    At(u64),
     /// The window has the keyboard, or no longer has it.
     Keyboard(bool),
     /// A key of this Linux code went down or up.
@@ -162,6 +170,10 @@ struct Told {
     registry: Option<wl_registry::WlRegistry>,
     title_bars: Option<u32>,
     decorations: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+    times: Option<zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1>,
+    /// The objects that tell the times of the keys and of the pointer,
+    /// once the program asked for them.
+    told_times: Vec<zwp_input_timestamps_v1::ZwpInputTimestampsV1>,
     seat: Option<wl_seat::WlSeat>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -203,6 +215,11 @@ struct Window {
     bar: Option<bar::TitleBar>,
     /// The buffer that shows, and its pixels' file.
     shown: Option<(wl_buffer::WlBuffer, File)>,
+    /// The width and height of the buffer that shows.
+    size: (u32, u32),
+    /// A second buffer of that size, which the window is drawn into
+    /// while the first shows ([`Client::repaint`]).
+    spare: Option<(wl_buffer::WlBuffer, File)>,
 }
 
 /// A popup of the window, with the buffer it shows and its pixels'
@@ -294,6 +311,25 @@ impl Client {
         (self.told.keyboard.is_some(), self.told.pointer.is_some())
     }
 
+    /// Waits up to `patience` for the seat to have a keyboard and a
+    /// pointer. A window server that finds its devices after it starts
+    /// has neither at first.
+    ///
+    /// # Errors
+    ///
+    /// When one is still missing then, or the window server is gone.
+    pub fn await_seat(&mut self, patience: Duration) -> Outcome {
+        let until = Instant::now() + patience;
+        while self.has() != (true, true) {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!("the seat's keyboard and pointer: {:?}", self.has()));
+            }
+            self.turn(left.min(Duration::from_millis(100)))?;
+        }
+        self.sent()
+    }
+
     /// Sends what is to be sent and takes what has come, for up to
     /// `patience` if nothing has.
     fn turn(&mut self, patience: Duration) -> Outcome {
@@ -333,7 +369,16 @@ impl Client {
         if how.maximized {
             toplevel.set_maximized();
         }
-        let window = Window { surface, role, toplevel, decoration: None, bar: None, shown: None };
+        let window = Window {
+            surface,
+            role,
+            toplevel,
+            decoration: None,
+            bar: None,
+            shown: None,
+            size: (0, 0),
+            spare: None,
+        };
         self.window = Some(window);
         if how.shares_bar {
             self.share_bar()?;
@@ -362,11 +407,27 @@ impl Client {
     ///
     /// When the window server is gone or does not answer.
     pub fn show(&mut self, (width, height): (u32, u32), seed: u32) -> Outcome {
+        self.show_pixels((width, height), &Client::pattern((width, height), seed))
+    }
+
+    /// As [`Client::show`], with every pixel of one `shade` of grey:
+    /// a picture that costs next to nothing to make, for a program that
+    /// measures what showing it costs.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::show`].
+    pub fn show_plain(&mut self, (width, height): (u32, u32), shade: u8) -> Outcome {
+        self.show_pixels((width, height), &vec![shade; width as usize * 4 * height as usize])
+    }
+
+    /// Shows the window with `pixels`, `width` by `height` of them.
+    fn show_pixels(&mut self, (width, height): (u32, u32), pixels: &[u8]) -> Outcome {
         if self.window.is_none() {
             self.open(Open::default())?;
         }
         let handle = self.queue.handle();
-        let shown = self.buffer((width, height), seed)?;
+        let shown = self.buffer((width, height), pixels)?;
         let Some(window) = &mut self.window else { return Err("no window".into()) };
         if let Some(serial) = self.told.configured.take() {
             window.role.ack_configure(serial);
@@ -375,12 +436,48 @@ impl Client {
         window.surface.damage_buffer(0, 0, width as i32, height as i32);
         window.surface.frame(&handle, ());
         window.surface.commit();
-        // The buffer before is let go only now, when it shows no more.
+        // The buffer before is let go only now, when it shows no more,
+        // and a spare of another size with it.
         if let Some((before, _)) = window.shown.replace(shown) {
             before.destroy();
         }
+        if let Some((spare, _)) = window.spare.take() {
+            spare.destroy();
+        }
+        window.size = (width, height);
         self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
         Ok(())
+    }
+
+    /// Draws the window anew at the size it shows, every pixel of one
+    /// `shade` of grey, as a program draws frame after frame: into the
+    /// one of two buffers that does not show, which then shows in the
+    /// other's place. Returns once the frame is sent; the window is
+    /// then told of the frame that shows it ([`Heard::Frame`]).
+    ///
+    /// # Errors
+    ///
+    /// When no window shows, or the window server is gone.
+    pub fn repaint(&mut self, shade: u8) -> Outcome {
+        let handle = self.queue.handle();
+        let Some(window) = &self.window else { return Err("no window".into()) };
+        let (width, height) = window.size;
+        let pixels = vec![shade; width as usize * 4 * height as usize];
+        let spare = match self.window.as_mut().and_then(|window| window.spare.take()) {
+            Some(spare) => {
+                let failed = |err: std::io::Error| format!("the window's pixels: {err}");
+                spare.1.write_all_at(&pixels, 0).map_err(failed)?;
+                spare
+            }
+            None => self.buffer((width, height), &pixels)?,
+        };
+        let Some(window) = &mut self.window else { return Err("no window".into()) };
+        window.surface.attach(Some(&spare.0), 0, 0);
+        window.surface.damage_buffer(0, 0, width as i32, height as i32);
+        window.surface.frame(&handle, ());
+        window.surface.commit();
+        window.spare = window.shown.replace(spare);
+        self.queue.flush().map_err(|err| format!("the window server: {err}"))
     }
 
     /// Sends what the program asked and waits until the window server
@@ -536,6 +633,31 @@ impl Client {
         self.sent()
     }
 
+    /// Asks the window server for the time of each key and pointer
+    /// event to the nanosecond, which is then told before the event
+    /// ([`Heard::At`]).
+    ///
+    /// # Errors
+    ///
+    /// When the window server does not tell the times, or is gone.
+    pub fn ask_times(&mut self) -> Outcome {
+        let handle = self.queue.handle();
+        let times = self.told.times.as_ref().ok_or("the window server tells no times")?;
+        let keyboard = self.told.keyboard.as_ref().ok_or("no keyboard")?;
+        let pointer = self.told.pointer.as_ref().ok_or("no pointer")?;
+        self.told.told_times = vec![
+            times.get_keyboard_timestamps(keyboard, &handle, ()),
+            times.get_pointer_timestamps(pointer, &handle, ()),
+        ];
+        self.sent()
+    }
+
+    /// Whether the window server tells the times of input events
+    /// ([`Client::ask_times`]).
+    pub fn tells_times(&self) -> bool {
+        self.told.times.is_some()
+    }
+
     /// Asks the window server to maximize the window, or to restore it.
     /// The window server then asks for a size ([`Heard::Size`]).
     ///
@@ -605,7 +727,7 @@ impl Client {
             }
             self.turn(Duration::from_millis(100))?;
         }
-        let shown = self.buffer((width, height), seed)?;
+        let shown = self.buffer((width, height), &Client::pattern((width, height), seed))?;
         if let Some(serial) = self.told.popup_configured.take() {
             role.ack_configure(serial);
         }
@@ -669,7 +791,7 @@ impl Client {
         };
         let surface = compositor.create_surface(&handle, ());
         pointer.set_cursor(entered, Some(&surface), 0, 0);
-        let (buffer, file) = self.buffer((side, side), seed)?;
+        let (buffer, file) = self.buffer((side, side), &Client::pattern((side, side), seed))?;
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, side as i32, side as i32);
         surface.commit();
@@ -708,7 +830,7 @@ impl Client {
             }
             self.turn(Duration::from_millis(100))?;
         }
-        let (buffer, file) = self.buffer((width, height), 0)?;
+        let (buffer, file) = self.buffer((width, height), &Client::pattern((width, height), 0))?;
         // Once the round trip is made the window server has the pool,
         // mapped at its whole length.
         self.queue.roundtrip(&mut self.told).map_err(|err| format!("the window server: {err}"))?;
@@ -727,22 +849,28 @@ impl Client {
         Err("the window server kept a program whose pixels' file was cut short".into())
     }
 
-    /// A buffer of `size` with the pattern of `seed`, and the file its
+    /// The pixels of the pattern of `seed`, `width` by `height`.
+    fn pattern((width, height): (u32, u32), seed: u32) -> Vec<u8> {
+        let row_bytes = width as usize * 4;
+        let mut pixels = vec![0u8; row_bytes * height as usize];
+        pattern::paint(seed, (0, 0), width, row_bytes, &mut pixels);
+        pixels
+    }
+
+    /// A buffer of `width` by `height` with `pixels`, and the file its
     /// pixels are in.
     fn buffer(
         &mut self,
         (width, height): (u32, u32),
-        seed: u32,
+        pixels: &[u8],
     ) -> Outcome<(wl_buffer::WlBuffer, File)> {
         let failed = |err: std::io::Error| format!("the window's pixels: {err}");
         let row_bytes = width as usize * 4;
-        let mut pixels = vec![0u8; row_bytes * height as usize];
-        pattern::paint(seed, (0, 0), width, row_bytes, &mut pixels);
         // The pixels are written, not mapped: the window server maps
         // the file, and this program needs them no more.
         let memory: OwnedFd = MemoryFile::new().and_then(MemoryFile::into_fd).map_err(failed)?;
         let mut file = File::from(memory);
-        file.write_all(&pixels).map_err(failed)?;
+        file.write_all(pixels).map_err(failed)?;
         let handle = self.queue.handle();
         let Some(shm) = &self.told.shm else {
             return Err("the window server offers no wl_shm".into());
@@ -842,6 +970,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Told {
                     told.decorations = Some(registry.bind(name, 1, handle, ()));
                 }
                 "dukovo_title_bar_manager_v1" => told.title_bars = Some(name),
+                "zwp_input_timestamps_manager_v1" => {
+                    told.times = Some(registry.bind(name, 1, handle, ()));
+                }
                 "wl_output" => {
                     let _: wl_output::WlOutput = registry.bind(name, version.min(4), handle, name);
                     told.screens.push((name, Screen::default()));
@@ -1074,9 +1205,26 @@ impl Dispatch<wl_callback::WlCallback, ()> for Told {
     }
 }
 
+impl Dispatch<zwp_input_timestamps_v1::ZwpInputTimestampsV1, ()> for Told {
+    fn event(
+        told: &mut Told,
+        _times: &zwp_input_timestamps_v1::ZwpInputTimestampsV1,
+        event: zwp_input_timestamps_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Told>,
+    ) {
+        if let zwp_input_timestamps_v1::Event::Timestamp { tv_sec_hi, tv_sec_lo, tv_nsec } = event {
+            let seconds = u64::from(tv_sec_hi) << 32 | u64::from(tv_sec_lo);
+            told.heard.push_back(Heard::At(seconds * 1_000_000_000 + u64::from(tv_nsec)));
+        }
+    }
+}
+
 delegate_noop!(Told: wl_compositor::WlCompositor);
 delegate_noop!(Told: xdg_positioner::XdgPositioner);
 delegate_noop!(Told: zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
+delegate_noop!(Told: zwp_input_timestamps_manager_v1::ZwpInputTimestampsManagerV1);
 delegate_noop!(Told: ignore wl_shm::WlShm);
 delegate_noop!(Told: wl_shm_pool::WlShmPool);
 delegate_noop!(Told: ignore wl_buffer::WlBuffer);

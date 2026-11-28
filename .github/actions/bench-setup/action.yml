@@ -85,3 +85,12 @@ runs:
       with:
         path: .cache/linux-baseline/*.deb
         key: linux-baseline-${{ hashFiles('tools/xtask/src/baseline.rs') }}
+
+    # The Linux desktop the desktop's rows are measured beside (ADR
+    # 0724): Ubuntu's packages, pinned in
+    # tools/xtask/src/linux_desktop.pins, kept between runs.
+    - name: Restore the Linux desktop's packages
+      uses: actions/cache@v4
+      with:
+        path: .cache/linux-desktop/debs/*.deb
+        key: linux-desktop-${{ hashFiles('tools/xtask/src/linux_desktop.pins') }}

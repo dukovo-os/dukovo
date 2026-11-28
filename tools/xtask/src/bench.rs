@@ -145,7 +145,7 @@ pub(crate) const LINUX_CMDLINE: &str = "console=ttyS0 panic=-1 quiet mitigations
 
 /// What both virtual machines get.
 pub(crate) const VM_MEMORY: &str = "1G";
-const VM_CPUS: u32 = 2;
+pub(crate) const VM_CPUS: u32 = 2;
 
 /// The most time Radix may take for an operation, as a share of what
 /// Linux takes in the same virtual machine, before `--gate` fails: parity
@@ -714,12 +714,20 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let shell = args.flag("--shell");
     let scaling = args.flag("--scaling");
     let display_only = args.flag("--display");
+    let desktop_only = args.flag("--desktop");
     let profile = args.profile(&ctx.config)?;
     args.finish()?;
     if display_only && (gate || instructions || shell || scaling || from.is_some()) {
         crate::bail!(
             "--display measures the display and input rows alone, a look and no gate, so it \
              takes none of --gate, --instructions, --shell, --scaling and --from"
+        );
+    }
+    if desktop_only && (display_only || gate || instructions || shell || scaling || from.is_some())
+    {
+        crate::bail!(
+            "--desktop measures the desktop's rows alone, a look and no gate, so it takes none \
+             of --display, --gate, --instructions, --shell, --scaling and --from"
         );
     }
     if defer_close && (!gate || instructions || shell || scaling || from.is_some()) {
@@ -777,6 +785,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     if display_only {
         let linux = linux.then_some(given_kernel);
         return time_display_alone(ctx, &dir, &image, linux, runs, summary.as_deref());
+    }
+    if desktop_only {
+        let linux = linux.then_some(given_kernel);
+        return crate::desktop_bench::command(ctx, &dir, &image, linux, runs, summary.as_deref());
     }
     let btrfs = btrfs_disk(ctx, &dir)?;
     if instructions {
@@ -914,7 +926,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 /// The Linux kernel the virtual machine boots, `given` or else the
 /// pinned one, and the initramfs of [`linux_init`] for it, with the POSIX
 /// benchmarks `posix` and `git` where they are given.
-fn linux_vm_boot(
+pub(crate) fn linux_vm_boot(
     ctx: &Ctx,
     dir: &Path,
     posix: Option<&Path>,
@@ -2080,7 +2092,7 @@ fn display_sizes(log: &str) -> std::result::Result<(), String> {
 
 /// The lines of `log` that the display rows' program `program` said, in
 /// one, for an error.
-fn said_by(log: &str, program: &str) -> String {
+pub(crate) fn said_by(log: &str, program: &str) -> String {
     let said: Vec<&str> = log.lines().filter(|line| line.contains(program)).collect();
     if said.is_empty() { String::new() } else { format!(": {}", said.join(" | ")) }
 }
@@ -2358,7 +2370,7 @@ pub fn parse_counts(text: &str) -> Vec<Counts> {
         .collect()
 }
 
-fn find<'a>(measurements: &'a [Measurement], name: &str) -> Option<&'a Measurement> {
+pub(crate) fn find<'a>(measurements: &'a [Measurement], name: &str) -> Option<&'a Measurement> {
     measurements.iter().find(|m| m.name == name)
 }
 
@@ -2392,7 +2404,7 @@ pub(crate) fn host_cpu() -> String {
         .unwrap_or_else(|| "an unknown CPU".into())
 }
 
-fn host_kernel() -> String {
+pub(crate) fn host_kernel() -> String {
     std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map_or_else(|_| "unknown".into(), |release| release.trim().to_string())
 }

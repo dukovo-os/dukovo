@@ -541,6 +541,57 @@ fn keys_reach_the_window_with_the_keyboard_and_windowd_s_chords_reach_none() {
 }
 
 #[test]
+fn a_program_that_asks_is_told_each_event_s_time_to_the_nanosecond_before_the_event() {
+    let mut world = World::one_screen();
+    let (asked, other) = (world.program(), world.program());
+    world.show(&other, (320, 200), 8);
+    world.show(&asked, (320, 200), 7);
+    for program in [&asked, &other] {
+        world.ask(program, |client| client.ask_times().unwrap());
+    }
+    world.told(&asked);
+    world.told(&other);
+    // The window in front has the keyboard and the pointer over it:
+    // its program is told the time of each key, motion and button, and
+    // then the event. The other program is told nothing.
+    let at = 5_000_000_123_456_789;
+    world.desktop.key(at, KEY_A, true);
+    world.desktop.moved(at + 1, 1, 0);
+    world.desktop.button(at + 2, BTN_LEFT, true);
+    world.desktop.button(at + 3, BTN_LEFT, false);
+    world.desktop.key(at + 4, KEY_A, false);
+    let told = world.told(&asked);
+    let kinds: Vec<&Heard> =
+        told.iter().filter(|heard| !matches!(heard, Heard::Motion(..))).collect();
+    let (down, up) = (true, false);
+    let key = u32::from(KEY_A);
+    let left = u32::from(BTN_LEFT);
+    assert_eq!(
+        kinds,
+        [
+            &Heard::At(at),
+            &Heard::Key { code: key, pressed: down },
+            &Heard::At(at + 1),
+            &Heard::At(at + 2),
+            &Heard::Button { code: left, pressed: down },
+            &Heard::At(at + 3),
+            &Heard::Button { code: left, pressed: up },
+            &Heard::At(at + 4),
+            &Heard::Key { code: key, pressed: up },
+        ]
+    );
+    assert!(matches!(told[3], Heard::Motion(..)), "{told:?}");
+    assert_eq!(world.told(&other), []);
+    // A chord of windowd's own is no program's: no time is told of it.
+    world.desktop.key(at + 5, KEY_LEFTCTRL, true);
+    world.desktop.key(at + 6, KEY_LEFTALT, true);
+    world.desktop.key(at + 7, KEY_F2, true);
+    let told = world.told(&asked);
+    assert!(!told.contains(&Heard::At(at + 7)), "{told:?}");
+    assert_eq!(world.desktop.asked(), Some(Chord::Console(2)));
+}
+
+#[test]
 fn the_pointer_moves_at_once_and_the_window_under_it_is_told() {
     let mut world = World::one_screen();
     let program = world.program();
