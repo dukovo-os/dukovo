@@ -891,6 +891,43 @@ impl core::ops::Deref for Running {
     }
 }
 
+/// A counted reference to a thread in one word: a [`ThreadRef`] without
+/// its allocator handle, for a list that keeps threads in a cache line
+/// beside other things, as a futex's does its oldest waiter. Every
+/// thread's handle frees through the same heap, so the reference made
+/// back from it ([`ThinRef::into_ref`]) frees as the first would.
+pub struct ThinRef(usize);
+
+impl ThinRef {
+    /// `thread`'s reference, in one word.
+    pub fn new(thread: ThreadRef) -> ThinRef {
+        ThinRef(ThreadRef::into_raw_with_allocator(thread).0.addr())
+    }
+
+    /// The reference again, as a [`ThreadRef`].
+    pub fn into_ref(self) -> ThreadRef {
+        let thin = core::mem::ManuallyDrop::new(self);
+        core::mem::ManuallyDrop::into_inner(handed(thin.0))
+    }
+}
+
+impl core::ops::Deref for ThinRef {
+    type Target = Thread;
+
+    #[allow(unsafe_code)]
+    fn deref(&self) -> &Thread {
+        // SAFETY: the word is the address of the thread, which the count
+        // it holds keeps alive for as long as `self`.
+        unsafe { &*(self.0 as *const Thread) }
+    }
+}
+
+impl Drop for ThinRef {
+    fn drop(&mut self) {
+        drop(core::mem::ManuallyDrop::into_inner(handed(self.0)));
+    }
+}
+
 /// The running thread's token (its address), or 0 before threads run.
 pub fn current_token() -> usize {
     // One read of this CPU's word, which a migration cannot split, so no
@@ -940,7 +977,48 @@ pub fn wake(thread: &ThreadRef) -> bool {
     thread.wake_pending.store(true, Ordering::SeqCst);
     // Masked until the thread is queued or handed over: a waker moved to
     // another CPU meanwhile could find itself on the CPU it hands to.
-    masked(|| wake_masked(thread))
+    masked(|| wake_masked(thread, Count::Make))
+}
+
+/// Like [`wake`], for a caller done with its reference to `thread` once
+/// it is woken, as a futex waker is with its waiter's: the reference goes
+/// with the thread to the queue or inbox it joins. A wake-up otherwise
+/// counts a reference for that queue or inbox, and the caller then drops
+/// its own, two locked writes to a line the thread's own CPU wrote last,
+/// each taking the line from that CPU.
+pub fn wake_given(thread: ThreadRef) -> bool {
+    thread.wake_pending.store(true, Ordering::SeqCst);
+    let (entry, _) = ThreadRef::into_raw_with_allocator(thread);
+    let thread = handed(entry.addr());
+    let woke = masked(|| wake_masked(&thread, Count::Given));
+    if !woke {
+        // With interrupts on, as any reference that may be the last.
+        drop(core::mem::ManuallyDrop::into_inner(thread));
+    }
+    woke
+}
+
+/// Where the counted reference that a woken thread's queue or inbox holds
+/// comes from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Count {
+    /// Counted as the thread is placed.
+    Make,
+    /// The waker's own, made into an inbox entry ([`handed`]): the
+    /// reference the wake-up was given, or the one it counted before
+    /// trying [`hand_over_to_idle`].
+    Given,
+}
+
+/// The counted reference to `thread` that its queue or inbox takes, as
+/// `count` says.
+fn counted(thread: &ThreadRef, count: Count) -> ThreadRef {
+    match count {
+        Count::Make => thread.clone(),
+        Count::Given => {
+            core::mem::ManuallyDrop::into_inner(handed(ThreadRef::as_ptr(thread).addr()))
+        }
+    }
 }
 
 /// Runs `wake` with preemption held off and interrupts masked, and lets
@@ -959,28 +1037,61 @@ fn masked(wake: impl FnOnce() -> bool) -> bool {
     woke
 }
 
-/// [`wake`], with interrupts masked.
-fn wake_masked(thread: &ThreadRef) -> bool {
+/// [`wake`], with interrupts masked, and the queue's or inbox's reference
+/// from where `count` says, taken only if the thread was blocked.
+fn wake_masked(thread: &ThreadRef, mut count: Count) -> bool {
     let mut state = thread.state.lock();
     if !matches!(state.run, Run::Blocked(_)) {
         return false;
     }
     thread.wake_pending.store(false, Ordering::Relaxed);
     state.run = Run::Ready;
-    let target = choose_cpu(thread.cpu.load(Ordering::Relaxed), &state);
-    place_woken(thread, state, target);
+    let previous = thread.cpu.load(Ordering::Relaxed);
+    // The CPU it ran on last, idle, is where `choose_cpu` would put it:
+    // tried first, reading nothing of that CPU's (`hand_over_to_idle`).
+    if previous != Arch::current_cpu()
+        && state.affinity.contains(previous)
+        && balance::fastest(previous)
+    {
+        let entry = entry_of(thread, count);
+        count = Count::Given;
+        thread.handed_next.store(0, Ordering::Relaxed);
+        if CPUS.get(previous).resched.hand_over_to_idle(entry) {
+            // The thread's lock goes as the idle CPU starts its switch,
+            // before that CPU takes it to queue the thread.
+            return true;
+        }
+    }
+    let target = choose_cpu(previous, &state);
+    place_woken(thread, state, target, count);
     true
+}
+
+/// The address of `thread` as an inbox entry, on a counted reference
+/// that the entry then holds: counted now, or the one `count` says the
+/// waker has already made into an entry.
+fn entry_of(thread: &ThreadRef, count: Count) -> usize {
+    match count {
+        Count::Make => ThreadRef::into_raw_with_allocator(thread.clone()).0.addr(),
+        Count::Given => ThreadRef::as_ptr(thread).addr(),
+    }
 }
 
 /// Puts `thread`, just made ready under its lock `state`, on CPU `target`:
 /// handed to it ([`hand_over`]) once the lock is let go, if `target` is
-/// another CPU and idle; otherwise queued on it. With interrupts masked,
-/// so that a waker moved meanwhile cannot find itself on the CPU it hands
+/// another CPU and idle; otherwise queued on it. The queue's or inbox's
+/// reference comes from where `count` says. With interrupts masked, so
+/// that a waker moved meanwhile cannot find itself on the CPU it hands
 /// to.
-fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: usize) {
+fn place_woken(
+    thread: &ThreadRef,
+    mut state: SpinLockGuard<'_, State>,
+    target: usize,
+    count: Count,
+) {
     if target == Arch::current_cpu() || CPUS.get(target).running.load(Ordering::Relaxed) != 0 {
         bump(&thread.stats.wakeups, 1);
-        enqueue_on(thread, &mut state, false, target);
+        enqueue_counted(thread, counted(thread, count), &mut state, false, target);
         return;
     }
     if target != thread.cpu.load(Ordering::Relaxed) {
@@ -988,7 +1099,7 @@ fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: 
     }
     thread.cpu.store(target, Ordering::Relaxed);
     drop(state);
-    hand_over(thread, target);
+    hand_over(thread, entry_of(thread, count), target);
 }
 
 /// Makes a thread that has been asked to stop, or marked as having a
@@ -1025,15 +1136,15 @@ pub fn interrupt(thread: &ThreadRef) {
 /// queue lock and write its queue, moving each of those lines here and
 /// then back as `target` picks the thread, one move at a time. With
 /// interrupts masked, and the thread's lock let go, so that `target` finds
-/// it free.
-fn hand_over(thread: &ThreadRef, target: usize) {
+/// it free. `entry` is the thread's address as an inbox entry
+/// ([`entry_of`]), whose reference the inbox takes and `take_handed`
+/// takes back.
+fn hand_over(thread: &ThreadRef, entry: usize, target: usize) {
     const _: () = assert!(
         align_of::<Thread>() >= radix_sched::resched::ENTRY_ALIGN,
         "a thread's address leaves the request word's flags free"
     );
-    // The inbox's reference, which `take_handed` takes back.
-    let (entry, _) = ThreadRef::into_raw_with_allocator(thread.clone());
-    let watched = CPUS.get(target).resched.hand_over(entry.addr(), |before| {
+    let watched = CPUS.get(target).resched.hand_over(entry, |before| {
         thread.handed_next.store(before, Ordering::Relaxed);
     });
     if !watched {
@@ -1041,15 +1152,18 @@ fn hand_over(thread: &ThreadRef, target: usize) {
     }
 }
 
-/// The thread at inbox entry `entry` ([`hand_over`]), on the reference the
-/// inbox holds, which stays held until the handle is taken out of its
+/// The thread at inbox entry `entry` ([`entry_of`]), on the reference the
+/// entry holds, which stays held until the handle is taken out of its
 /// `ManuallyDrop`.
 #[allow(unsafe_code)]
 fn handed(entry: usize) -> core::mem::ManuallyDrop<ThreadRef> {
-    // SAFETY: `entry` is the address `hand_over` took from a counted
-    // `ThreadRef` it put in the inbox; that count keeps the thread until
-    // this CPU gives it to its run queue. The allocator handle frees
-    // through the heap, as every `Kmalloc` handle does.
+    // SAFETY: `entry` is the address taken from a counted `ThreadRef`
+    // whose count the entry holds: in an inbox, until the CPU that takes
+    // it gives the reference to its run queue; given to a wake-up
+    // ([`wake_given`]), until the wake-up gives it to a queue or an inbox
+    // or drops it; in a `ThinRef`, until that is dropped or made back
+    // into a `ThreadRef`. The allocator handle frees through the heap, as
+    // every `Kmalloc` handle does.
     let thread =
         unsafe { ThreadRef::from_raw_in(entry as *const Thread, HEAP.with(Flags::ATOMIC)) };
     core::mem::ManuallyDrop::new(thread)
@@ -1144,7 +1258,7 @@ fn wake_here_masked(thread: &ThreadRef) -> bool {
     } else {
         choose_cpu(thread.cpu.load(Ordering::Relaxed), &state)
     };
-    place_woken(thread, state, target);
+    place_woken(thread, state, target, Count::Make);
     true
 }
 
@@ -1160,6 +1274,17 @@ fn enqueue_ready(thread: &ThreadRef, state: &mut State, new: bool) {
 /// Puts a thread that has just become ready on CPU `target`'s run queue.
 /// With the thread's lock held.
 fn enqueue_on(thread: &ThreadRef, state: &mut State, new: bool, target: usize) {
+    enqueue_counted(thread, thread.clone(), state, new, target);
+}
+
+/// [`enqueue_on`], with the counted reference the queue takes, `queued`.
+fn enqueue_counted(
+    thread: &ThreadRef,
+    queued: ThreadRef,
+    state: &mut State,
+    new: bool,
+    target: usize,
+) {
     let previous = thread.cpu.load(Ordering::Relaxed);
     let slot = CPUS.get(target);
     let mut guard = slot.rq.lock();
@@ -1171,7 +1296,7 @@ fn enqueue_on(thread: &ThreadRef, state: &mut State, new: bool, target: usize) {
         count_migration(thread);
     }
     thread.cpu.store(target, Ordering::Relaxed);
-    rq.enqueue(thread.clone(), Class::of(state, new));
+    rq.enqueue(queued, Class::of(state, new));
     let preempt = rq.wants_preempt();
     slot.publish(rq);
     drop(guard);
@@ -1623,7 +1748,10 @@ fn reschedule(mut why: Switch) {
     let mut moving = None;
     // Asked for at a tick; only a preemption carries it out, and only
     // while the move still makes sense.
-    let move_to = slot.move_to.swap(0, Ordering::Relaxed).checked_sub(1);
+    let move_to = match slot.move_to.load(Ordering::Relaxed) {
+        0 => None,
+        _ => slot.move_to.swap(0, Ordering::Relaxed).checked_sub(1),
+    };
     let mut moving_to = None;
     match (why, state.as_mut()) {
         (Switch::Block(reason), Some(state)) => {
@@ -2053,6 +2181,12 @@ fn idle_loop(cpu: usize) -> ! {
         slot.idle_since.store(0, Ordering::Relaxed);
         slot.idle_seq.store(seq + 2, Ordering::Release);
         haltpoll.record(idle, slot.resched.remote());
+        // A wake-up ended the period: straight to the switch it asks for,
+        // where the loop's top would go, through checks it would pass and
+        // a locked write to the word that the switch's own makes moot.
+        if slot.resched.pending() {
+            reschedule(Switch::Preempt);
+        }
     }
 }
 

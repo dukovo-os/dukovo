@@ -29,9 +29,9 @@
 //! the same way, from the ranks Intel's ITMT gives its CPUs. The kernel
 //! flag `hybrid=off` leaves the ranks unset, and the CPUs placed alike.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use radix_hal::{CoreKind, Smp};
+use radix_hal::{CoreKind, MAX_CPUS, Smp};
 use radix_klog::info;
 use radix_sched::{Level, interval_ticks};
 
@@ -91,11 +91,32 @@ pub fn rank_cores(off: bool) {
             _ => EFFICIENT,
         };
         slot.rank.store(rank, Ordering::Relaxed);
+        if rank == FASTEST {
+            FASTEST_CPUS.0[cpu / 64].fetch_or(1 << (cpu % 64), Ordering::Relaxed);
+        }
     }
     topology.set_ranked(true);
     info!(
         "Scheduler: {performance} CPUs on performance cores and {efficient} on efficient cores;          threads go to idle performance cores first"
     );
+}
+
+/// The CPUs [`rank_cores`] ranked fastest, a bit each, in a line of its
+/// own that nothing writes once they are ranked: [`fastest`] reads it
+/// rather than a CPU's own line, which its waker would then take again.
+static FASTEST_CPUS: FastestCpus = FastestCpus([const { AtomicU64::new(0) }; MAX_CPUS / 64]);
+
+#[repr(C, align(64))]
+struct FastestCpus([AtomicU64; MAX_CPUS / 64]);
+
+/// Whether a thread woken for idle CPU `cpu` would go nowhere else if
+/// `cpu` may run it (`choose_cpu`): the CPUs are not ranked, or `cpu` is
+/// among the fastest. False before the topology is known, when
+/// `choose_cpu` takes the first CPU allowed.
+pub(super) fn fastest(cpu: usize) -> bool {
+    let Some(topology) = TOPOLOGY.get() else { return false };
+    !topology.is_ranked()
+        || FASTEST_CPUS.0[cpu / 64].load(Ordering::Relaxed) & (1 << (cpu % 64)) != 0
 }
 
 /// From the timer tick on CPU `cpu`, busy, with interrupts off: when the
