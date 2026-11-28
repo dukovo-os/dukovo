@@ -361,6 +361,169 @@ static void poll_ready(uint64_t rounds) {
 	close(fds[1]);
 }
 
+// Diag only, never merged: the fixed path every system call takes, split.
+// A number neither system knows goes in and straight out again (Linux's
+// ENOSYS, Radix's NoSuchSyscall). On Radix the diag kernel also answers
+// DIAG_ENTRY_ONLY in the entry stub itself and DIAG_DISPATCH_ONLY in
+// radix_syscall_dispatch without the handler. Every register either
+// system's return may change is a clobber on both.
+#define DIAG_UNKNOWN 1000
+#define DIAG_ENTRY_ONLY 0xd1a0
+#define DIAG_DISPATCH_ONLY 0xd1a1
+#define DIAG_PMU_ON 0xd1a2
+
+static uint64_t raw_syscall(uint64_t number) {
+	__asm__ volatile("syscall"
+	                 : "+a"(number)
+	                 :
+	                 : "rcx", "r11", "rdi", "rsi", "rdx", "r10", "r8", "r9", "r12", "r13", "r14",
+	                   "r15", "memory");
+	return number;
+}
+
+// The CPU's counters around each diag row, per round, as DIAGPMU lines:
+// instructions and cycles in both modes, then the diag kernel's general
+// events (user.rs, DIAG_EVENTS) in its order. Radix's diag kernel turns
+// them on for the benchmarks' CPU and lets user mode read them (rdpmc);
+// Linux counts the same events for this process (perf_event_open).
+#define PMU_COUNTERS 9
+static const char *const pmu_names[PMU_COUNTERS] = {
+	"instructions", "cycles",           "kernel_cycles", "itlb_walks", "itlb_stlb_hits",
+	"dtlb_walks",   "dtlb_stlb_hits",   "branch_misses", "itlb_flushes"};
+static int pmu_count;
+
+#ifdef __radix__
+static void pmu_open(void) {
+	uint64_t general = raw_syscall(DIAG_PMU_ON);
+	pmu_count = general ? 2 + (int)general : 0;
+	printf("DIAGPMU counters=%d\n", pmu_count);
+}
+
+static uint64_t rdpmc(uint32_t counter) {
+	uint32_t low, high;
+	__asm__ volatile("rdpmc" : "=a"(low), "=d"(high) : "c"(counter));
+	return ((uint64_t)high << 32) | low;
+}
+
+static void pmu_read(uint64_t *values) {
+	values[0] = rdpmc(1u << 30);
+	values[1] = rdpmc((1u << 30) | 1);
+	for(int i = 2; i < pmu_count; i++)
+		values[i] = rdpmc((uint32_t)(i - 2));
+}
+#else
+#include <linux/perf_event.h>
+#include <sys/syscall.h>
+
+static int pmu_fds[PMU_COUNTERS];
+
+// The same raw events as Radix's DIAG_EVENTS: event | umask << 8.
+static const uint64_t pmu_raw[PMU_COUNTERS - 2] = {0x3c, 0x0e85, 0x2085, 0x0e08,
+                                                   0x2008, 0x00c5, 0x01ae};
+
+static void pmu_open(void) {
+	for(int i = 0; i < PMU_COUNTERS; i++) {
+		struct perf_event_attr attr;
+		memset(&attr, 0, sizeof(attr));
+		attr.size = sizeof(attr);
+		attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+		if(i < 2) {
+			attr.type = PERF_TYPE_HARDWARE;
+			attr.config = i == 0 ? PERF_COUNT_HW_INSTRUCTIONS : PERF_COUNT_HW_CPU_CYCLES;
+		} else {
+			attr.type = PERF_TYPE_RAW;
+			attr.config = pmu_raw[i - 2];
+			attr.exclude_user = i == 2;
+		}
+		pmu_fds[i] = (int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
+		if(pmu_fds[i] < 0) {
+			printf("DIAGPMU counter=%s failed: %s\n", pmu_names[i], strerror(errno));
+			break;
+		}
+		pmu_count = i + 1;
+	}
+	printf("DIAGPMU counters=%d\n", pmu_count);
+}
+
+// Each count scaled by the share of the row the kernel had it on a
+// counter, should it have shared them.
+static void pmu_read(uint64_t *values) {
+	for(int i = 0; i < pmu_count; i++) {
+		uint64_t read_back[3] = {0, 0, 0};
+		if(read(pmu_fds[i], read_back, sizeof(read_back)) != sizeof(read_back))
+			fail("reading a counter");
+		values[i] = read_back[2] && read_back[2] < read_back[1]
+		                    ? (uint64_t)((double)read_back[0] * read_back[1] / read_back[2])
+		                    : read_back[0];
+	}
+}
+#endif
+
+static void pmu_report(const char *name, const uint64_t *before, const uint64_t *after,
+                       uint64_t rounds) {
+	if(!pmu_count)
+		return;
+	printf("DIAGPMU name=%s", name);
+	for(int i = 0; i < pmu_count; i++)
+		printf(" %s=%.2f", pmu_names[i], (double)(after[i] - before[i]) / (double)rounds);
+	printf("\n");
+}
+
+static void diag_syscall_row(const char *name, uint64_t number, uint64_t rounds) {
+	uint64_t counted[PMU_COUNTERS];
+	struct mark started = start();
+	if(pmu_count)
+		pmu_read(counted);
+	for(uint64_t i = 0; i < rounds; i++)
+		raw_syscall(number);
+	uint64_t ended[PMU_COUNTERS];
+	if(pmu_count)
+		pmu_read(ended);
+	report(name, started, rounds);
+	pmu_report(name, counted, ended, rounds);
+}
+
+static void diag_poll_row(const char *name, nfds_t count, uint64_t rounds) {
+	int fds[2];
+	if(pipe(fds) != 0 || write(fds[1], "x", 1) != 1)
+		fail("pipe");
+	struct pollfd entry = {.fd = fds[0], .events = POLLIN};
+	uint64_t counted[PMU_COUNTERS];
+	struct mark started = start();
+	if(pmu_count)
+		pmu_read(counted);
+	for(uint64_t i = 0; i < rounds; i++)
+		if(poll(&entry, count, 0) != (int)count)
+			fail("poll");
+	uint64_t ended[PMU_COUNTERS];
+	if(pmu_count)
+		pmu_read(ended);
+	report(name, started, rounds);
+	pmu_report(name, counted, ended, rounds);
+	close(fds[0]);
+	close(fds[1]);
+}
+
+// Three passes of each, interleaved, to show the spread between passes.
+static void diag_fixed_path(uint64_t rounds) {
+	char name[64];
+	pmu_open();
+	for(int pass = 1; pass <= 3; pass++) {
+		snprintf(name, sizeof(name), "diag_unknown_%d", pass);
+		diag_syscall_row(name, DIAG_UNKNOWN, rounds);
+#ifdef __radix__
+		snprintf(name, sizeof(name), "diag_entry_only_%d", pass);
+		diag_syscall_row(name, DIAG_ENTRY_ONLY, rounds);
+		snprintf(name, sizeof(name), "diag_dispatch_only_%d", pass);
+		diag_syscall_row(name, DIAG_DISPATCH_ONLY, rounds);
+#endif
+		snprintf(name, sizeof(name), "diag_poll_none_%d", pass);
+		diag_poll_row(name, 0, rounds);
+		snprintf(name, sizeof(name), "diag_poll_one_%d", pass);
+		diag_poll_row(name, 1, rounds);
+	}
+}
+
 // How many idle pipes the event rows have beside the active one, which is
 // the last of the pipes.
 #define IDLE_PIPES 1000
@@ -1356,6 +1519,7 @@ int main(int argc, char **argv) {
 	pipe_throughput();
 	signal_delivery(100000);
 	poll_ready(100000);
+	diag_fixed_path(1000000);
 	futex_pingpong("posix_futex_same_cpu", cpus[0], 50000, 0);
 	if(count > 1) {
 		futex_pingpong("posix_futex_cross_cpu", cpus[1], 50000, 0);

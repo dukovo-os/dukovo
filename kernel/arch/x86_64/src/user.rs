@@ -283,8 +283,15 @@ radix_syscall_entry:
     crate::speculation::entry_sites!(),
     crate::speculation::site!("site_bhb_clear", "call radix_clear_bhb"),
     r#"
+    /* Diag only, never merged: DIAG_ENTRY_ONLY returns from here. */
+    cmp qword ptr [rsp], {diag_entry_only}
+    je 30f
     mov rdi, rsp
     call radix_syscall_dispatch
+    jmp 31f
+30:
+    xor eax, eax
+31:
     cli
     /* ESI keeps the result while the exit sites use EAX, ECX and EDX;
        both ways out load RSI from the saved registers. */
@@ -502,6 +509,7 @@ radix_user_copy_back_end:
     "#,
     crate::thunks::asm_end!(),
     kernel_rsp = const KERNEL_RSP_OFFSET,
+    diag_entry_only = const DIAG_ENTRY_ONLY,
     pti_views = const crate::pti::USER_VIEW | crate::pti::USER_PCID,
     entry_scratch = const percpu::ENTRY_SCRATCH,
     entry_noflush = const percpu::ENTRY_NOFLUSH,
@@ -528,6 +536,55 @@ radix_user_copy_back_end:
     site_div0_exit = const crate::speculation::Site::Div0Exit as u8,
     site_pti = const crate::speculation::Site::Pti as u8,
 );
+
+/// Diag only, never merged: the system call the entry stub answers itself,
+/// and the one `radix_syscall_dispatch` answers without the handler.
+const DIAG_ENTRY_ONLY: u64 = 0xd1a0;
+const DIAG_DISPATCH_ONLY: u64 = 0xd1a1;
+/// Diag only, never merged: turns on this CPU's performance counters for
+/// the diag rows, readable from user mode, and returns how many general
+/// ones count (0 if none).
+const DIAG_PMU_ON: u64 = 0xd1a2;
+
+/// The general counters' events, in the order bench.c names them: cycles
+/// in the kernel, ITLB walks, ITLB misses the STLB caught, DTLB load
+/// walks, DTLB load misses the STLB caught, mispredicted branches, and
+/// ITLB flushes (Skylake's event numbers).
+const DIAG_EVENTS: [u64; 7] = [
+    0x3c | 1 << 17,
+    0x85 | 0x0e << 8 | 3 << 16,
+    0x85 | 0x20 << 8 | 3 << 16,
+    0x08 | 0x0e << 8 | 3 << 16,
+    0x08 | 0x20 << 8 | 3 << 16,
+    0xc5 | 3 << 16,
+    0xae | 0x01 << 8 | 3 << 16,
+];
+
+fn diag_pmu_on() -> u64 {
+    if !cpu::is_intel() || cpu::cpuid(0, 0).eax < 0xa {
+        return 0;
+    }
+    let leaf = cpu::cpuid(0xa, 0);
+    let (version, general, fixed) = (leaf.eax & 0xff, (leaf.eax >> 8) & 0xff, leaf.edx & 0x1f);
+    if version < 2 || general == 0 || fixed < 3 {
+        return 0;
+    }
+    let count = (general as usize).min(DIAG_EVENTS.len());
+    // SAFETY: architectural performance monitoring version 2 or later has
+    // these MSRs, as CPUID leaf 0xa says; nothing else in the kernel uses
+    // the counters, and CR4.PCE only lets user mode read them.
+    unsafe {
+        cpu::wrmsr(0x38f, 0);
+        for (i, event) in DIAG_EVENTS.iter().take(count).enumerate() {
+            cpu::wrmsr(0x186 + i as u32, event | 1 << 22);
+            cpu::wrmsr(0xc1 + i as u32, 0);
+        }
+        cpu::wrmsr(0x38d, 0x333);
+        cpu::wrmsr(0x38f, ((1 << count) - 1) | 0b111 << 32);
+        cpu::write_cr4(cpu::cr4() | 1 << 8);
+    }
+    count as u64
+}
 
 /// The longest copy made by loads and stores from the end rather than
 /// with `rep movsb`, whose start takes some 30 cycles on CPUs without
@@ -639,10 +696,17 @@ fn user_flags(rflags: u64) -> u64 {
 #[unsafe(no_mangle)]
 extern "C" fn radix_syscall_dispatch(frame: *mut SyscallFrame) -> u64 {
     thread::set_user_entry(UserEntry::Syscall);
-    // SAFETY: the stub passes the frame it has just saved at the top of
-    // this thread's kernel stack, which nothing else uses while the call
-    // runs; the borrow of its registers ends when the handler returns.
-    radix_syscall(unsafe { &mut (*frame).regs });
+    // SAFETY: as below.
+    let number = unsafe { (*frame).regs.number };
+    if number == DIAG_PMU_ON {
+        // SAFETY: as below.
+        unsafe { (*frame).regs.number = diag_pmu_on() };
+    } else if number != DIAG_DISPATCH_ONLY {
+        // SAFETY: the stub passes the frame it has just saved at the top of
+        // this thread's kernel stack, which nothing else uses while the call
+        // runs; the borrow of its registers ends when the handler returns.
+        radix_syscall(unsafe { &mut (*frame).regs });
+    }
     // Back to the program with interrupts masked from here to the return.
     cpu::mask_interrupts();
     on_return();
