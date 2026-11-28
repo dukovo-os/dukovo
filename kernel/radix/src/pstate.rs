@@ -506,6 +506,23 @@ pub fn tick(cpu: usize, now: u64, idle_ns: u64) {
     }
 }
 
+/// CPU `cpu` leaves idle at `now`, its idle time being `idle_ns`, after
+/// its tick had stopped (ADR 0812): its next [`tick`] works out how busy
+/// it was from now, not from its last tick before it went idle, which
+/// would count the whole pause against the work that ended it.
+pub fn restart(cpu: usize, now: u64, idle_ns: u64) {
+    if DRIVER.get().is_none_or(|driver| driver.picks_own_speed()) || cpu >= MAX_CPUS {
+        return;
+    }
+    let looked = &LOOKED[cpu];
+    looked[0].store(now, Ordering::Relaxed);
+    looked[1].store(idle_ns, Ordering::Relaxed);
+    if let Some((aperf, mperf)) = Arch::performance_counts() {
+        looked[2].store(aperf, Ordering::Relaxed);
+        looked[3].store(mperf, Ordering::Relaxed);
+    }
+}
+
 /// Sets thermal zone `zone`'s step of passive cooling (ADR 0203): every
 /// CPU's highest level is capped at the most any zone asks for
 /// ([`radix_pstate::cooled`]). Returns false where the CPUs' speed is the

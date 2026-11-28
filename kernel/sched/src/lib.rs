@@ -19,6 +19,8 @@
 //! - [`HaltPoll`]: how long an idle CPU polls before it halts, within the
 //!   bounds of a virtual CPU or of one that waits in hardware, and
 //!   [`haltpoll::Others`], which ends the poll once no other CPU has work;
+//! - [`TickPause`]: whether an idle CPU stops its tick as it halts, or
+//!   lets the armed one come first;
 //! - [`account`]: user and system time from the timer's samples, and the
 //!   load averages.
 //!
@@ -44,6 +46,7 @@ pub mod haltpoll;
 pub mod idle;
 pub mod resched;
 pub mod rt;
+pub mod tickless;
 pub mod topology;
 pub mod weight;
 
@@ -58,6 +61,7 @@ pub use fair::{
 pub use haltpoll::HaltPoll;
 pub use resched::Resched;
 pub use rt::{RR_QUANTUM_NS, RtEntry, RtQueue};
+pub use tickless::TickPause;
 pub use topology::{
     CpuLoad, Level, Loads, MAX_NODES, Place, Topology, interval_ticks, is_cache_hot, should_pull,
 };

@@ -404,6 +404,18 @@ pub fn timer_arm_deadline(tsc: u64) {
     unsafe { cpu::wrmsr(msr::TSC_DEADLINE, tsc.max(1)) };
 }
 
+/// Disarms the timer, whichever way it was armed (`deadline` for
+/// [`timer_arm_deadline`]): it stays set up, and fires no more until it
+/// is armed again.
+pub fn timer_disarm(deadline: bool) {
+    if deadline {
+        // SAFETY: as in `timer_arm_deadline`; zero disarms the timer.
+        unsafe { cpu::wrmsr(msr::TSC_DEADLINE, 0) };
+    } else {
+        write(reg::TIMER_INITIAL, 0);
+    }
+}
+
 /// Stops the timer.
 pub fn timer_stop() {
     write(reg::LVT_TIMER, MASKED);

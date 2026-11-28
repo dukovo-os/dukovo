@@ -210,6 +210,12 @@ pub const FLAGS: &[Flag] = &[
                   cores are all of one kind",
     },
     Flag {
+        name: "tick",
+        value: Some("always"),
+        summary: "keep the timer's tick on idle CPUs, which otherwise pause it until they have \
+                  a thread to run",
+    },
+    Flag {
         name: "epp",
         value: Some("preference"),
         summary: "the energy preference the CPUs are asked for: performance, balance_performance, \

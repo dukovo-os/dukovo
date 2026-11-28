@@ -325,6 +325,28 @@ pub trait CpuLocal {
     /// Sets this CPU's running-thread word: the scheduler does at each
     /// switch.
     fn set_running_word(word: usize);
+
+    /// Says that this CPU rests, as its idle loop is about to halt with
+    /// interrupts masked, or that it rests no longer, as the halt ends. An
+    /// interrupt that comes while it rests ends the rest before its
+    /// handler runs; an exception's handler (a non-maskable interrupt's, a
+    /// machine check's) does not, and reads nothing that
+    /// [`CpuLocal::resting`]'s callers take away.
+    ///
+    /// Each write that changes it is sequentially consistent and followed
+    /// by a full barrier (`fence(SeqCst)`). A CPU that takes something
+    /// away, passes a full barrier and then sees another rest therefore
+    /// knows that whatever the other reads once its rest ends, it reads
+    /// after the taking: the grace periods' argument
+    /// (`sched::rcu`, ADR 0812).
+    fn rest(_resting: bool) {}
+
+    /// Whether CPU `cpu` rests ([`CpuLocal::rest`]), read sequentially
+    /// consistent: it runs nothing, not even an interrupt handler. Always
+    /// false where the architecture does not keep it.
+    fn resting(_cpu: usize) -> bool {
+        false
+    }
 }
 
 /// One CPU known to the kernel.
@@ -445,6 +467,24 @@ pub trait Timer {
     /// `u64::MAX` when it is not armed. With interrupts masked.
     fn next_interrupt_ns() -> u64 {
         u64::MAX
+    }
+
+    /// Pauses this CPU's periodic tick while the CPU is idle, where the
+    /// timer can: until `until_ns`, when the tick comes back by itself
+    /// (`u64::MAX` for never), or until [`Timer::tick_resume`]. With
+    /// `at_once` the timer is written for what is left to wake the CPU,
+    /// its deadline or `until_ns`; without, nothing is written, and the
+    /// tick that is armed comes once more before the pause holds. The
+    /// deadline of [`Timer::set_deadline`] interrupts as ever. With
+    /// interrupts masked.
+    fn tick_pause(_until_ns: u64, _at_once: bool) {}
+
+    /// Ends [`Timer::tick_pause`] on this CPU, as it leaves idle: its next
+    /// tick comes within a tick's length. Returns whether the tick had
+    /// stopped, so that what the CPU counts from tick to tick starts
+    /// again from now. With interrupts masked.
+    fn tick_resume() -> bool {
+        false
     }
 
     /// How many times CPU `cpu` wrote its timer hardware to arm it. Under

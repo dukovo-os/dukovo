@@ -18,6 +18,13 @@
 //! ([`set_deadline`]), so slices and sleeps end on time without a faster
 //! tick.
 //!
+//! An idle CPU's tick is paused ([`tick_pause`], ADR 0812): the tick
+//! does nothing for a CPU that runs nothing, and wakes it each time. It
+//! is paused at once, the timer written for the scheduler's deadline
+//! alone, or lazily, with no write: the tick that is armed comes once
+//! more and is not armed again. [`tick_resume`] starts it again as the
+//! CPU leaves idle.
+//!
 //! Arming is lazy: the timer is written only when it must fire earlier
 //! than it is armed to. The scheduler asks for a deadline at every context
 //! switch, usually the same one or a later one, and under a hypervisor
@@ -405,6 +412,7 @@ pub fn start_tick() {
     radix_klog::tracepoint!("timer.start", percpu::current_index(), count);
     let cpu = percpu::current();
     cpu.next_tick_ns.store(now_ns() + TICK_NS, Ordering::Relaxed);
+    cpu.tick_pause_ns.store(0, Ordering::Relaxed);
     cpu.deadline_ns.store(u64::MAX, Ordering::Relaxed);
     // Setting the mode disarms the timer.
     cpu.armed_ns.store(u64::MAX, Ordering::Relaxed);
@@ -448,6 +456,57 @@ fn program(at_ns: u64) {
         let count = (u128::from(delta) * u128::from(rate)).div_ceil(1_000_000_000);
         apic::timer_arm(count.clamp(1, u128::from(u32::MAX)) as u32);
     }
+}
+
+/// Arms this CPU's timer for `at_ns` even where that is later than it is
+/// armed for, and disarms it for `u64::MAX`. With interrupts masked.
+fn rearm(at_ns: u64) {
+    let cpu = percpu::current();
+    if cpu.armed_ns.load(Ordering::Relaxed) == at_ns {
+        return;
+    }
+    cpu.armed_ns.store(u64::MAX, Ordering::Relaxed);
+    if at_ns == u64::MAX {
+        cpu.timer_writes.fetch_add(1, Ordering::Relaxed);
+        apic::timer_disarm(DEADLINE_MODE.load(Ordering::Relaxed));
+    } else {
+        program(at_ns);
+    }
+}
+
+/// Pauses this CPU's periodic tick while the CPU is idle: until
+/// `until_ns`, when the tick comes back by itself (`u64::MAX` for never),
+/// or until [`tick_resume`]. `at_once` writes the timer for what is left,
+/// the scheduler's deadline or `until_ns`; without it nothing is written,
+/// and the tick that is armed comes once more. With interrupts masked.
+pub fn tick_pause(until_ns: u64, at_once: bool) {
+    if !TICKING.load(Ordering::Relaxed) {
+        return;
+    }
+    let cpu = percpu::current();
+    cpu.tick_pause_ns.store(until_ns.max(1), Ordering::Relaxed);
+    if at_once && cpu.next_tick_ns.load(Ordering::Relaxed) < until_ns {
+        cpu.next_tick_ns.store(until_ns, Ordering::Relaxed);
+        rearm(until_ns.min(cpu.deadline_ns.load(Ordering::Relaxed)));
+    }
+}
+
+/// Ends [`tick_pause`] on this CPU, as it leaves idle, and returns whether
+/// the tick had stopped: it then comes again a tick's length from now.
+/// With interrupts masked.
+pub fn tick_resume() -> bool {
+    let cpu = percpu::current();
+    if cpu.tick_pause_ns.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    cpu.tick_pause_ns.store(0, Ordering::Relaxed);
+    let next = now_ns() + TICK_NS;
+    let stopped = cpu.next_tick_ns.load(Ordering::Relaxed) > next;
+    if stopped {
+        cpu.next_tick_ns.store(next, Ordering::Relaxed);
+        program(next.min(cpu.deadline_ns.load(Ordering::Relaxed)));
+    }
+    stopped
 }
 
 /// Registers the kernel's timer handler.
@@ -523,6 +582,9 @@ pub fn on_tick() {
         cpu.ticks.fetch_add(1, Ordering::Relaxed);
         // Ticks missed while interrupts were off are not made up.
         let after = if next + TICK_NS > now { next + TICK_NS } else { now + TICK_NS };
+        // A paused tick comes back when its pause says (`tick_pause`).
+        let pause = cpu.tick_pause_ns.load(Ordering::Relaxed);
+        let after = if pause == 0 { after } else { after.max(pause) };
         cpu.next_tick_ns.store(after, Ordering::Relaxed);
     }
     let deadline = cpu.deadline_ns.load(Ordering::Relaxed);

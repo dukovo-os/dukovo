@@ -322,6 +322,14 @@ impl CpuLocal for Arch {
         percpu::interrupted_user()
     }
 
+    fn rest(resting: bool) {
+        percpu::rest(resting);
+    }
+
+    fn resting(cpu: usize) -> bool {
+        percpu::resting(cpu)
+    }
+
     fn running_word() -> usize {
         percpu::running_word()
     }
@@ -429,6 +437,14 @@ impl Timer for Arch {
 
     fn set_deadline(deadline_ns: u64) {
         time::set_deadline(deadline_ns);
+    }
+
+    fn tick_pause(until_ns: u64, at_once: bool) {
+        time::tick_pause(until_ns, at_once);
+    }
+
+    fn tick_resume() -> bool {
+        time::tick_resume()
     }
 
     fn next_interrupt_ns() -> u64 {

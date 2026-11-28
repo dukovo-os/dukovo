@@ -358,6 +358,17 @@ impl Rq {
         Some((thread, Class::Fair { lag_ns: to_real(lag, weight), new: false }))
     }
 
+    /// Whether a thread waits here that may run on `cpu`: one
+    /// [`Rq::take_for`] gives it, at once or when its caches have gone
+    /// cold.
+    pub(super) fn waits_for(&self, cpu: usize) -> bool {
+        let usable = |thread: &ThreadRef| thread.allowed().contains(cpu);
+        let (rt, fair) = (self.rt.running(), self.fair.running());
+        (0..self.rt.len()).any(|i| Some(i) != rt && self.rt.key_of(i).is_some_and(usable))
+            || (0..self.fair.len())
+                .any(|i| Some(i) != fair && self.fair.key_of(i).is_some_and(usable))
+    }
+
     /// Calls `f` with every queued thread, whether it is running, and its
     /// queue weight or real-time priority.
     pub(super) fn for_each(&self, mut f: impl FnMut(&ThreadRef, bool, Weighing)) {
