@@ -988,7 +988,8 @@ _target/userspace/_).
 	*fpu*
 		Boot 4 CPUs with *selftest=fpu*: three threads per CPU fill the
 		vector registers with their own values and check them after
-		every switch, a thousand times each.
+		every switch, a thousand times each; then one thread moves
+		between two CPUs and must find its own values on each arrival.
 
 	*sched-fair*
 		Boot 4 CPUs under UEFI with *selftest=sched-fair*: fair threads

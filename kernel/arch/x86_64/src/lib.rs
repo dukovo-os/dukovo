@@ -787,6 +787,7 @@ impl Threads for Arch {
     }
 
     fn self_test_fill_vectors(seed: u64) {
+        thread::claim_extended();
         fpu::fill(seed);
     }
 

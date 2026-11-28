@@ -611,8 +611,11 @@ impl AddressSpace {
         let this = core::ptr::from_ref::<AddressSpace>(self) as usize;
         let here = percpu::current();
         here.lazy.store(false, Ordering::Relaxed);
-        let previous = here.space.swap(this, Ordering::Relaxed);
+        // Only this CPU writes its word: a look sees whether the space is
+        // loaded, without a locked exchange on every switch back to it.
+        let previous = here.space.load(Ordering::Relaxed);
         if previous != this {
+            here.space.store(this, Ordering::Relaxed);
             crate::speculation::switched_space(me, this);
             self.set_active(me, true);
             fence(Ordering::SeqCst);

@@ -100,6 +100,17 @@ const NO_TOKEN: usize = 2;
 /// Room for threads that the scheduler's lists start with.
 const INITIAL_ROOM: usize = 64;
 
+/// Adds `n` to `counter`, which one CPU at a time writes, each write
+/// ordered after the one before by a lock or a switch: a CPU's own
+/// statistics, and a thread's, written where it runs or is queued. A load
+/// and a store, rather than a locked add, a few of which every switch and
+/// every idle period make; a reader elsewhere sees the count before or
+/// after.
+#[inline(always)]
+fn bump(counter: &AtomicU64, n: u64) {
+    counter.store(counter.load(Ordering::Relaxed).wrapping_add(n), Ordering::Relaxed);
+}
+
 /// Starts the field after it on a cache line of its own.
 #[repr(C, align(64))]
 struct LineBreak;
@@ -120,6 +131,9 @@ struct CpuSched {
     /// priority.
     running: AtomicU32,
     rt_prio: AtomicU8,
+    /// Whether `running` is 2 or more, as [`balance::waiting_changed`] was
+    /// last told.
+    waiting: AtomicBool,
     online: AtomicBool,
     /// How fast the CPU is beside the others, where its processor's cores
     /// differ ([`balance::rank_cores`]); 0 until then, and where they do
@@ -207,6 +221,7 @@ impl CpuSched {
             current: AtomicUsize::new(0),
             running: AtomicU32::new(0),
             rt_prio: AtomicU8::new(0),
+            waiting: AtomicBool::new(false),
             online: AtomicBool::new(false),
             rank: AtomicU8::new(0),
             kind: AtomicU8::new(0),
@@ -235,10 +250,17 @@ impl CpuSched {
         }
     }
 
+    /// Publishes the load of `rq`, the CPU's run queue, locked.
     fn publish(&self, rq: &Rq) {
         let load = rq.load();
         self.running.store(load.running, Ordering::Relaxed);
         self.rt_prio.store(load.rt_prio, Ordering::Relaxed);
+        // Under the run queue's lock, so the changes come one at a time.
+        let waiting = load.running >= 2;
+        if self.waiting.load(Ordering::Relaxed) != waiting {
+            self.waiting.store(waiting, Ordering::Relaxed);
+            balance::waiting_changed(waiting);
+        }
     }
 }
 
@@ -957,7 +979,7 @@ fn wake_masked(thread: &ThreadRef) -> bool {
 /// to.
 fn place_woken(thread: &ThreadRef, mut state: SpinLockGuard<'_, State>, target: usize) {
     if target == Arch::current_cpu() || CPUS.get(target).running.load(Ordering::Relaxed) != 0 {
-        thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+        bump(&thread.stats.wakeups, 1);
         enqueue_on(thread, &mut state, false, target);
         return;
     }
@@ -1070,7 +1092,7 @@ fn queue_handed(cpu: usize, slot: &CpuSched, entry: usize) {
     let thread = handed(entry);
     // Counted here, where the thread's statistics are written as it runs:
     // the waker writes only the thread's first lines.
-    thread.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+    bump(&thread.stats.wakeups, 1);
     let mut state = thread.state.lock();
     if !state.affinity.contains(cpu) {
         enqueue_ready(&thread, &mut state, false);
@@ -1634,14 +1656,16 @@ fn reschedule(mut why: Switch) {
     let next = rq.pick();
     let switching = !ThreadRef::ptr_eq(&next, &me);
     if switching {
-        slot.preemptions.fetch_add(u64::from(why == Switch::Preempt && !idled), Ordering::Relaxed);
+        if why == Switch::Preempt && !idled {
+            bump(&slot.preemptions, 1);
+        }
         match why {
-            Switch::Block(_) => me.stats.voluntary.fetch_add(1, Ordering::Relaxed),
-            Switch::Preempt | Switch::Yield => me.stats.involuntary.fetch_add(1, Ordering::Relaxed),
-            Switch::Exit => 0,
-        };
+            Switch::Block(_) => bump(&me.stats.voluntary, 1),
+            Switch::Preempt | Switch::Yield => bump(&me.stats.involuntary, 1),
+            Switch::Exit => {}
+        }
         rq.switches += 1;
-        next.stats.switches.fetch_add(1, Ordering::Relaxed);
+        bump(&next.stats.switches, 1);
         next.stats.last_ran_ns.store(now, Ordering::Relaxed);
         me.stats.last_ran_ns.store(now, Ordering::Relaxed);
     }
@@ -1984,7 +2008,7 @@ fn idle_loop(cpu: usize) -> ! {
         let started = Arch::now_ns();
         slot.idle_since.store(started, Ordering::Relaxed);
         if poll(slot, started.saturating_add(haltpoll.limit_ns())) {
-            slot.polls.fetch_add(1, Ordering::Relaxed);
+            bump(&slot.polls, 1);
         } else {
             // The deepest state that pays before the timer, unless recent
             // periods say something else ends it sooner (ADR 0795).
@@ -2000,7 +2024,7 @@ fn idle_loop(cpu: usize) -> ! {
             let watches = hal_states.get(state).is_some_and(|state| state.watches);
             let pending = if watches { slot.resched.watch() } else { slot.resched.pending() };
             if !pending {
-                slot.halts.fetch_add(1, Ordering::Relaxed);
+                bump(&slot.halts, 1);
                 // Preemption off, as in `poll`: the interrupt that ends the
                 // halt leaves the switch to this loop, which ends the idle
                 // period first. A switch on the interrupt's way out would
@@ -2010,8 +2034,8 @@ fn idle_loop(cpu: usize) -> ! {
                 Arch::idle_until(slot.resched.word(), state);
                 Arch::preempt_enable();
                 let stayed = Arch::now_ns().saturating_sub(halted);
-                slot.state_entries[state].fetch_add(1, Ordering::Relaxed);
-                slot.state_ns[state].fetch_add(stayed, Ordering::Relaxed);
+                bump(&slot.state_entries[state], 1);
+                bump(&slot.state_ns[state], stayed);
                 governor.record(states, stayed, sleep_ns);
             }
             if watches {
@@ -2021,11 +2045,13 @@ fn idle_loop(cpu: usize) -> ! {
         let idle = Arch::now_ns().saturating_sub(started);
         // A reader on another CPU sees the period under way, or ended,
         // never both or neither (`idle_time`).
-        slot.idle_seq.fetch_add(1, Ordering::Relaxed);
+        // Only this CPU writes them.
+        let seq = slot.idle_seq.load(Ordering::Relaxed);
+        slot.idle_seq.store(seq + 1, Ordering::Relaxed);
         atomic::fence(Ordering::Release);
-        slot.idle_ns.fetch_add(idle, Ordering::Relaxed);
+        bump(&slot.idle_ns, idle);
         slot.idle_since.store(0, Ordering::Relaxed);
-        slot.idle_seq.fetch_add(1, Ordering::Release);
+        slot.idle_seq.store(seq + 2, Ordering::Release);
         haltpoll.record(idle, slot.resched.remote());
     }
 }

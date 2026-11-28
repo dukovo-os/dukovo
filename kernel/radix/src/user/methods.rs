@@ -425,6 +425,9 @@ fn pages_of(size: u64) -> Result<u64> {
 /// line, as [`call`] says.
 #[inline(never)]
 fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    if matches!(label, address_space::FUTEX_WAIT | address_space::FUTEX_WAKE) {
+        return futex_method(user, slot, label, args);
+    }
     let (_, space) = objects::space(user.cspace, slot, Rights::CONTROL)?;
     let aligned = |address: u64| address.is_multiple_of(address_space::PAGE_SIZE);
     match label {
@@ -535,24 +538,31 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
             segment.detached(user.process.number());
             answer(label, 0, [0; 8])
         }
-        address_space::FUTEX_WAIT => {
-            let a = address_space::FutexWaitArgs::decode(args)?;
-            // The word is read where the caller runs.
-            if !core::ptr::eq(&raw const *space, user.space()) {
-                return Err(Kernel::InvalidArgument.status(0));
-            }
-            let deadline =
-                (a.timeout_ns != 0).then(|| crate::sched::now_ns().saturating_add(a.timeout_ns));
-            futex::wait(&space, a.address, a.expected, deadline, user)?;
-            answer(label, 0, [0; 8])
-        }
-        address_space::FUTEX_WAKE => {
-            let a = address_space::FutexWakeArgs::decode(args)?;
-            let woken = futex::wake(&space, a.address, a.count)?;
-            let results = address_space::FutexWakeResults { woken };
-            answer(label, address_space::FutexWakeResults::WORDS, results.encode())
-        }
         _ => Err(error(Kernel::NoSuchMethod)),
+    }
+}
+
+/// The futex methods of an address space, which a C library's locks call
+/// on the caller's own space: found without counting a reference to it
+/// when they are ([`objects::own_space`]).
+fn futex_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    let other = objects::own_space(user.cspace, slot, Rights::CONTROL, user.space())?;
+    let space = other.as_deref().unwrap_or(user.space());
+    if label == address_space::FUTEX_WAIT {
+        let a = address_space::FutexWaitArgs::decode(args)?;
+        // The word is read where the caller runs.
+        if !core::ptr::eq(space, user.space()) {
+            return Err(Kernel::InvalidArgument.status(0));
+        }
+        let deadline =
+            (a.timeout_ns != 0).then(|| crate::sched::now_ns().saturating_add(a.timeout_ns));
+        futex::wait(space, a.address, a.expected, deadline)?;
+        answer(label, 0, [0; 8])
+    } else {
+        let a = address_space::FutexWakeArgs::decode(args)?;
+        let woken = futex::wake(space, a.address, a.count)?;
+        let results = address_space::FutexWakeResults { woken };
+        answer(label, address_space::FutexWakeResults::WORDS, results.encode())
     }
 }
 
