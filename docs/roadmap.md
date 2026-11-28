@@ -1137,12 +1137,13 @@ Patent-encumbered formats (H.264, HEVC, AAC, HEIC and similar) stay out of the b
 
 Ideas worth keeping that no release above takes on. Each is revisited
 after 1.0 if programs or users ask for it, and is tracked in the
-[deferred work list](deferred.md#language-runtimes) until then.
+[deferred work list](deferred.md#not-scheduled) until then.
 
 | Idea | Until then |
 | --- | --- |
 | A native OpenJDK port, for Java and the other JVM languages: HotSpot's own operating-system layer for Dukovo (threads, signals, memory and files), its JIT within W^X, and the desktop toolkits drawn in windowd, for the best speed and for DukUI integration | The official Linux builds of OpenJDK run through the Linux compatibility layer once Phase 18 lets a program ask for JIT memory |
 | A native .NET port, for C# and F#: the runtime's platform layer and native shims for Dukovo (threads, signals, memory and files) and its JIT within W^X, for the best speed and for DukUI integration; release 1.19 already lets C# build to WebAssembly | The official Linux builds of .NET run through the Linux compatibility layer once Phase 18 lets a program ask for JIT memory |
+| Dukovo as a tablet operating system, in place of Android: the same kernel, services and apps with a touch-first shell on top. It needs the AArch64 port (release 1.29), since most tablets are Arm machines; touchscreen and pen input; and a touch-first shell built on DukUI (release 1.4) beside the desktop one. An x86-64 tablet such as a Surface Pro is the easiest first target, because it needs no new architecture. Phones are a harder step, needing a cellular modem driver, carrier certification and telephony | Dukovo has only the desktop shell, and touchscreens and pens wait on their drivers |
 
 ## Spec traceability matrix
 
