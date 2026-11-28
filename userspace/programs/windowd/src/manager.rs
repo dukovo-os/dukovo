@@ -31,6 +31,7 @@ use crate::pointer::Picture;
 use crate::settings::Settings;
 use crate::shell::{Shell, app_of};
 use crate::titlebar::TitleBar;
+use crate::windows::zones::{self, Fills, Then};
 use crate::windows::{Desk, Framed, Under};
 
 /// How far the pointer moves with a button held on a title bar before
@@ -327,7 +328,7 @@ impl Manager {
                 let hold = match *grip {
                     Some(grip) => grip,
                     None if apart(*pressed, at) < SLOP => return,
-                    None if framed.maximized() => {
+                    None if framed.fills() != Fills::Nothing => {
                         // The window is restored under the pointer, at
                         // the same share of its width.
                         let share = (pressed.x - f64::from(frame.loc.x)) / f64::from(frame.size.w);
@@ -439,7 +440,7 @@ impl Manager {
             (Ask::DeskNew, Hold::None) => shell.desk(Desk::New, false),
             (Ask::DeskClose, Hold::None) => shell.desk(Desk::Close, false),
             (Ask::DeskStep { back, along }, Hold::None) => shell.desk(Desk::Step { back }, along),
-            (Ask::Close | Ask::Menu | Ask::Up | Ask::Down | Ask::ToScreen { .. }, Hold::None) => {
+            (Ask::Close | Ask::Menu | Ask::Arrow(_) | Ask::ToScreen { .. }, Hold::None) => {
                 let Some(window) = shell.active().cloned() else { return };
                 let Some(framed) = shell.windows.framed(&window) else { return };
                 match ask {
@@ -448,14 +449,15 @@ impl Manager {
                         let under_bar = framed.at() + Point::from((0, framed.layout().bar_rows()));
                         self.menu(shell, window, under_bar);
                     }
-                    Ask::Up => shell.windows.maximize(&window),
-                    Ask::ToScreen { back } => {
-                        shell.windows.next_screen(&window, back);
-                        shell.changed.windows = true;
-                    }
-                    Ask::Down if framed.maximized() => shell.windows.restore(&window),
-                    _ => shell.minimize(&window),
+                    Ask::ToScreen { back } => shell.windows.next_screen(&window, back),
+                    Ask::Arrow(arrow) => match zones::after(framed.fills(), arrow) {
+                        Then::Fill(fills) => shell.windows.fill(&window, fills),
+                        Then::Minimize => shell.minimize(&window),
+                        Then::Stay => {}
+                    },
+                    _ => {}
                 }
+                shell.changed.windows = true;
             }
             _ => {}
         }

@@ -11,6 +11,7 @@ mod managed;
 mod rig;
 mod screens;
 mod shared;
+mod snap;
 
 use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
