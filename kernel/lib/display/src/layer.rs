@@ -15,7 +15,8 @@
 //! what a picture's pixels are kept in and how it is shared ([`Picture`]),
 //! and the cards ([`Card`]). It tells the layer the time as it takes the lock
 //! ([`Layer::set_time`]), asks whether anyone is to be woken as it lets
-//! go ([`Layer::take_news`]), and calls [`Layer::beat`] for each card by
+//! go ([`Layer::take_news`]) and which holders have a new event to read
+//! ([`Layer::take_posted`]), and calls [`Layer::beat`] for each card by
 //! the time the card was last told ([`Card::wake_for`]). The layer
 //! itself never waits, and so runs the same in a test as in the kernel.
 
@@ -378,6 +379,18 @@ where
     /// wakes whoever waits.
     pub fn take_news(&mut self) -> bool {
         core::mem::take(&mut self.news)
+    }
+
+    /// Calls `each` with the key of every holder that was given an event
+    /// to read since this was last asked: the polls of its file are to
+    /// look again, and no other holder's. Asked with the news, as the
+    /// caller lets go of the lock.
+    pub fn take_posted(&mut self, mut each: impl FnMut(usize)) {
+        for holder in &mut self.holders {
+            if holder.take_posted() {
+                each(holder.key);
+            }
+        }
     }
 
     /// The hardware, for the check.
