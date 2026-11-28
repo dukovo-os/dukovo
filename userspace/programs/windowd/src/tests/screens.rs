@@ -22,7 +22,7 @@ fn set(world: &mut World, text: &str) {
 
 /// The colour the screen at place `screen` shows at (`x`, `y`) of its
 /// picture.
-fn pixel(world: &mut World, screen: usize, (x, y): (i32, i32)) -> [u8; 3] {
+pub(super) fn pixel(world: &mut World, screen: usize, (x, y): (i32, i32)) -> [u8; 3] {
     let (width, pixels) = world.desktop.shows(screen);
     let at = ((y as u32 * width + x as u32) * 4) as usize;
     [pixels[at + 2], pixels[at + 1], pixels[at]]
@@ -67,7 +67,7 @@ fn point_in(world: &mut World, area: (i32, i32), (x, y): (i32, i32)) {
 
 /// Moves the pointer from the first screen to the second, which is to
 /// its right.
-fn to_second(world: &mut World) {
+pub(super) fn to_second(world: &mut World) {
     for _ in 0..4 {
         let now = world.now();
         world.desktop.moved(now, 400, 0);

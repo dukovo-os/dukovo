@@ -3,14 +3,20 @@
 
 //! What the pointer and the keys do to the windows themselves: moving
 //! and resizing them, their buttons, the window menu and the list of
-//! windows (ADR 0721).
+//! windows (ADR 0721), and snapping them to the sides of a screen
+//! (ADR 0727).
 //!
 //! While windowd does any of that, it has a [`Hold`]: the pointer is
 //! over no program's surface, as the programs see it, and for a menu,
-//! the list and a move or a resize by the keys, the keys reach none
+//! a list and a move or a resize by the keys, the keys reach none
 //! either. A hold begins with a press on a frame, a key of windowd's
 //! or a program's request to be moved or resized, and ends with the
 //! button's release, a choice, Esc, or the window's going.
+//!
+//! A window dragged by its title bar to an edge of the desktop shows a
+//! preview of the side, the part of one or the whole screen it fills
+//! when it is let go there. After a snap, the other windows of the
+//! desktop are offered for the largest zone left, as a list in it.
 //!
 //! The [`Manager`] is told each press, release, motion and key by the
 //! desktop, which then gives the programs what is left for them.
@@ -25,14 +31,17 @@ use smithay::utils::{Logical, Point};
 use window_frame::panel::Mark;
 use window_frame::{Button, Edge, Part};
 
+use smithay::utils::Rectangle;
+
 use crate::keys::Ask;
 use crate::panel::{Panel, Row};
 use crate::pointer::Picture;
+use crate::scene::{Preview, Shade};
 use crate::settings::Settings;
 use crate::shell::{Shell, app_of};
 use crate::titlebar::TitleBar;
-use crate::windows::zones::{self, Fills, Then};
-use crate::windows::{Desk, Framed, Under};
+use crate::windows::zones::{self, Fills, Then, Zone};
+use crate::windows::{Desk, Framed, Restore, Split, Under};
 
 /// How far the pointer moves with a button held on a title bar before
 /// the window follows it, and how far apart the two presses of a double
@@ -99,21 +108,33 @@ enum Hold {
     /// A window is moved by the pointer, with the button `code` held.
     /// `grip` is where in the frame's box the pointer has hold of it,
     /// once it has moved far enough from `pressed` for the window to
-    /// follow.
+    /// follow, and `was` where the window was then. `to` is what it
+    /// fills if it is let go where the pointer is, and the area of
+    /// that.
     Move {
         window: Window,
         code: u16,
         pressed: Point<f64, Logical>,
         grip: Option<Point<f64, Logical>>,
+        was: Option<Restore>,
+        to: Option<(Fills, Rectangle<i32, Logical>)>,
     },
     /// A window is resized by the pointer, which was at `pressed` when
     /// it began.
     Resize { window: Window, edge: Edge, code: u16, pressed: Point<f64, Logical> },
+    /// The pointer, which was at `pressed` when it began, moves where
+    /// the zones of a screen meet, by the edge `edge` of a snapped
+    /// window.
+    Split { split: Split, edge: Edge, code: u16, pressed: Point<f64, Logical> },
     /// The window menu shows: `items` is what each row does.
     Menu { window: Window, panel: Panel, items: Vec<Option<Item>> },
     /// The list of windows shows: `listed` is the window of each row.
     /// With `held`, letting Alt go chooses.
     List { panel: Panel, listed: Vec<Window>, held: bool },
+    /// The windows that are not snapped are offered for `zone` of the
+    /// screen the place `at` is on, as a list in it: `listed` is the
+    /// window of each row.
+    Offer { panel: Panel, listed: Vec<Window>, zone: Zone, at: Point<f64, Logical> },
     /// The arrow keys move a window, or resize it, from where its
     /// frame's corner was at `start`; `by` is how far they have.
     Keys { window: Window, size: bool, start: Point<i32, Logical>, by: Point<i32, Logical> },
@@ -135,12 +156,14 @@ pub struct Manager {
     /// How long after a press a second makes a double click
     /// (windowd.json(5)).
     pub double_click_ns: u64,
+    /// What the renderer knows the preview of a snap by.
+    shade: Shade,
 }
 
 impl Default for Manager {
     fn default() -> Manager {
         let double_click_ns = u64::from(Settings::default().double_click_ms) * 1_000_000;
-        Manager { hold: Hold::None, clicked: None, double_click_ns }
+        Manager { hold: Hold::None, clicked: None, double_click_ns, shade: Shade::default() }
     }
 }
 
@@ -160,13 +183,34 @@ impl Manager {
 
     /// Whether windowd keeps the keys from the programs now.
     pub fn takes_keys(&self) -> bool {
-        matches!(self.hold, Hold::Menu { .. } | Hold::List { .. } | Hold::Keys { .. })
+        let keys = matches!(self.hold, Hold::Menu { .. } | Hold::List { .. } | Hold::Keys { .. });
+        keys || self.offers()
+    }
+
+    /// Whether the windows are offered for a zone now. A key of the
+    /// window manager's own asks what it does at any time then, and the
+    /// offer goes for it.
+    pub fn offers(&self) -> bool {
+        matches!(self.hold, Hold::Offer { .. })
     }
 
     /// The panel that shows over the windows.
     pub fn panel(&self) -> Option<&Panel> {
         match &self.hold {
-            Hold::Menu { panel, .. } | Hold::List { panel, .. } => Some(panel),
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
+                Some(panel)
+            }
+            _ => None,
+        }
+    }
+
+    /// The preview of what the window that is dragged fills if it is
+    /// let go now.
+    pub fn preview(&self) -> Option<Preview<'_>> {
+        match &self.hold {
+            Hold::Move { window, to: Some((_, area)), .. } => {
+                Some(Preview { window, area: *area, shade: &self.shade })
+            }
             _ => None,
         }
     }
@@ -192,7 +236,7 @@ impl Manager {
     /// for the picture of the program whose surface is there.
     pub fn picture(&self, under: &Under) -> Option<Picture> {
         match (&self.hold, under) {
-            (Hold::Resize { edge, .. }, _) => Some(Picture::of(*edge)),
+            (Hold::Resize { edge, .. } | Hold::Split { edge, .. }, _) => Some(Picture::of(*edge)),
             (Hold::None, Under::Part { part: Part::Edge(edge), .. }) => Some(Picture::of(*edge)),
             (Hold::None, Under::Surface { .. }) => None,
             _ => Some(Picture::Arrow),
@@ -205,6 +249,7 @@ impl Manager {
             Hold::Resize { window, .. } | Hold::Keys { window, size: true, .. } => {
                 shell.windows.resize_done(&window);
             }
+            Hold::Split { split, .. } => shell.windows.split_done(&split),
             _ => {}
         }
         shell.changed.windows = true;
@@ -217,13 +262,13 @@ impl Manager {
             shell.windows.framed(window).is_some_and(|framed| !framed.minimized())
         };
         let holds = match &self.hold {
-            Hold::None => true,
+            Hold::None | Hold::Split { .. } => true,
             Hold::Button { window, .. }
             | Hold::Move { window, .. }
             | Hold::Resize { window, .. }
             | Hold::Menu { window, .. }
             | Hold::Keys { window, .. } => shows(window),
-            Hold::List { listed, .. } => listed.iter().all(there),
+            Hold::List { listed, .. } | Hold::Offer { listed, .. } => listed.iter().all(there),
         };
         if !holds {
             self.let_go(shell);
@@ -242,7 +287,7 @@ impl Manager {
     ) {
         match &mut self.hold {
             Hold::None => {}
-            Hold::Menu { panel, .. } | Hold::List { panel, .. } => {
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
                 // A press beside the panel puts it away. One in it
                 // chooses the line it is on, which the release does.
                 if !panel.holds(at) {
@@ -270,15 +315,11 @@ impl Manager {
                     toggle(shell, &window);
                 } else {
                     self.clicked = Some(Click { window: window.clone(), at, time_ns });
-                    self.hold = Hold::Move { window, code, pressed: at, grip: None };
+                    self.hold = moved(window, code, at);
                 }
             }
             (BTN_LEFT, Part::Button(button)) => self.hold = Hold::Button { window, button },
-            (BTN_LEFT, Part::Edge(edge)) => {
-                if shell.windows.resize_from(&window, edge) {
-                    self.hold = Hold::Resize { window, edge, code, pressed: at };
-                }
-            }
+            (BTN_LEFT, Part::Edge(edge)) => self.by_edge(shell, window, edge, code, at),
             (BTN_RIGHT, Part::Title) => self.menu(shell, window, at.to_i32_floor()),
             _ => {}
         }
@@ -307,10 +348,20 @@ impl Manager {
                     }
                 }
             }
-            Hold::Move { code: held, .. } | Hold::Resize { code: held, .. } if *held == code => {
+            Hold::Move { window, code: held, was, to, .. } if *held == code => {
+                let dropped = to.map(|(fills, _)| (window.clone(), fills, *was));
+                self.let_go(shell);
+                if let Some((window, fills, was)) = dropped {
+                    shell.windows.drop_at(&window, at, fills, was);
+                    self.offer(shell, &window);
+                }
+            }
+            Hold::Resize { code: held, .. } | Hold::Split { code: held, .. } if *held == code => {
                 self.let_go(shell);
             }
-            Hold::Menu { panel, .. } | Hold::List { panel, .. } if code == BTN_LEFT => {
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. }
+                if code == BTN_LEFT =>
+            {
                 if let Some(row) = panel.row_at(at) {
                     self.choose(shell, row);
                 }
@@ -322,9 +373,12 @@ impl Manager {
     /// The pointer moved to `at`.
     pub fn motion(&mut self, shell: &mut Shell, at: Point<f64, Logical>) {
         match &mut self.hold {
-            Hold::Move { window, pressed, grip, .. } => {
+            Hold::Move { window, pressed, grip, was, to, .. } => {
                 let Some(framed) = shell.windows.framed(window) else { return };
                 let frame = framed.frame();
+                if grip.is_none() && apart(*pressed, at) >= SLOP {
+                    *was = shell.windows.restores_to(window);
+                }
                 let hold = match *grip {
                     Some(grip) => grip,
                     None if apart(*pressed, at) < SLOP => return,
@@ -342,13 +396,18 @@ impl Manager {
                 *grip = Some(hold);
                 self.clicked = None;
                 shell.windows.move_to(window, (at - hold).to_i32_round());
+                *to = shell.windows.dropped_at(at);
                 shell.changed.windows = true;
             }
             Hold::Resize { window, pressed, .. } => {
                 shell.windows.resize_by(window, (at - *pressed).to_i32_round());
                 shell.changed.windows = true;
             }
-            Hold::Menu { panel, .. } | Hold::List { panel, .. } => {
+            Hold::Split { split, pressed, .. } => {
+                shell.windows.split_to(split, (at - *pressed).to_i32_round());
+                shell.changed.windows = true;
+            }
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
                 // The pointer chooses the line it comes to, and leaves
                 // the keys' choice when it is on none.
                 let row = panel.row_at(at);
@@ -364,8 +423,9 @@ impl Manager {
     /// windowd has the keys, with Ctrl or Shift held or not.
     pub fn key(&mut self, shell: &mut Shell, code: u16, ctrl: bool, shift: bool) {
         let theme = *shell.windows.theme();
+        let offers = self.offers();
         match &mut self.hold {
-            Hold::Menu { panel, .. } | Hold::List { panel, .. } => {
+            Hold::Menu { panel, .. } | Hold::List { panel, .. } | Hold::Offer { panel, .. } => {
                 let back = match code {
                     KEY_UP | KEY_LEFT => Some(true),
                     KEY_DOWN | KEY_RIGHT => Some(false),
@@ -381,6 +441,8 @@ impl Manager {
                 match (code, chosen) {
                     (KEY_ENTER | KEY_KPENTER | KEY_SPACE, Some(row)) => self.choose(shell, row),
                     (KEY_ESC, _) => self.let_go(shell),
+                    // Any other key puts an offer away.
+                    _ if offers => self.let_go(shell),
                     _ => {}
                 }
             }
@@ -427,6 +489,9 @@ impl Manager {
     /// A key of windowd's asked `ask`, with the pointer at `at`.
     pub fn ask(&mut self, shell: &mut Shell, ask: Ask, at: Point<f64, Logical>) {
         let theme = *shell.windows.theme();
+        if self.offers() {
+            self.let_go(shell);
+        }
         match (ask, &mut self.hold) {
             (Ask::Next | Ask::Previous, Hold::List { panel, .. }) => {
                 panel.step(&theme, ask == Ask::Previous);
@@ -451,7 +516,12 @@ impl Manager {
                     }
                     Ask::ToScreen { back } => shell.windows.next_screen(&window, back),
                     Ask::Arrow(arrow) => match zones::after(framed.fills(), arrow) {
-                        Then::Fill(fills) => shell.windows.fill(&window, fills),
+                        Then::Fill(fills) => {
+                            shell.windows.fill(&window, fills);
+                            if matches!(fills, Fills::Zone(_)) {
+                                self.offer(shell, &window);
+                            }
+                        }
                         Then::Minimize => shell.minimize(&window),
                         Then::Stay => {}
                     },
@@ -469,16 +539,44 @@ impl Manager {
             return;
         }
         match asked {
-            Asked::Move(window, code) => {
-                self.hold = Hold::Move { window, code, pressed: at, grip: None };
-            }
-            Asked::Resize(window, edge, code) => {
-                if shell.windows.resize_from(&window, edge) {
-                    self.hold = Hold::Resize { window, edge, code, pressed: at };
-                }
-            }
+            Asked::Move(window, code) => self.hold = moved(window, code, at),
+            Asked::Resize(window, edge, code) => self.by_edge(shell, window, edge, code, at),
             Asked::Menu(window, at) => self.menu(shell, window, at),
         }
+        shell.changed.windows = true;
+    }
+
+    /// The edge `edge` of `window` is taken hold of with the button
+    /// `code`, the pointer at `at`: the edge of a snapped window where
+    /// its zone meets the others moves the splits, and any other
+    /// resizes the window.
+    fn by_edge(
+        &mut self,
+        shell: &mut Shell,
+        window: Window,
+        edge: Edge,
+        code: u16,
+        at: Point<f64, Logical>,
+    ) {
+        if let Some(split) = shell.windows.split_from(&window, edge) {
+            self.hold = Hold::Split { split, edge, code, pressed: at };
+        } else if shell.windows.resize_from(&window, edge) {
+            self.hold = Hold::Resize { window, edge, code, pressed: at };
+        }
+    }
+
+    /// Offers the windows that are not snapped for the largest zone
+    /// that is free beside `window`, which was snapped just now: a list
+    /// of them in the zone, if there is such a zone and such a window.
+    fn offer(&mut self, shell: &mut Shell, window: &Window) {
+        let Some((zone, area, others)) = shell.windows.offered(window) else { return };
+        let listed: Vec<Window> = others.iter().map(|framed| framed.window.clone()).collect();
+        let rows: Vec<Row> = others.iter().map(|framed| row_of(framed)).collect();
+        let theme = shell.windows.theme();
+        let width = theme.panel.list_width.min(area.size.w - 2 * theme.panel.padding);
+        let panel = Panel::in_the_middle(theme, width, rows, Some(0), area);
+        let at = area.loc.to_f64() + area.size.to_f64().downscale(2.0).to_point();
+        self.hold = Hold::Offer { panel, listed, zone, at };
         shell.changed.windows = true;
     }
 
@@ -530,11 +628,7 @@ impl Manager {
         if all.is_empty() {
             return;
         }
-        let rows = all.iter().map(|framed| {
-            let title = if framed.title().is_empty() { UNTITLED } else { framed.title() };
-            Row::Line { words: title.to_owned(), key: "", mark: Mark::Icon, off: false }
-        });
-        let rows: Vec<Row> = rows.collect();
+        let rows: Vec<Row> = all.iter().map(|framed| row_of(framed)).collect();
         let listed: Vec<Window> = all.iter().map(|framed| framed.window.clone()).collect();
         let chosen = match back {
             Some(true) => listed.len() - 1,
@@ -553,6 +647,12 @@ impl Manager {
     fn choose(&mut self, shell: &mut Shell, row: usize) {
         match core::mem::replace(&mut self.hold, Hold::None) {
             Hold::List { listed, .. } => shell.focus(listed.get(row)),
+            Hold::Offer { listed, zone, at, .. } => {
+                let Some(window) = listed.get(row) else { return };
+                shell.windows.drop_at(window, at, Fills::Zone(zone), None);
+                shell.focus(Some(window));
+                self.offer(shell, window);
+            }
             Hold::Menu { window, items, .. } => match items.get(row).copied().flatten() {
                 Some(Item::Restore) => shell.windows.restore(&window),
                 Some(Item::Maximize) => shell.windows.maximize(&window),
@@ -580,6 +680,18 @@ impl Manager {
         }
         shell.changed.windows = true;
     }
+}
+
+/// The hold of `window` by its title bar, with the button `code` held
+/// and the pointer at `at`.
+fn moved(window: Window, code: u16, at: Point<f64, Logical>) -> Hold {
+    Hold::Move { window, code, pressed: at, grip: None, was: None, to: None }
+}
+
+/// The row of a list for `framed`.
+fn row_of(framed: &Framed) -> Row {
+    let title = if framed.title().is_empty() { UNTITLED } else { framed.title() };
+    Row::Line { words: title.to_owned(), key: "", mark: Mark::Icon, off: false }
 }
 
 /// Maximizes `window`, or restores it if it is maximized.

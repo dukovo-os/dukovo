@@ -47,7 +47,7 @@ use window_frame::{Bar, Button, Canvas, Edge, Layout, Look, Margins, Part, Rect,
 
 use desks::Row;
 use resize::Resize;
-use zones::{Fills, Splits, Zone};
+use zones::{Fills, Outer, Side, Splits, Zone};
 
 use crate::screens::layout;
 
@@ -107,15 +107,39 @@ pub struct Strip {
     pub buffer: MemoryRenderBuffer,
 }
 
-/// Where a maximized window goes when it is restored.
+/// Where a window that is maximized or snapped goes when it is
+/// restored.
 #[derive(Debug, Clone, Copy, Default)]
-struct Restore {
+pub struct Restore {
     /// The corner of the frame's box, or `None` for the middle of the
     /// screen: the window was maximized when it first showed.
     at: Option<Point<i32, Logical>>,
     /// The size of the frame's box, or `None` for the size the program
     /// chooses.
     frame: Option<Size<i32, Logical>>,
+}
+
+/// The splits of a screen's desktop that a drag of an edge moves: the
+/// edge of a snapped window where it meets the other zones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Split {
+    /// The screen's name, and which of its desktops.
+    screen: String,
+    desk: usize,
+    /// Whether the drag moves where the sides meet.
+    across: bool,
+    /// The side whose parts it moves the meeting of, if any.
+    down: Option<Side>,
+    /// Where the sides met, and that side's parts, when it began.
+    from: Point<i32, Logical>,
+}
+
+impl Split {
+    /// Whether a window snapped to `zone` has another area when the
+    /// splits move.
+    fn moves(&self, zone: Zone) -> bool {
+        self.across || matches!(zone, Zone::Quarter(side, _) if Some(side) == self.down)
+    }
 }
 
 /// Where a window was on a screen that went: it goes back there when
@@ -311,11 +335,6 @@ impl Framed {
         parts.into_iter().flatten().map(|part| {
             Rectangle::new(self.at + Point::from((part.x, part.y)), (part.w, part.h).into())
         })
-    }
-
-    /// The zone of its screen the window is snapped to.
-    pub fn zone(&self) -> Option<Zone> {
-        self.zone
     }
 
     /// What the window fills of its screen, or is asked to.
@@ -779,31 +798,46 @@ impl Windows {
     /// Has `window` fill `fills` of the screen most of it is on: the
     /// whole of it, a zone, or what it did before it filled either.
     pub fn fill(&mut self, window: &Window, fills: Fills) {
-        match fills {
-            Fills::All => self.maximize(window),
-            Fills::Zone(zone) => self.snap(window, zone),
-            Fills::Nothing => self.restore(window),
-        }
-    }
-
-    /// Snaps `window` to `zone` of the screen most of it is on: its
-    /// frame is at the zone's corner, and its program is asked to draw
-    /// it at the zone's size (ADR 0727).
-    pub fn snap(&mut self, window: &Window, zone: Zone) {
-        let theme = self.theme;
         let Some(index) = self.framed.iter().position(|framed| framed.window == *window) else {
             return;
         };
         self.join(index);
-        let screen = self.screen_of(Windows::on(&self.framed[index]));
-        let fills = self.zone_area(index, screen, zone);
+        let screens = self.screens();
+        if let Some(screen) = most_of(&screens, Windows::on(&self.framed[index])) {
+            self.fill_on(index, screen, fills);
+        }
+    }
+
+    /// Has the window at `index` fill `fills` of `screen`.
+    fn fill_on(&mut self, index: usize, screen: &Screen, fills: Fills) {
+        match fills {
+            Fills::All => self.maximize_on(index, screen.1),
+            Fills::Zone(zone) => self.snap_on(index, screen, zone),
+            Fills::Nothing => {
+                let window = self.framed[index].window.clone();
+                self.restore(&window);
+            }
+        }
+    }
+
+    /// Snaps the window at `index` to `zone` of `screen`: its frame is
+    /// at the zone's corner, and its program is asked to draw it at the
+    /// zone's size (ADR 0727).
+    fn snap_on(&mut self, index: usize, (name, area): &Screen, zone: Zone) {
+        let theme = self.theme;
+        // On another screen than its own, it is on the desktop that
+        // shows there.
+        let framed = &self.framed[index];
+        let desk = if framed.screen == *name { framed.desk } else { self.row(name).shown() };
+        let fills = self.splits_of(name, desk).area(*area, zone);
         let framed = &mut self.framed[index];
         let Some(toplevel) = framed.window.toplevel() else { return };
         if framed.fills() == Fills::Nothing {
             framed.restore = Restore { at: Some(framed.at), frame: Some(framed.frame().size) };
         }
+        (framed.screen, framed.desk) = (name.clone(), desk);
         (framed.zone, framed.fills, framed.resize) = (Some(zone), fills, None);
-        let bar = TitleBar::of(window).told();
+        let bar = TitleBar::of(&framed.window).told();
         let size = inside(&theme, Shape::Normal, bar, fills.size);
         toplevel.with_pending_state(|state| {
             state.states.unset(State::Maximized);
@@ -817,6 +851,201 @@ impl Windows {
         if framed.layout.shape == Shape::Normal {
             framed.at = fills.loc;
             self.put(index);
+        }
+    }
+
+    /// Which edges of the screen whose area is `screen` no other screen
+    /// lies beyond at the place `at`.
+    fn outer(&self, screen: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> Outer {
+        let (left, top) = (f64::from(screen.loc.x), f64::from(screen.loc.y));
+        let (right, bottom) = (left + f64::from(screen.size.w), top + f64::from(screen.size.h));
+        let none_at = |x: f64, y: f64| self.space.output_under((x, y)).next().is_none();
+        Outer {
+            left: none_at(left - 1.0, at.y),
+            right: none_at(right, at.y),
+            top: none_at(at.x, top - 1.0),
+            bottom: none_at(at.x, bottom),
+        }
+    }
+
+    /// What a window that is dragged by its title bar fills if it is
+    /// let go with the pointer at `at`, and the area of that: `None`
+    /// away from the edges of the desktop.
+    pub fn dropped_at(&self, at: Point<f64, Logical>) -> Option<(Fills, Rectangle<i32, Logical>)> {
+        let screen = self.space.output_under(at).next()?;
+        let area = self.space.output_geometry(screen)?;
+        let fills = zones::dragged_to(area, at, self.outer(area, at));
+        let name = screen.name();
+        let filled = match fills {
+            Fills::Nothing => return None,
+            Fills::All => area,
+            Fills::Zone(zone) => self.splits_of(&name, self.row(&name).shown()).area(area, zone),
+        };
+        Some((fills, filled))
+    }
+
+    /// What is offered after `window` was snapped: the largest zone
+    /// of its screen's desktop that no snapped window has a place in,
+    /// the zone's area, and the windows of that desktop that are not
+    /// snapped, the one that last had the keyboard first. `None` with
+    /// no such zone or no such window.
+    pub fn offered(
+        &self,
+        window: &Window,
+    ) -> Option<(Zone, Rectangle<i32, Logical>, Vec<&Framed>)> {
+        let snapped = self.framed(window)?;
+        let (name, desk) = (&snapped.screen, snapped.desk);
+        let area = self.screens().into_iter().find(|(other, _)| other == name)?.1;
+        let here = |framed: &&Framed| framed.screen == *name && framed.desk == desk;
+        let taken = |framed: &Framed| framed.zone.filter(|_| !framed.minimized);
+        let zones: Vec<Zone> = self.framed.iter().filter(here).filter_map(taken).collect();
+        let zone = zones::free(&zones)?;
+        let mut others = self.by_use();
+        others.retain(|framed| here(framed) && taken(framed).is_none());
+        let area = self.splits_of(name, desk).area(area, zone);
+        (!others.is_empty()).then_some((zone, area, others))
+    }
+
+    /// Where `window` goes when it is restored: where it is, for one
+    /// that fills nothing of its screen.
+    pub fn restores_to(&self, window: &Window) -> Option<Restore> {
+        let framed = self.framed(window)?;
+        Some(match framed.fills() {
+            Fills::Nothing => Restore { at: Some(framed.at), frame: Some(framed.frame().size) },
+            _ => framed.restore,
+        })
+    }
+
+    /// `window` was let go with the pointer at `at` after it was
+    /// dragged by its title bar from where `was` says: it fills `fills`
+    /// of the screen there, and goes back to there when it is restored.
+    pub fn drop_at(
+        &mut self,
+        window: &Window,
+        at: Point<f64, Logical>,
+        fills: Fills,
+        was: Option<Restore>,
+    ) {
+        let Some(index) = self.framed.iter().position(|framed| framed.window == *window) else {
+            return;
+        };
+        let screens = self.screens();
+        let Some(screen) = screens.iter().find(|(_, area)| area.to_f64().contains(at)) else {
+            return;
+        };
+        self.fill_on(index, screen, fills);
+        if let Some(was) = was {
+            self.framed[index].restore = was;
+        }
+    }
+
+    /// The edge `edge` of `window` is taken hold of. If the window is
+    /// snapped and the edge lies where its zone meets the others, a
+    /// drag of it moves the splits of its screen's desktop: every
+    /// snapped window there with a side along them is resized, paced by
+    /// its program as a resize is, until [`Windows::split_done`].
+    pub fn split_from(&mut self, window: &Window, edge: Edge) -> Option<Split> {
+        let framed = self.framed(window)?;
+        let zone = framed.zone.filter(|zone| zone.meets_at(edge))?;
+        let (screen, desk) = (framed.screen.clone(), framed.desk);
+        let area = self.screens().into_iter().find(|(name, _)| *name == screen)?.1;
+        let split = Split {
+            across: edge.left() || edge.right(),
+            down: (edge.top() || edge.bottom()).then_some(zone.side()),
+            from: self.splits_of(&screen, desk).meet(area, zone.side()),
+            screen,
+            desk,
+        };
+        for index in self.along(&split) {
+            let framed = &mut self.framed[index];
+            let Some(zone) = framed.zone else { continue };
+            let content = framed.window.geometry().size;
+            framed.resize = Some(Resize::new(zone.inner(), framed.frame(), content));
+        }
+        Some(split)
+    }
+
+    /// The windows that show snapped on the desktop `split` is of and
+    /// have a side along the splits it moves.
+    fn along(&self, split: &Split) -> Vec<usize> {
+        let lies = |framed: &Framed| {
+            (framed.screen == split.screen && framed.desk == split.desk && !framed.minimized)
+                && framed.layout.shape == Shape::Normal
+                && framed.zone.is_some_and(|zone| split.moves(zone))
+        };
+        (0..self.framed.len()).filter(|index| lies(&self.framed[*index])).collect()
+    }
+
+    /// The least a frame's box can be around the window at `index`.
+    fn least_frame(&self, index: usize) -> (i32, i32) {
+        let framed = &self.framed[index];
+        let bar = TitleBar::of(&framed.window).told();
+        let least = framed.fitted(&self.theme, bar, (0, 0));
+        Margins::of(&self.theme, Shape::Normal, bar).around((least.w, least.h))
+    }
+
+    /// The pointer has moved by `by` since the drag of `split` began:
+    /// the splits are as far from where they were, or as near to that
+    /// as leaves every snapped window the least its program takes, and
+    /// each window along them is asked for the size of its zone.
+    pub fn split_to(&mut self, split: &Split, by: Point<i32, Logical>) {
+        let theme = self.theme;
+        let Some((_, area)) = self.screens().into_iter().find(|(name, _)| *name == split.screen)
+        else {
+            return;
+        };
+        let along = self.along(split);
+        // How near each edge of the screen the splits may come.
+        let (mut left, mut top) = (area.loc.x, area.loc.y);
+        let (mut right, mut bottom) = (area.loc.x + area.size.w, area.loc.y + area.size.h);
+        for index in &along {
+            let (width, height) = self.least_frame(*index);
+            match self.framed[*index].zone.map(Zone::inner) {
+                Some(inner) if inner.right() => left = left.max(area.loc.x + width),
+                Some(_) => right = right.min(area.loc.x + area.size.w - width),
+                None => {}
+            }
+            match self.framed[*index].zone.map(Zone::inner) {
+                Some(inner) if inner.bottom() => top = top.max(area.loc.y + height),
+                Some(inner) if inner.top() => {
+                    bottom = bottom.min(area.loc.y + area.size.h - height);
+                }
+                _ => {}
+            }
+        }
+        let to = split.from + by;
+        let mut splits = self.splits_of(&split.screen, split.desk);
+        if split.across {
+            splits.meet_across(area, to.x.min(right).max(left));
+        }
+        if let Some(side) = split.down {
+            splits.meet_down(area, side, to.y.min(bottom).max(top));
+        }
+        self.splits.insert((split.screen.clone(), split.desk), splits);
+        for index in along {
+            let framed = &mut self.framed[index];
+            let Some(zone) = framed.zone else { continue };
+            framed.fills = splits.area(area, zone);
+            let bar = TitleBar::of(&framed.window).told();
+            let margins = Margins::of(&theme, Shape::Normal, bar);
+            let frame = framed.fills.size;
+            let wanted = framed.fitted(&theme, bar, margins.within((frame.w, frame.h)));
+            if let (Some(resize), Some(toplevel)) = (&mut framed.resize, framed.window.toplevel()) {
+                resize.want(toplevel, wanted);
+            }
+        }
+    }
+
+    /// The drag of `split` is over: the program of each window along
+    /// the splits is told so with the last size.
+    pub fn split_done(&mut self, split: &Split) {
+        for index in self.along(split) {
+            let framed = &mut self.framed[index];
+            if let (Some(resize), Some(toplevel)) = (&mut framed.resize, framed.window.toplevel())
+                && resize.end(toplevel)
+            {
+                framed.resize = None;
+            }
         }
     }
 
@@ -1097,21 +1326,29 @@ impl Windows {
     /// Asks the program of `window` to draw it maximized, to fill the
     /// screen most of it is on.
     pub fn maximize(&mut self, window: &Window) {
-        let theme = self.theme;
-        let Some(fills) = self.framed(window).map(|framed| self.screen_of(framed.frame())) else {
+        let Some(index) = self.framed.iter().position(|framed| framed.window == *window) else {
             return;
         };
-        let Some(framed) = self.framed_mut(window) else { return };
-        if framed.maximized() {
+        let fills = self.screen_of(self.framed[index].frame());
+        self.maximize_on(index, fills);
+    }
+
+    /// Asks the program of the window at `index` to draw it maximized,
+    /// to fill the screen whose area is `fills`.
+    fn maximize_on(&mut self, index: usize, fills: Rectangle<i32, Logical>) {
+        let theme = self.theme;
+        let framed = &mut self.framed[index];
+        let Some(toplevel) = framed.window.toplevel() else { return };
+        let asked = toplevel.with_pending_state(|state| state.states.contains(State::Maximized));
+        if asked && framed.fills == fills {
             return;
         }
-        let Some(toplevel) = framed.window.toplevel() else { return };
         // A snapped window goes back to where it was before the snap.
         if framed.layout.shape == Shape::Normal && framed.zone.is_none() {
             framed.restore = Restore { at: Some(framed.at), frame: Some(framed.frame().size) };
         }
         (framed.zone, framed.fills, framed.resize) = (None, fills, None);
-        let bar = TitleBar::of(window).told();
+        let bar = TitleBar::of(&framed.window).told();
         let size = inside(&theme, Shape::Maximized, bar, framed.fills.size);
         toplevel.with_pending_state(|state| {
             state.states.set(State::Maximized);
@@ -1120,6 +1357,13 @@ impl Windows {
             state.size = Some(size);
         });
         toplevel.send_pending_configure();
+        // One that is drawn maximized already, as when it was asked to
+        // be restored and is let go at the top of another screen, is
+        // there at once.
+        if framed.layout.shape == Shape::Maximized {
+            framed.at = fills.loc;
+            self.put(index);
+        }
     }
 
     /// Asks the program of `window`, which is maximized or snapped, to
@@ -1179,11 +1423,19 @@ impl Windows {
     /// Starts a resize of `window` by `edge`: the sides `edge` does not
     /// name stay where they are until [`Windows::resize_done`]. Returns
     /// whether the window can be resized now: one that is maximized
-    /// cannot.
+    /// cannot. A snapped window is snapped no more: it is where it is,
+    /// as a window the person put there.
     pub fn resize_from(&mut self, window: &Window, edge: Edge) -> bool {
         let Some(framed) = self.framed_mut(window) else { return false };
-        if framed.fills() != Fills::Nothing || framed.minimized {
+        if framed.maximized() || framed.minimized {
             return false;
+        }
+        if framed.zone.take().is_some() {
+            framed.restore = Restore::default();
+            if let Some(toplevel) = framed.window.toplevel() {
+                // The program is told with the resize's first size.
+                toplevel.with_pending_state(|state| tiled(&mut state.states, None));
+            }
         }
         framed.resize = Some(Resize::new(edge, framed.frame(), framed.window.geometry().size));
         true

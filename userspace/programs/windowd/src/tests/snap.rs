@@ -5,11 +5,16 @@
 //! (ADR 0727), by the keys and by the pointer.
 
 use display_pattern::pattern;
-use input::abi::{KEY_DOWN, KEY_LEFT, KEY_LEFTMETA, KEY_RIGHT, KEY_UP};
+use input::abi::{
+    BTN_LEFT, KEY_A, KEY_DOWN, KEY_ENTER, KEY_ESC, KEY_LEFT, KEY_LEFTMETA, KEY_RIGHT, KEY_UP,
+};
+use window_frame::panel::{Entry, Mark};
 use window_frame::{Bar, Layout, Shape, Theme};
+use window_test::Heard;
 
 use super::laid::settings;
-use super::{Program, World, middle};
+use super::screens::pixel;
+use super::{Program, World, framed, middle};
 use crate::screens::BACKGROUND;
 
 /// The size a window's program is asked to draw for a frame's box of
@@ -137,4 +142,297 @@ fn a_snapped_window_fills_its_zone_of_a_screen_that_changes() {
     let (left, top) = ((256 + within.0) as u32 * 2, within.1 as u32 * 2);
     assert_eq!(world.colour(left, top), pattern::colour(7, 0, 0));
     assert_eq!(world.colour(left + 1, top + 1), pattern::colour(7, 0, 0));
+}
+
+/// The colour a preview's inside shows over the desktop's own.
+fn shaded() -> [u8; 3] {
+    let chosen = Theme::basic().panel.chosen;
+    let over = |colour: u8, under: u8| {
+        ((u32::from(colour) * 110 + u32::from(under) * 145 + 127) / 255) as u8
+    };
+    [
+        over(chosen.red, BACKGROUND[0]),
+        over(chosen.green, BACKGROUND[1]),
+        over(chosen.blue, BACKGROUND[2]),
+    ]
+}
+
+/// Whether `shows` is `colour`, give or take what a renderer rounds.
+fn nearly(shows: [u8; 3], colour: [u8; 3]) -> bool {
+    shows.iter().zip(colour).all(|(shows, colour)| shows.abs_diff(colour) <= 2)
+}
+
+/// The colour of the line around a preview.
+fn line() -> [u8; 3] {
+    let line = Theme::basic().panel.chosen_line;
+    [line.red, line.green, line.blue]
+}
+
+#[test]
+fn a_window_dragged_to_an_edge_shows_what_it_fills_there_and_does_when_let_go() {
+    let mut world = World::one_screen();
+    let program = world.program();
+    world.show(&program, (320, 200), 5);
+    let (_, (left, top)) = framed((320, 200));
+    world.point(left + 100, top + 15);
+    world.button(BTN_LEFT, true);
+    // Away from the edges nothing shows but the window.
+    world.point(200, 300);
+    world.settle();
+    assert_eq!(world.colour(700, 100), BACKGROUND);
+    assert_eq!(world.colour(9, 9), BACKGROUND);
+    // At the left edge: the left side, a line around it and the
+    // desktop through it.
+    world.point(0, 300);
+    world.settle();
+    assert_eq!(world.colour(9, 9), line());
+    assert_eq!(world.colour(502, 758), line());
+    assert!(nearly(world.colour(300, 100), shaded()), "{:?}", world.colour(300, 100));
+    assert_eq!(world.colour(4, 4), BACKGROUND);
+    assert_eq!(world.colour(700, 100), BACKGROUND);
+    // Near the corner: the upper part of that side.
+    world.point(0, 10);
+    world.settle();
+    assert_eq!(world.colour(502, 374), line());
+    assert!(nearly(world.colour(300, 300), shaded()));
+    assert_eq!(world.colour(300, 600), BACKGROUND);
+    // At the top edge: the whole screen.
+    world.point(300, 0);
+    world.settle();
+    assert_eq!(world.colour(1014, 758), line());
+    assert!(nearly(world.colour(700, 600), shaded()));
+    // Away again, and nothing.
+    world.point(300, 300);
+    world.settle();
+    assert_eq!(world.colour(700, 600), BACKGROUND);
+    assert_eq!(world.colour(9, 9), BACKGROUND);
+    // Let go at the right edge, the window fills the right side.
+    world.point(1023, 300);
+    world.button(BTN_LEFT, false);
+    let (size, _) = world.follow(&program, (320, 200), 6);
+    world.settle();
+    fills(&mut world, ((512, 0), (512, 768)), size, 6);
+    assert_eq!(world.colour(300, 100), BACKGROUND);
+    // Restored by the keys, it is where it was before it was dragged.
+    let size = arrow(&mut world, &program, KEY_DOWN, 7);
+    fills(&mut world, ((512, 384), (512, 384)), size, 7);
+    let size = arrow(&mut world, &program, KEY_DOWN, 8);
+    assert_eq!(size, (320, 200));
+    let (own_left, own_top) = middle((320, 200));
+    assert_eq!(world.colour(own_left, own_top), pattern::colour(8, 0, 0));
+    // Let go at the top edge, it is maximized.
+    world.point(left + 100, top + 15);
+    world.button(BTN_LEFT, true);
+    world.point(400, 100);
+    world.point(400, 0);
+    world.button(BTN_LEFT, false);
+    let bar = Theme::basic().bar as u32;
+    assert_eq!(world.follow(&program, (320, 200), 9), ((1024, 768 - bar), true));
+    world.settle();
+    assert_eq!(world.colour(1023, 767), pattern::colour(9, 1023, 767 - bar));
+}
+
+#[test]
+fn a_snapped_window_dragged_by_its_bar_is_as_it_was_and_snaps_anew_on_the_screen_it_is_let_go_on() {
+    let mut world = World::new(&[Some((1024, 768)), Some((800, 600))], false);
+    let program = world.program();
+    world.show(&program, (320, 200), 5);
+    let size = arrow(&mut world, &program, KEY_LEFT, 6);
+    fills(&mut world, ((0, 0), (512, 768)), size, 6);
+    // Dragged by its bar, it is of the size it had, under the pointer.
+    world.point(256, 15);
+    world.button(BTN_LEFT, true);
+    world.point(300, 300);
+    assert_eq!(world.follow(&program, (320, 200), 7), ((320, 200), false));
+    // The edge the second screen lies beyond snaps nothing: the pointer
+    // goes on to that screen, and to its far edge.
+    world.point(1023, 300);
+    world.settle();
+    assert_eq!(world.colour(700, 100), BACKGROUND);
+    for _ in 0..6 {
+        let now = world.now();
+        world.desktop.moved(now, 400, 0);
+        world.settle();
+    }
+    assert_eq!(pixel(&mut world, 1, (409, 9)), line());
+    assert!(nearly(pixel(&mut world, 1, (600, 100)), shaded()));
+    assert_eq!(world.colour(700, 100), BACKGROUND);
+    world.button(BTN_LEFT, false);
+    let (size, _) = world.follow(&program, (320, 200), 8);
+    world.settle();
+    let (asked, within) = inside((400, 600));
+    assert_eq!(size, asked);
+    assert_eq!(pixel(&mut world, 1, (400 + within.0, within.1)), pattern::colour(8, 0, 0));
+    assert_eq!(pixel(&mut world, 1, (200, 300)), BACKGROUND);
+    // Restored, it is where it was before the first snap, on the
+    // first screen.
+    arrow(&mut world, &program, KEY_DOWN, 9);
+    let size = arrow(&mut world, &program, KEY_DOWN, 10);
+    assert_eq!(size, (320, 200));
+    let (left, top) = middle((320, 200));
+    assert_eq!(world.colour(left, top), pattern::colour(10, 0, 0));
+}
+
+/// The rows of a list of windows of `titles`.
+fn rows<'a>(titles: &[&'a str]) -> Vec<Entry<'a>> {
+    let line = |words: &&'a str| Entry::Line { words, key: "", mark: Mark::Icon, off: false };
+    titles.iter().map(line).collect()
+}
+
+/// Where the corner of a list of `entries`, 480 wide, is in the middle
+/// of `area`, its corner and its size.
+fn in_the_middle(entries: &[Entry<'_>], area: ((i32, i32), (i32, i32))) -> (i32, i32) {
+    let (width, height) = window_frame::panel::place(&Theme::basic(), 480, entries).size;
+    let ((left, top), (across, down)) = area;
+    (left + (across - width) / 2, top + (down - height) / 2)
+}
+
+#[test]
+fn after_a_snap_the_other_windows_are_offered_for_the_room_that_is_left() {
+    let mut world = World::one_screen();
+    let programs = [world.program(), world.program(), world.program()];
+    for (program, (seed, title)) in programs.iter().zip([(7, "One"), (8, "Two"), (9, "Three")]) {
+        world.show(program, (320, 200), seed);
+        world.ask(program, move |client| client.title(title)).unwrap();
+    }
+    world.settle();
+    // Three fills the left side: the others are offered the right.
+    let [one, two, three] = &programs;
+    let size = arrow(&mut world, three, KEY_LEFT, 10);
+    fills(&mut world, ((0, 0), (512, 768)), size, 10);
+    let offered = rows(&["Two", "One"]);
+    let corner = in_the_middle(&offered, ((512, 0), (512, 768)));
+    world.shows_panel(480, &offered, Some(0), corner);
+    // A key of the window manager's own does what it does, and the
+    // offer is for the room left then: the right side still.
+    let size = arrow(&mut world, three, KEY_UP, 11);
+    fills(&mut world, ((0, 0), (512, 384)), size, 11);
+    world.shows_panel(480, &offered, Some(0), corner);
+    // The keys choose: One fills the right side, in front and with the
+    // keyboard, and Two is offered the part that is left.
+    world.tap(KEY_DOWN);
+    world.settle();
+    world.shows_panel(480, &offered, Some(1), corner);
+    world.tap(KEY_ENTER);
+    let (size, _) = world.follow(one, (320, 200), 12);
+    world.settle();
+    fills(&mut world, ((512, 0), (512, 768)), size, 12);
+    let heard = world.heard(one, |heard| *heard == Heard::Keyboard(true));
+    assert!(heard.contains(&Heard::Active(true)), "{heard:?}");
+    let offered = rows(&["Two"]);
+    let corner = in_the_middle(&offered, ((0, 384), (512, 384)));
+    world.shows_panel(480, &offered, Some(0), corner);
+    // The pointer chooses too.
+    let row = Theme::basic().panel;
+    world.click(corner.0 + 240, corner.1 + 1 + row.padding + row.row / 2);
+    let (size, _) = world.follow(two, (320, 200), 13);
+    world.settle();
+    fills(&mut world, ((0, 384), (512, 384)), size, 13);
+    // Nothing is left to offer, and the keys are the window's again.
+    world.tap(KEY_A);
+    let heard = world.heard(two, |heard| matches!(heard, Heard::Key { pressed: false, .. }));
+    assert!(heard.contains(&Heard::Key { code: u32::from(KEY_A), pressed: true }), "{heard:?}");
+}
+
+#[test]
+fn an_offer_goes_at_esc_at_any_other_key_and_at_a_press_beside_it() {
+    let mut world = World::one_screen();
+    let (first, second) = (world.program(), world.program());
+    world.show(&first, (320, 200), 7);
+    world.show(&second, (320, 200), 8);
+    // The list is in the middle of the side that is left, over the
+    // desktop at these places.
+    let (in_right, in_left) = ((900, 384), (120, 384));
+    arrow(&mut world, &second, KEY_LEFT, 9);
+    assert_ne!(world.colour(in_right.0, in_right.1), BACKGROUND);
+    world.tap(KEY_ESC);
+    world.settle();
+    assert_eq!(world.colour(in_right.0, in_right.1), BACKGROUND);
+    // Any other key puts it away too, and is no program's.
+    arrow_alone(&mut world, KEY_RIGHT);
+    assert_ne!(world.colour(in_left.0, in_left.1), BACKGROUND);
+    world.tap(KEY_A);
+    world.settle();
+    assert_eq!(world.colour(in_left.0, in_left.1), BACKGROUND);
+    let told = world.told(&second);
+    let of_a =
+        |heard: &Heard| matches!(heard, Heard::Key { code, .. } if *code == u32::from(KEY_A));
+    assert!(!told.iter().any(of_a), "{told:?}");
+    // And a press beside it.
+    arrow_alone(&mut world, KEY_LEFT);
+    assert_ne!(world.colour(in_right.0, in_right.1), BACKGROUND);
+    world.click(900, 100);
+    world.settle();
+    assert_eq!(world.colour(in_right.0, in_right.1), BACKGROUND);
+    // The window that was offered is where it was.
+    let (left, top) = middle((320, 200));
+    assert_eq!(world.colour(left + 300, top + 150), pattern::colour(7, 300, 150));
+}
+
+/// Has `program` draw its window at each size it is asked for, with
+/// the pattern of `seed`, until it is asked for no other. Returns the
+/// last, if it was asked for any.
+fn draws_on(world: &mut World, program: &Program, seed: u32) -> Option<(u32, u32)> {
+    let mut last = None;
+    loop {
+        world.settle();
+        let asked = world.told(program).into_iter().rev().find_map(|heard| match heard {
+            Heard::Size { width, height, .. } => Some((width as u32, height as u32)),
+            _ => None,
+        });
+        let Some(size) = asked else { return last };
+        world.show(program, size, seed);
+        last = Some(size);
+    }
+}
+
+#[test]
+fn the_edge_two_snapped_windows_share_resizes_both() {
+    let mut world = World::one_screen();
+    let (first, second) = (world.program(), world.program());
+    world.show(&first, (320, 200), 7);
+    world.show(&second, (320, 200), 8);
+    // The second on the left and, from the offer, the first on the
+    // right.
+    arrow(&mut world, &second, KEY_LEFT, 9);
+    world.tap(KEY_ENTER);
+    let (size, _) = world.follow(&first, (320, 200), 10);
+    world.settle();
+    fills(&mut world, ((512, 0), (512, 768)), size, 10);
+    // The right edge of the left one, dragged a hundred to the right:
+    // each program is asked for one size at a time, and has the last.
+    world.point(510, 400);
+    world.button(BTN_LEFT, true);
+    world.point(560, 400);
+    world.point(610, 400);
+    let left = draws_on(&mut world, &second, 11).unwrap();
+    let right = draws_on(&mut world, &first, 12).unwrap();
+    world.button(BTN_LEFT, false);
+    assert_eq!(draws_on(&mut world, &second, 11), None);
+    assert_eq!(draws_on(&mut world, &first, 12), None);
+    fills(&mut world, ((0, 0), (612, 768)), left, 11);
+    fills(&mut world, ((612, 0), (412, 768)), right, 12);
+    // The sides meet there for a window that is snapped after.
+    let size = arrow(&mut world, &first, KEY_UP, 13);
+    fills(&mut world, ((612, 0), (412, 384)), size, 13);
+    // The lower edge of a part moves where that side's parts meet.
+    world.point(612 + 200, 382);
+    world.button(BTN_LEFT, true);
+    world.point(612 + 200, 482);
+    world.button(BTN_LEFT, false);
+    let size = draws_on(&mut world, &first, 14).unwrap();
+    fills(&mut world, ((612, 0), (412, 484)), size, 14);
+    let size = arrow(&mut world, &first, KEY_DOWN, 15);
+    fills(&mut world, ((612, 0), (412, 768)), size, 15);
+    let size = arrow(&mut world, &first, KEY_DOWN, 16);
+    fills(&mut world, ((612, 484), (412, 284)), size, 16);
+    // An edge that lies along the screen's own resizes that window
+    // alone, which is snapped no more: the sides meet where they did.
+    world.point(1022, 600);
+    world.button(BTN_LEFT, true);
+    world.point(922, 600);
+    world.button(BTN_LEFT, false);
+    let size = draws_on(&mut world, &first, 17).unwrap();
+    fills(&mut world, ((612, 484), (312, 284)), size, 17);
+    assert_eq!(draws_on(&mut world, &second, 11), None);
 }

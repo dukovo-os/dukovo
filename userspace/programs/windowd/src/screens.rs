@@ -366,7 +366,7 @@ where
         shell.windows.screens_changed(&screens_before);
         shell.windows.tell_all();
         self.pointed = None;
-        let scene = Scene { windows: &shell.windows, panel: None };
+        let scene = Scene { windows: &shell.windows, panel: None, preview: None };
         self.first_frames(renderer, &scene)?;
         // The change above stopped showing them.
         for gone in before {

@@ -10,6 +10,7 @@ use input::abi::{
     KEY_TAB,
 };
 
+use super::screens::{pixel, to_second};
 use super::{Program, World, framed, middle};
 use crate::screens::BACKGROUND;
 
@@ -43,23 +44,6 @@ fn active(world: &mut World, program: &Program) -> bool {
 fn at_step(world: &mut World, step: u32) -> [u8; 3] {
     let (left, top) = middle((320, 200));
     world.colour(left + step * 32, top + step * 32)
-}
-
-/// Moves the pointer from the first screen to the second, which is to
-/// its right.
-fn to_second(world: &mut World) {
-    for _ in 0..4 {
-        let now = world.now();
-        world.desktop.moved(now, 400, 0);
-        world.settle();
-    }
-}
-
-/// The colour the second screen shows at `at`.
-fn second_screen(world: &mut World, (x, y): (i32, i32)) -> [u8; 3] {
-    let (width, pixels) = world.desktop.shows(1);
-    let at = ((y as u32 * width + x as u32) * 4) as usize;
-    [pixels[at + 2], pixels[at + 1], pixels[at]]
 }
 
 #[test]
@@ -175,12 +159,12 @@ fn each_screen_has_desktops_of_its_own() {
     chord(&mut world, &[KEY_LEFTMETA, KEY_LEFTSHIFT], KEY_RIGHT);
     let (layout, (left, top)) = framed((320, 200));
     let carried = (left * 800 / 1024 + layout.surface.x, top * 600 / 768 + layout.surface.y);
-    assert_eq!(second_screen(&mut world, carried), pattern::colour(5, 0, 0));
+    assert_eq!(pixel(&mut world, 1, carried), pattern::colour(5, 0, 0));
     assert_eq!(at_step(&mut world, 0), BACKGROUND);
     chord(&mut world, &SUPER_CTRL, KEY_LEFT);
-    assert_eq!(second_screen(&mut world, carried), BACKGROUND);
+    assert_eq!(pixel(&mut world, 1, carried), BACKGROUND);
     chord(&mut world, &SUPER_CTRL, KEY_RIGHT);
-    assert_eq!(second_screen(&mut world, carried), pattern::colour(5, 0, 0));
+    assert_eq!(pixel(&mut world, 1, carried), pattern::colour(5, 0, 0));
 }
 
 #[test]
@@ -194,9 +178,9 @@ fn a_window_goes_back_to_its_desktop_when_its_screen_returns() {
         (800 - layout.frame.w) / 2 + layout.surface.x,
         (600 - layout.frame.h) / 2 + layout.surface.y,
     );
-    assert_eq!(second_screen(&mut world, home), pattern::colour(5, 0, 0));
+    assert_eq!(pixel(&mut world, 1, home), pattern::colour(5, 0, 0));
     chord(&mut world, &SUPER_CTRL, KEY_D);
-    assert_eq!(second_screen(&mut world, home), BACKGROUND);
+    assert_eq!(pixel(&mut world, 1, home), BACKGROUND);
     // The screen goes: the window shows on the one that is left,
     // whichever desktop of its screen it was on.
     world.kernel.borrow_mut().found(1, None);
@@ -209,8 +193,8 @@ fn a_window_goes_back_to_its_desktop_when_its_screen_returns() {
     world.kernel.borrow_mut().found(1, Some((800, 600)));
     world.settle();
     assert_eq!(world.colour(carried.0 as u32, carried.1 as u32), BACKGROUND);
-    assert_eq!(second_screen(&mut world, home), BACKGROUND);
+    assert_eq!(pixel(&mut world, 1, home), BACKGROUND);
     to_second(&mut world);
     chord(&mut world, &SUPER_CTRL, KEY_LEFT);
-    assert_eq!(second_screen(&mut world, home), pattern::colour(5, 0, 0));
+    assert_eq!(pixel(&mut world, 1, home), pattern::colour(5, 0, 0));
 }

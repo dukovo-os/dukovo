@@ -5,7 +5,9 @@
 //!
 //! From the front: the panel windowd shows over the windows, then each
 //! window in the windows' order, and of each window its popups, the
-//! strips of its frame and its own surface. The surface is cut to the
+//! strips of its frame and its own surface. Under a window that is
+//! dragged to an edge of the desktop lies the preview of what it will
+//! fill there (ADR 0727). The surface is cut to the
 //! places the frame's layout gives it, so that a program draws nowhere
 //! else: the content, and the region of a title bar the program shares
 //! (ADR 0720). It lies behind the frame, which is see-through there.
@@ -28,11 +30,11 @@ use smithay::backend::renderer::element::{
 };
 use smithay::backend::renderer::pixman::{PixmanError, PixmanFrame, PixmanRenderer};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
-use smithay::desktop::PopupManager;
+use smithay::desktop::{PopupManager, Window};
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::seat::WaylandFocus;
 
-use window_frame::Colour;
+use window_frame::{Colour, Theme};
 
 use crate::panel::Panel;
 use crate::windows::{Framed, Windows};
@@ -46,8 +48,9 @@ render_elements! {
     Popup=WaylandSurfaceRenderElement<PixmanRenderer>,
     /// A surface of a window, where the window's frame lets it show.
     Window=Cut,
-    /// The ground under a window's content.
-    Ground=SolidColorRenderElement,
+    /// A rectangle of one colour: the ground under a window's content,
+    /// or a part of a preview.
+    Solid=SolidColorRenderElement,
 }
 
 /// A surface of a window, which shows in some parts of a screen's frame
@@ -156,6 +159,85 @@ impl RenderElement<PixmanRenderer> for Cut {
     }
 }
 
+/// How far in from the edges of the area it stands for a preview's
+/// own edges are, and how wide the line around it is, in points.
+const PREVIEW_INSET: i32 = 8;
+const PREVIEW_LINE: i32 = 2;
+
+/// How much of what is under a preview its inside covers, of 255.
+const PREVIEW_COVER: u8 = 110;
+
+/// What the renderer knows the parts of the preview by: its inside and
+/// the four lines around it.
+#[derive(Debug)]
+pub struct Shade {
+    parts: [Id; 5],
+}
+
+impl Default for Shade {
+    fn default() -> Shade {
+        Shade { parts: core::array::from_fn(|_| Id::new()) }
+    }
+}
+
+/// The preview of the area a window that is dragged will fill.
+#[derive(Debug, Clone, Copy)]
+pub struct Preview<'a> {
+    /// The window, which the preview lies under.
+    pub window: &'a Window,
+    /// The area.
+    pub area: Rectangle<i32, Logical>,
+    /// What the renderer knows the preview by.
+    pub shade: &'a Shade,
+}
+
+impl Preview<'_> {
+    /// Adds the preview's parts to `pieces`, for the screen `onto`: a
+    /// see-through inside with a line around it, in the colours of a
+    /// panel's chosen row.
+    fn pieces(&self, theme: &Theme, onto: Onto, pieces: &mut Vec<Piece>) {
+        let all = Rectangle::new(
+            self.area.loc + Point::from((PREVIEW_INSET, PREVIEW_INSET)),
+            (self.area.size.w - 2 * PREVIEW_INSET, self.area.size.h - 2 * PREVIEW_INSET).into(),
+        );
+        if all.size.w <= 2 * PREVIEW_LINE || all.size.h <= 2 * PREVIEW_LINE {
+            return;
+        }
+        let (line, rows) = (PREVIEW_LINE, all.size.h - 2 * PREVIEW_LINE);
+        let part = |x: i32, y: i32, w: i32, h: i32| {
+            Rectangle::new(all.loc + Point::from((x, y)), (w, h).into())
+        };
+        let lines = [
+            part(0, 0, all.size.w, line),
+            part(0, all.size.h - line, all.size.w, line),
+            part(0, line, line, rows),
+            part(all.size.w - line, line, line, rows),
+        ];
+        let inside = part(line, line, all.size.w - 2 * line, rows);
+        let parts = lines
+            .into_iter()
+            .map(|line| (line, theme.panel.chosen_line))
+            .chain([(inside, theme.panel.chosen.covering(PREVIEW_COVER))]);
+        for (id, (rect, colour)) in self.shade.parts.iter().zip(parts) {
+            pieces.push(Piece::Solid(SolidColorRenderElement::new(
+                id.clone(),
+                onto.rect(rect),
+                CommitCounter::default(),
+                solid(colour),
+                Kind::Unspecified,
+            )));
+        }
+    }
+}
+
+/// `colour` as the renderer takes one: each of red, green and blue
+/// already times how much the colour covers.
+fn solid(colour: Colour) -> Color32F {
+    let cover = f32::from(colour.cover) / 255.0;
+    let part = |part: u8| f32::from(part) / 255.0 * cover;
+    Color32F::new(part(colour.red), part(colour.green), part(colour.blue), cover)
+}
+
 /// What the screens show beside the windows.
 #[derive(Debug, Clone, Copy)]
 pub struct Scene<'a> {
@@ -163,6 +245,8 @@ pub struct Scene<'a> {
     pub windows: &'a Windows,
     /// The panel over them.
     pub panel: Option<&'a Panel>,
+    /// The preview under one of them.
+    pub preview: Option<Preview<'a>>,
 }
 
 /// A screen as a frame is drawn for it: where the top left corner of
@@ -218,8 +302,12 @@ impl Scene<'_> {
             )?;
             pieces.push(Piece::Own(own));
         }
+        let theme = self.windows.theme();
         for framed in self.windows.stacked() {
-            window(renderer, framed, onto, self.windows.theme().content_line, &mut pieces)?;
+            window(renderer, framed, onto, theme.content_line, &mut pieces)?;
+            if let Some(preview) = self.preview.filter(|preview| *preview.window == framed.window) {
+                preview.pieces(theme, onto, &mut pieces);
+            }
         }
         Ok(pieces)
     }
@@ -274,18 +362,11 @@ fn window(
     pieces.extend(cut.map(Piece::Window));
     if onto.zoom.fract() != 0.0 {
         let (id, ground) = framed.ground();
-        let Colour { red, green, blue, .. } = line;
-        let colour = Color32F::new(
-            f32::from(red) / 255.0,
-            f32::from(green) / 255.0,
-            f32::from(blue) / 255.0,
-            1.0,
-        );
-        pieces.push(Piece::Ground(SolidColorRenderElement::new(
+        pieces.push(Piece::Solid(SolidColorRenderElement::new(
             id.clone(),
             onto.rect(ground),
             CommitCounter::default(),
-            colour,
+            solid(line),
             Kind::Unspecified,
         )));
     }

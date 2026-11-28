@@ -376,6 +376,7 @@ where
         let Some(keyboard) = self.shell.seat.get_keyboard() else { return };
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         let (kept, takes) = (&mut self.kept, self.manager.takes_keys());
+        let offers = self.manager.offers();
         let serial = SERIAL_COUNTER.next_serial();
         // XKB's codes are Linux's and 8.
         let xkb = (u32::from(code) + 8).into();
@@ -392,7 +393,7 @@ where
                     Kept::Chord(chord)
                 } else if keys::modifier(code) {
                     return FilterResult::Forward;
-                } else if takes {
+                } else if takes && !(offers && keys::ask(held, code).is_some()) {
                     Kept::Key { ctrl: held.ctrl, shift: held.shift }
                 } else if let Some(ask) = keys::ask(held, code) {
                     Kept::Ask(ask)
@@ -582,7 +583,11 @@ where
             picture: self.pointer_picture,
             own: &self.pictures,
         };
-        let scene = Scene { windows: &self.shell.windows, panel: self.manager.panel() };
+        let scene = Scene {
+            windows: &self.shell.windows,
+            panel: self.manager.panel(),
+            preview: self.manager.preview(),
+        };
         match self.screens.draw(&mut self.renderer, &self.shell, &scene, &pointing, now_ns) {
             Err(Failed::Renderer(_)) if self.spoiled < SPOILED_MOST => {
                 self.spoiled += 1;

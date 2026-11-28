@@ -10,6 +10,7 @@
 //! person drags an edge two snapped windows share.
 
 use smithay::utils::{Logical, Point, Rectangle};
+use window_frame::Edge;
 
 /// A side of a screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +55,27 @@ impl Zone {
         match self {
             Zone::Half(side) | Zone::Quarter(side, _) => side,
         }
+    }
+
+    /// The edge or the corner of a window snapped to it that lies
+    /// along the splits: where the zone meets the others.
+    pub fn inner(self) -> Edge {
+        match self {
+            Zone::Half(Side::Left) => Edge::Right,
+            Zone::Half(Side::Right) => Edge::Left,
+            Zone::Quarter(Side::Left, Level::Upper) => Edge::BottomRight,
+            Zone::Quarter(Side::Left, Level::Lower) => Edge::TopRight,
+            Zone::Quarter(Side::Right, Level::Upper) => Edge::BottomLeft,
+            Zone::Quarter(Side::Right, Level::Lower) => Edge::TopLeft,
+        }
+    }
+
+    /// Whether every side `edge` names of a window snapped to it lies
+    /// along a split.
+    pub fn meets_at(self, edge: Edge) -> bool {
+        let inner = self.inner();
+        let sides = |edge: Edge| [edge.left(), edge.right(), edge.top(), edge.bottom()];
+        sides(edge).into_iter().zip(sides(inner)).all(|(named, lies)| lies || !named)
     }
 
     /// Whether it and `other` have a place in common, wherever the
@@ -102,6 +124,12 @@ impl Splits {
     fn row(self, screen: Rectangle<i32, Logical>, side: Side) -> i32 {
         let down = if side == Side::Left { self.left } else { self.right };
         screen.loc.y + (i64::from(screen.size.h) * down / WHOLE) as i32
+    }
+
+    /// The column of `screen` the sides meet at, and the row the parts
+    /// of `side` do.
+    pub fn meet(self, screen: Rectangle<i32, Logical>, side: Side) -> Point<i32, Logical> {
+        Point::from((self.column(screen), self.row(screen, side)))
     }
 
     /// The area `zone` has of a screen whose area is `screen`.
@@ -215,47 +243,60 @@ const AT_EDGE: f64 = 2.0;
 /// How near a corner along an edge the pointer means the quarter.
 const AT_CORNER: f64 = 32.0;
 
+/// Which edges of a screen are the desktop's: no other screen lies
+/// beyond them, and the pointer stops there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Outer {
+    /// The left edge.
+    pub left: bool,
+    /// The right edge.
+    pub right: bool,
+    /// The top edge.
+    pub top: bool,
+    /// The bottom edge.
+    pub bottom: bool,
+}
+
+/// `first` for a place that is `low` from one edge and less than `near`
+/// from it, `second` for one that is `high` from the edge across and
+/// as near to that.
+fn nearer<T>(low: f64, high: f64, near: f64, first: T, second: T) -> Option<T> {
+    if low < near {
+        Some(first)
+    } else if high < near {
+        Some(second)
+    } else {
+        None
+    }
+}
+
 /// What a window dragged by its title bar fills if it is let go with
 /// the pointer at `at` on a screen whose area is `screen`: the whole
 /// screen at the top edge, a side at the left or the right edge, and a
-/// quarter near a corner.
-pub fn dragged_to(screen: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> Fills {
+/// quarter near a corner. Only an edge that is the desktop's counts:
+/// across one another screen lies beyond, a window is carried there.
+pub fn dragged_to(screen: Rectangle<i32, Logical>, at: Point<f64, Logical>, outer: Outer) -> Fills {
     let screen = screen.to_f64();
     let (from_left, from_top) = (at.x - screen.loc.x, at.y - screen.loc.y);
     let (from_right, from_bottom) =
         (screen.size.w - 1.0 - from_left, screen.size.h - 1.0 - from_top);
-    let side = if from_left < AT_EDGE {
-        Some(Side::Left)
-    } else if from_right < AT_EDGE {
-        Some(Side::Right)
-    } else {
-        None
-    };
-    let level = if from_top < AT_CORNER {
-        Some(Level::Upper)
-    } else if from_bottom < AT_CORNER {
-        Some(Level::Lower)
-    } else {
-        None
-    };
-    let near_side = if from_left < AT_CORNER {
-        Some(Side::Left)
-    } else if from_right < AT_CORNER {
-        Some(Side::Right)
-    } else {
-        None
-    };
-    let at_top = from_top < AT_EDGE;
-    let at_bottom = from_bottom < AT_EDGE;
-    match (side, level) {
-        (Some(side), Some(level)) => Fills::Zone(Zone::Quarter(side, level)),
-        (Some(side), None) => Fills::Zone(Zone::Half(side)),
-        (None, _) => match near_side {
-            Some(side) if at_top => Fills::Zone(Zone::Quarter(side, Level::Upper)),
-            Some(side) if at_bottom => Fills::Zone(Zone::Quarter(side, Level::Lower)),
-            _ if at_top => Fills::All,
-            _ => Fills::Nothing,
+    let at_side = nearer(from_left, from_right, AT_EDGE, Side::Left, Side::Right)
+        .filter(|side| if *side == Side::Left { outer.left } else { outer.right });
+    let at_level = nearer(from_top, from_bottom, AT_EDGE, Level::Upper, Level::Lower)
+        .filter(|level| if *level == Level::Upper { outer.top } else { outer.bottom });
+    let near_side = nearer(from_left, from_right, AT_CORNER, Side::Left, Side::Right);
+    let near_level = nearer(from_top, from_bottom, AT_CORNER, Level::Upper, Level::Lower);
+    match (at_side, at_level) {
+        (Some(side), _) => match near_level {
+            Some(level) => Fills::Zone(Zone::Quarter(side, level)),
+            None => Fills::Zone(Zone::Half(side)),
         },
+        (None, Some(level)) => match near_side {
+            Some(side) => Fills::Zone(Zone::Quarter(side, level)),
+            None if level == Level::Upper => Fills::All,
+            None => Fills::Nothing,
+        },
+        (None, None) => Fills::Nothing,
     }
 }
 
@@ -346,7 +387,8 @@ mod tests {
     #[test]
     fn a_drag_to_an_edge_or_a_corner_names_what_the_window_fills() {
         let screen = rect(1024, 0, 800, 600);
-        let at = |x: f64, y: f64| dragged_to(screen, Point::from((1024.0 + x, y)));
+        let all = Outer { left: true, right: true, top: true, bottom: true };
+        let at = |x: f64, y: f64| dragged_to(screen, Point::from((1024.0 + x, y)), all);
         assert_eq!(at(400.0, 300.0), Fills::Nothing);
         assert_eq!(at(400.0, 0.5), Fills::All);
         assert_eq!(at(400.0, 599.5), Fills::Nothing);
@@ -357,6 +399,45 @@ mod tests {
         assert_eq!(at(799.5, 580.0), Fills::Zone(quarter(Side::Right, Level::Lower)));
         assert_eq!(at(780.0, 599.5), Fills::Zone(quarter(Side::Right, Level::Lower)));
         assert_eq!(at(3.0, 300.0), Fills::Nothing);
+    }
+
+    #[test]
+    fn an_edge_another_screen_lies_beyond_snaps_nothing() {
+        let screen = rect(1024, 0, 800, 600);
+        let outer = Outer { left: false, right: true, top: true, bottom: true };
+        let at = |x: f64, y: f64| dragged_to(screen, Point::from((1024.0 + x, y)), outer);
+        assert_eq!(at(0.5, 300.0), Fills::Nothing);
+        assert_eq!(at(0.5, 20.0), Fills::Nothing);
+        // The corner is reached along the edge that is the desktop's.
+        assert_eq!(at(20.0, 0.5), Fills::Zone(quarter(Side::Left, Level::Upper)));
+        assert_eq!(at(0.5, 0.5), Fills::Zone(quarter(Side::Left, Level::Upper)));
+        assert_eq!(at(799.5, 300.0), Fills::Zone(RIGHT));
+        let outer = Outer { top: false, ..outer };
+        let at = |x: f64, y: f64| dragged_to(screen, Point::from((1024.0 + x, y)), outer);
+        assert_eq!(at(400.0, 0.5), Fills::Nothing);
+        assert_eq!(at(799.5, 20.0), Fills::Zone(quarter(Side::Right, Level::Upper)));
+    }
+
+    #[test]
+    fn the_edges_of_a_snapped_window_that_lie_along_a_split_are_the_inner_ones() {
+        let upper = quarter(Side::Left, Level::Upper);
+        assert_eq!((LEFT.inner(), RIGHT.inner()), (Edge::Right, Edge::Left));
+        assert_eq!(upper.inner(), Edge::BottomRight);
+        assert_eq!(quarter(Side::Right, Level::Lower).inner(), Edge::TopLeft);
+        assert!(LEFT.meets_at(Edge::Right));
+        assert!(!LEFT.meets_at(Edge::Left) && !LEFT.meets_at(Edge::BottomRight));
+        assert!(upper.meets_at(Edge::Right) && upper.meets_at(Edge::Bottom));
+        assert!(upper.meets_at(Edge::BottomRight) && !upper.meets_at(Edge::TopRight));
+    }
+
+    #[test]
+    fn a_split_s_lines_are_where_the_zones_meet() {
+        let (mut splits, screen) = (Splits::default(), rect(100, 50, 1024, 768));
+        assert_eq!(splits.meet(screen, Side::Left), Point::from((612, 434)));
+        splits.meet_down(screen, Side::Right, 250);
+        splits.meet_across(screen, 400);
+        assert_eq!(splits.meet(screen, Side::Right), Point::from((400, 250)));
+        assert_eq!(splits.meet(screen, Side::Left), Point::from((400, 434)));
     }
 
     #[test]
